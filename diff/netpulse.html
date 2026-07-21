@@ -338,7 +338,7 @@ const DEFAULT_CFG={
   riskWeights:{peak:0.9,avg:0.7,trend:0.8,growth:0.7,violations:1.0,anomaly:0.6,impact:1.2},
   planHorizonDays:90, upgradeLeadDays:42
 };
-const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},
+const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},
   role:'Admin', view:'exec', scope:{}, analytics:null, staged:null};
 
 async function loadAll(){
@@ -348,6 +348,7 @@ async function loadAll(){
   S.audit=(await IDB.get('audit'))||[];
   S.maintenance=(await IDB.get('maintenance'))||[];
   S.comments=(await IDB.get('comments'))||{};
+  S.ifmeta=(await IDB.get('ifmeta'))||{};
   const cfg=await IDB.get('cfg'); if(cfg)S.cfg=Object.assign(structuredClone(DEFAULT_CFG),cfg);
 }
 const save=(k)=>IDB.put(k,S[k==='cfg'?'cfg':k]);
@@ -355,17 +356,41 @@ function logAudit(action,target,detail){S.audit.unshift({ts:Date.now(),who:S.rol
 
 /* ============================ INGESTION LAYER ============================== */
 /* Header understanding — semantic, NOT hardcoded by position/name. */
+/* Canonical fields. Semantics match real polling exports:
+   - speedtx / speedrx  → "Transmit/Received Bandwidth" = interface CAPACITY per direction
+   - tx / rx            → "Average Transmit/Receive"    = average traffic rate
+   - ptx / prx          → "Peak Transmit/Receive"       = peak traffic rate in the interval
+   - txpct/rxpct/ptxpct/prxpct → the same as percentages
+   Nothing is hardcoded to a header name or position — aliases + fuzzy + value-shape
+   propose a mapping, and the user can override EVERY field in the mapping panel. */
 const FIELD_ALIASES={
   device:['device','host','hostname','node','nodename','sysname','router','switch','dev','equipment','chassis'],
   interface:['interface','intf','port','ifname','ifdescr','ifalias','portname','name','if','link'],
   ts:['time','timestamp','poll','polltime','polltimestamp','datetime','date','pollts','polledat','polled','when','sampletime','pollingtime'],
-  tx:['tx','out','egress','transmit','transmitted','transmitbandwidth','txbandwidth','outbandwidth','bandwidthout','transmitrate','outbound','txrate','outoctets','outbits','outbps','outbytes','txbps','sent','snd','txbits','outrate','txtraffic','outtraffic'],
-  rx:['rx','in','ingress','receive','received','receivedbandwidth','receivebandwidth','rxbandwidth','inbandwidth','bandwidthin','receiverate','inbound','rxrate','inoctets','inbits','inbps','inbytes','rxbps','recv','rcv','rxbits','inrate','rxtraffic','intraffic'],
-  ptx:['peaktx','txpeak','peakout','maxtx','peaktxbps','peakegress','peaktransmit','maxout'],
-  prx:['peakrx','rxpeak','peakin','maxrx','peakrxbps','peakingress','peakreceive','maxin'],
+  tx:['tx','out','egress','transmit','transmitted','averagetransmit','avgtransmit','averagetx','avgtx','averageout','avgout','transmitaverage','txaverage','transmitrate','outbound','txrate','outoctets','outbits','outbps','outbytes','txbps','sent','snd','txbits','outrate','txtraffic','outtraffic'],
+  rx:['rx','in','ingress','receive','received','averagereceive','avgreceive','averagereceived','averagerx','avgrx','averagein','avgin','receiveaverage','rxaverage','receiverate','inbound','rxrate','inoctets','inbits','inbps','inbytes','rxbps','recv','rcv','rxbits','inrate','rxtraffic','intraffic'],
+  ptx:['peaktransmit','transmitpeak','peaktx','txpeak','peakout','maxtx','maxtransmit','peaktxbps','peakegress','maxout'],
+  prx:['peakreceive','peakreceived','receivepeak','peakrx','rxpeak','peakin','maxrx','maxreceive','peakrxbps','peakingress','maxin'],
   speed:['speed','bandwidth','bw','capacity','referencebandwidth','refbandwidth','refbw','totalbandwidth','ifspeed','portspeed','linkspeed','ifspeedbps','maxspeed','negspeed'],
-  util:['util','utilization','utilisation','usage','percent','percentage','pct','load','utilpct','utilizationpercentage','percentused','busy']
+  speedtx:['transmitbandwidth','txbandwidth','bandwidthtransmit','bandwidthtx','transmitcapacity','txcapacity','transmitspeed','txspeed','outbandwidth','bandwidthout','outspeed'],
+  speedrx:['receivedbandwidth','receivebandwidth','rxbandwidth','bandwidthreceive','bandwidthrx','receivecapacity','rxcapacity','receivespeed','rxspeed','inbandwidth','bandwidthin','inspeed'],
+  util:['util','utilization','utilisation','usage','percent','percentage','pct','load','utilpct','utilizationpercentage','percentused','busy'],
+  txpct:['averagetransmitpercent','averagetransmitpercentage','transmitpercent','transmitpercentage','txpercent','txpct','txutil','txutilization','outpercent','transmitutilization','avgtransmitpercent'],
+  rxpct:['averagereceivepercent','averagereceivepercentage','receivepercent','receivepercentage','rxpercent','rxpct','rxutil','rxutilization','inpercent','receiveutilization','avgreceivepercent'],
+  ptxpct:['peaktransmitpercent','peaktransmitpercentage','peaktxpercent','peaktxpct','peakoutpercent','peaktransmitutilization'],
+  prxpct:['peakreceivepercent','peakreceivepercentage','peakrxpercent','peakrxpct','peakinpercent','peakreceiveutilization']
 };
+const FIELD_LABELS={
+  device:'Device',interface:'Interface',ts:'Poll timestamp',
+  tx:'Average Transmit (rate)',rx:'Average Receive (rate)',
+  ptx:'Peak Transmit (rate)',prx:'Peak Receive (rate)',
+  speed:'Interface bandwidth (both directions)',
+  speedtx:'Transmit bandwidth (capacity)',speedrx:'Received bandwidth (capacity)',
+  util:'Utilization % (overall)',
+  txpct:'Average Transmit %',rxpct:'Average Receive %',
+  ptxpct:'Peak Transmit %',prxpct:'Peak Receive %'
+};
+const REQUIRED_FIELDS=['device','interface','ts'];
 const norm=s=>String(s==null?'':s).toLowerCase().replace(/[^a-z0-9]/g,'');
 const UNIT_RE=/(\d+(?:\.\d+)?)\s*(t|g|m|k)?\s*(b(?:it|ps|\/s)?|bytes?|o(?:ctet)?s?|bps)/i;
 
@@ -439,22 +464,26 @@ function resolveColumns(headers,rows){
     return {date:dates/c.length,pct:pcts/c.length,num:nums/c.length,big:big/c.length,mono:mono&&ints/c.length>.8&&big/c.length>.5};
   });
   // Global greedy assignment: the strongest (field, column) pairs win first,
-  // so an exact "Transmit Bandwidth"→tx beats a partial "…bandwidth"→speed.
+  // so an exact "Received Bandwidth"→speedrx beats a partial "received…"→rx.
   const usedH=new Set(),usedF=new Set(),map={},conf={};
-  const order=['ts','device','interface','speed','tx','rx','util','ptx','prx'];
+  const order=['ts','device','interface','speed','speedtx','speedrx','tx','rx','ptx','prx','util','txpct','rxpct','ptxpct','prxpct'];
+  const PCT_FIELDS=new Set(['util','txpct','rxpct','ptxpct','prxpct']);
+  const RATE_FIELDS=new Set(['tx','rx','ptx','prx']);
   const cand=[];
   for(const f of order)for(const s of scores[f]){
     let sc=s.score;const sh=shape[s.i]||{};const hn=H[s.i].n;
+    const isPctHdr=/%|percent|pct|util/i.test(String(H[s.i].raw||''));
     if(f==='ts')sc+=(sh.date||0)*0.6;
-    if(f==='util')sc+=(sh.pct||0)*0.4;
-    if(f==='speed'){sc+=(sh.big||0)*0.15;if(/transmit|receiv|egress|ingress/.test(hn))sc-=0.5;} // directional words → not a reference-bandwidth column
-    if(f==='tx'||f==='rx')sc+=(sh.num||0)*0.05;
+    if(PCT_FIELDS.has(f)){sc+=(sh.pct||0)*0.35+(isPctHdr?0.3:0);}
+    if(RATE_FIELDS.has(f)){sc+=(sh.num||0)*0.05;if(isPctHdr)sc-=0.45;} // "Average Transmit %" must not become a rate column
+    if(f==='speed'){sc+=(sh.big||0)*0.15;if(/transmit|receiv|egress|ingress/.test(hn))sc-=0.5;if(isPctHdr)sc-=0.5;}
+    if(f==='speedtx'||f==='speedrx'){sc+=(sh.big||0)*0.1;if(isPctHdr)sc-=0.5;}
     cand.push({f,i:s.i,score:clamp(sc,0,1)});
   }
   cand.sort((a,b)=>b.score-a.score);
   for(const c of cand){
     if(usedF.has(c.f)||usedH.has(c.i))continue;
-    const need=(c.f==='ts'||c.f==='device'||c.f==='interface');
+    const need=REQUIRED_FIELDS.includes(c.f);
     if(c.score>=(need?0.42:0.5)){map[c.f]=c.i;conf[c.f]=c.score;usedH.add(c.i);usedF.add(c.f);}
   }
   // fallback: if no ts column matched but a column is mostly dates
@@ -464,49 +493,65 @@ function resolveColumns(headers,rows){
 
 function buildSamples(rows,resolved,srcName,batchId){
   const {map,headers}=resolved;
-  const hInfo=f=>map[f]!=null?headers.find(h=>h.i===map[f]).unit:null;
-  const txU=hInfo('tx'),rxU=hInfo('rx'),ptxU=hInfo('ptx'),prxU=hInfo('prx');
+  const hInfo=f=>map[f]!=null?(headers.find(h=>h.i===map[f])||{}).unit:null;
+  const units={tx:hInfo('tx'),rx:hInfo('rx'),ptx:hInfo('ptx'),prx:hInfo('prx')};
   const out=[],issues={corrupt:0,noTs:0,noSpeed:0,utilRecalc:0,cellUnit:0};
   let scaleGuessNote=null;
+  const val=(r,f)=>map[f]!=null?r[map[f]]:null;
+  const num=(r,f)=>{const v=val(r,f);if(v==null||v==='')return null;const n=parseFloat(String(v).replace(/[^\d.eE+-]/g,''));return isNaN(n)?null:n;};
   const raw=[];
   for(const r of rows){
-    const dev=map.device!=null?String(r[map.device]??'').trim():'';
-    const intf=map.interface!=null?String(r[map.interface]??'').trim():'';
-    const ts=map.ts!=null?parseTs(r[map.ts]):null;
-    if(!dev||!intf){continue;}
-    if(ts==null){issues.noTs++;continue;}
-    let tx=map.tx!=null?parseRate(r[map.tx],txU):{val:null};
-    let rx=map.rx!=null?parseRate(r[map.rx],rxU):{val:null};
+    const dev=String(val(r,'device')??'').trim(),intf=String(val(r,'interface')??'').trim();
+    if(!dev||!intf)continue;
+    const ts=parseTs(val(r,'ts'));if(ts==null){issues.noTs++;continue;}
+    const tx=map.tx!=null?parseRate(val(r,'tx'),units.tx):{val:null};
+    const rx=map.rx!=null?parseRate(val(r,'rx'),units.rx):{val:null};
+    const ptx=map.ptx!=null?parseRate(val(r,'ptx'),units.ptx):{val:null};
+    const prx=map.prx!=null?parseRate(val(r,'prx'),units.prx):{val:null};
     if(tx.viaCellUnit||rx.viaCellUnit)issues.cellUnit++;
-    const ptx=map.ptx!=null?parseRate(r[map.ptx],ptxU).val:null;
-    const prx=map.prx!=null?parseRate(r[map.prx],prxU).val:null;
-    const speed=map.speed!=null?parseSpeed(r[map.speed]):null;
-    const utilCol=map.util!=null?parseFloat(String(r[map.util]).replace(/[^\d.-]/g,'')):null;
-    raw.push({dev,intf,ts,tx:tx.val,rx:rx.val,ptx,prx,speed,utilCol});
+    // Per-direction capacity ("Transmit/Received Bandwidth"); shared speed as fallback.
+    const sp=map.speed!=null?parseSpeed(val(r,'speed')):null;
+    const spTx=(map.speedtx!=null?parseSpeed(val(r,'speedtx')):null)||sp;
+    const spRx=(map.speedrx!=null?parseSpeed(val(r,'speedrx')):null)||sp;
+    raw.push({dev,intf,ts,tx:tx.val,rx:rx.val,ptx:ptx.val,prx:prx.val,spTx,spRx,
+      txp:num(r,'txpct'),rxp:num(r,'rxpct'),ptxp:num(r,'ptxpct'),prxp:num(r,'prxpct'),utilCol:num(r,'util')});
   }
-  // Magnitude inference: if no explicit unit AND util wildly off vs speed, rescale.
-  if(!txU&&!rxU&&raw.length){
-    const withSpeed=raw.filter(x=>x.speed>0&&(x.tx>0||x.rx>0));
+  // Magnitude inference: no explicit unit and rates implausible vs capacity → rescale all rate columns together.
+  if(!units.tx&&!units.rx&&raw.length){
+    const withSpeed=raw.filter(x=>(x.spTx>0||x.spRx>0)&&(x.tx>0||x.rx>0));
     if(withSpeed.length>20){
-      const utils=withSpeed.map(x=>Math.max(x.tx||0,x.rx||0)/x.speed);
+      const utils=withSpeed.map(x=>Math.max(x.tx||0,x.rx||0)/Math.max(x.spTx||0,x.spRx||0));
       const med=percentile(utils,0.5);
       let factor=1;
-      if(med>1.5) factor = med>1500?1/1e9 : med>1.5&&med<=1500?(med>1500?1e-9:1e-6):1;
-      if(med>1.5&&med<=3000)factor=1e-6; // values look like they're in Mbps-of-bps mismatch → scale
+      if(med>1.5&&med<=3000)factor=1e-6;
       if(med>3000)factor=1e-9;
       if(med<0.0005&&med>0)factor=1e6;
-      if(factor!==1){for(const x of raw){if(x.tx!=null)x.tx*=factor;if(x.rx!=null)x.rx*=factor;}scaleGuessNote=`Auto-scaled rate values by ×${factor} (inferred from magnitude vs interface speed; no explicit unit in file).`;}
+      if(factor!==1){for(const x of raw){for(const k of ['tx','rx','ptx','prx'])if(x[k]!=null)x[k]*=factor;}
+        scaleGuessNote=`Auto-scaled rate values by ×${factor} (inferred from magnitude vs interface bandwidth; no explicit unit in file).`;}
     }
   }
   for(const x of raw){
-    let tx=x.tx,rx=x.rx,speed=x.speed;
-    if(!speed||speed<=0){issues.noSpeed++;}
-    let util;
-    if(speed>0&&(tx!=null||rx!=null)){util=Math.max((tx||0),(rx||0))/speed;if(x.utilCol!=null&&Math.abs(x.utilCol/100-util)>0.15)issues.utilRecalc++;}
-    else if(x.utilCol!=null){util=x.utilCol/100;}
-    else util=null;
+    const spT=x.spTx,spR=x.spRx;
+    let tx=x.tx,rx=x.rx,ptx=x.ptx,prx=x.prx;
+    // Derive missing rates from their percentage columns (% of the direction's capacity)
+    if(tx==null&&x.txp!=null&&spT)tx=x.txp/100*spT;
+    if(rx==null&&x.rxp!=null&&spR)rx=x.rxp/100*spR;
+    if(ptx==null&&x.ptxp!=null&&spT)ptx=x.ptxp/100*spT;
+    if(prx==null&&x.prxp!=null&&spR)prx=x.prxp/100*spR;
+    const speed=Math.max(spT||0,spR||0)||null;
+    if(!speed)issues.noSpeed++;
+    // Average utilization: each direction against its OWN capacity (asymmetric links exist)
+    const uT=spT&&tx!=null?tx/spT:(x.txp!=null?x.txp/100:null);
+    const uR=spR&&rx!=null?rx/spR:(x.rxp!=null?x.rxp/100:null);
+    let util=(uT!=null||uR!=null)?Math.max(uT??0,uR??0):(x.utilCol!=null?x.utilCol/100:null);
+    if(util!=null&&x.utilCol!=null&&Math.abs(x.utilCol/100-util)>0.15)issues.utilRecalc++;
+    // Peak utilization from the peak columns — catches microbursts the averages hide
+    const pT=spT&&ptx!=null?ptx/spT:(x.ptxp!=null?x.ptxp/100:null);
+    const pR=spR&&prx!=null?prx/spR:(x.prxp!=null?x.prxp/100:null);
+    const pu=(pT!=null||pR!=null)?Math.max(pT??0,pR??0):null;
     if(util!=null&&(util<0||util>3)){issues.corrupt++;}
-    out.push({ifid:x.dev+'|'+x.intf,dev:x.dev,intf:x.intf,ts:x.ts,tx:tx==null?null:tx,rx:rx==null?null:rx,ptx:x.ptx,prx:x.prx,speed:speed||null,util:util==null?null:util,src:srcName,batch:batchId});
+    out.push({ifid:x.dev+'|'+x.intf,dev:x.dev,intf:x.intf,ts:x.ts,tx,rx,ptx,prx,pu,
+      speed,speedTx:spT||null,speedRx:spR||null,util,src:srcName,batch:batchId});
   }
   return {samples:out,issues,scaleGuessNote};
 }
@@ -607,9 +652,9 @@ async function ingestFile(file){
 function validateStaged(parsed,built){
   const findings={block:[],warn:[],info:[]};
   const {map,conf}=parsed.resolved;
-  ['device','interface','ts'].forEach(f=>{if(map[f]==null)findings.block.push(`Could not resolve a <b>${f}</b> column — map it manually to proceed.`);});
-  if(map.tx==null&&map.rx==null&&map.util==null)findings.block.push('No traffic (TX/RX) or utilization column resolved.');
-  if(map.speed==null&&map.util==null)findings.warn.push('No interface speed column — utilization % cannot be computed from rates for some rows.');
+  REQUIRED_FIELDS.forEach(f=>{if(map[f]==null)findings.block.push(`Could not resolve a <b>${FIELD_LABELS[f]}</b> column — map it in the panel above to proceed.`);});
+  if(map.tx==null&&map.rx==null&&map.util==null&&map.txpct==null&&map.rxpct==null)findings.block.push('No traffic column resolved (Average Transmit/Receive as rate or %, or overall Utilization %). Map one above.');
+  if(map.speed==null&&map.speedtx==null&&map.speedrx==null&&map.util==null&&map.txpct==null&&map.rxpct==null)findings.warn.push('No interface bandwidth (capacity) column — utilization cannot be computed from rates.');
   // low-confidence mappings
   for(const f in conf){if(conf[f]<0.62)findings.warn.push(`Low-confidence mapping: <b>${f}</b> → “${esc(parsed.headers[map[f]])}” (${Math.round(conf[f]*100)}%). Confirm in the mapping panel.`);}
   const s=built.samples;
@@ -686,10 +731,18 @@ function computeAnalytics(){
     const s=groups[ifid].filter(x=>!x.maint).sort((a,b)=>a.ts-b.ts);
     if(!s.length)continue;
     const dev=s[0].dev,intf=s[0].intf,site=siteOf(dev);
-    const {cls,impact}=classify(ifid,intf);
+    let {cls,impact}=classify(ifid,intf);
+    const ov=S.ifmeta[ifid]||{};               // user-set tag/impact overrides the name-based guess
+    if(ov.cls)cls=ov.cls; if(ov.impact)impact=ov.impact;
+    const tags=ov.tags||[];
     const speed=s.map(x=>x.speed).filter(Boolean).pop()||null;
+    const speedTx=s.map(x=>x.speedTx).filter(Boolean).pop()||speed;
+    const speedRx=s.map(x=>x.speedRx).filter(Boolean).pop()||speed;
     const utils=s.map(x=>x.util).filter(v=>v!=null&&v>=0&&v<=3);
     const p95=percentile(utils,0.95),p99=percentile(utils,0.99),avg=mean(utils),mx=Math.max(0,...utils);
+    // peak-column analytics (microbursts the averages hide)
+    const pus=s.map(x=>x.pu).filter(v=>v!=null&&v>=0&&v<=3);
+    const pkP95=pus.length?percentile(pus,0.95):null,pkMax=pus.length?Math.max(...pus):null;
     // distribution (time-in-state)
     const dist={normal:0,warning:0,high:0,critical:0};for(const u of utils)dist[stateOf(u,cls)]++;
     const tot=utils.length||1;for(const k in dist)dist[k]/=tot;
@@ -714,9 +767,9 @@ function computeAnalytics(){
     const forecast=forecastFrom(daily,p95,cls);
     // risk
     const growth=forecast.growthMoM;
-    const risk=riskScore({p95,avg,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
-    const rec={ifid,dev,intf,site,cls,impact,speed,samples:s,count:s.length,
-      start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
+    const risk=riskScore({p95,avg,pk:pkP95,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
+    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,samples:s,count:s.length,
+      start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,pkP95,pkMax,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
     rec.verdict=verdictFor(rec);
     rec.ai=aiSummary(rec);
     ifs.push(rec);
@@ -798,7 +851,7 @@ function riskScore(f){
   const W=S.cfg.riskWeights;const impactMul={Critical:1.25,High:1.05,Medium:0.85,Low:0.65}[f.impact];
   const nl=v=>clamp(v,0,1)**1.4; // non-linear utilization curve
   const factors={
-    'Peak util':nl(f.p95)*W.peak,
+    'Peak util':nl(f.pk!=null?f.pk:f.p95)*W.peak,
     'Avg util':nl(f.avg)*W.avg,
     'Trend':clamp(f.slope*60/0.5,0,1)*W.trend,
     'Growth':clamp(f.growth/0.3,0,1)*W.growth,
@@ -826,6 +879,7 @@ function verdictFor(r){
   else if(planSoon&&growing){level='high';title='Capacity Planning Required';reason=`Forecast reaches 90% in ~<b>${Math.round(f.t90)}</b> days at current growth (+${(f.growthMoM*100).toFixed(0)}% MoM).`;action=`Plan upgrade in the ${f.window?f.window[0]+'–'+f.window[1]:'recommended'} day window.`;}
   else if(wk){level='warning';title='Weekend Backup Traffic';reason=`Weekend traffic (~${pct1(wk.util)}) on a business-classified link normally idle on weekends.`;action='Confirm backup schedule is intended; reclassify if mislabeled.';}
   else if(imb){level='warning';title='RX/TX Imbalance';reason=`Sustained directional imbalance (~${imb.ratio.toFixed(1)}× RX/TX).`;action='Check asymmetric routing / unidirectional flows / SPAN config.';}
+  else if(r.pkP95!=null&&r.pkP95>=t.crit&&r.p95<t.high){level='warning';title='Bursty Traffic (Microbursts)';reason=`Peaks reach ${pct1(r.pkP95)} (p95 of peak samples) while the average stays at ${pct1(r.p95)} — short bursts saturate the link between polls.`;action='Review QoS/buffer tuning; keep burst headroom for latency-sensitive traffic.';}
   else if(r.anomalies.length){level='warning';title='Traffic Pattern Changed';reason=`${r.anomalies.length} behavioral anomaly(ies) detected vs baseline.`;action='Compare to change/maintenance events; verify expected vs anomalous.';}
   else if(r.p95<0.03){level='normal';title='Idle / Under-utilized';reason=`p95 utilization only ${pct1(r.p95)} — consolidation candidate.`;action='Verify still in service; candidate for reclaim.';}
   else if(r.dist.high+r.dist.warning>0.15||growing){level='warning';title='Monitor';reason=`Elevated but sub-critical (p95 ${pct1(r.p95)}${growing?`, +${(f.growthMoM*100).toFixed(0)}% MoM`:''}).`;action='Keep under observation.';}
@@ -1096,14 +1150,16 @@ function view_intf(){
   const txS=r.samples.filter(x=>x.tx!=null&&r.speed).map(x=>[x.ts,x.tx/r.speed]);
   const rxS=r.samples.filter(x=>x.rx!=null&&r.speed).map(x=>[x.ts,x.rx/r.speed]);
   const txs=r.samples.map(x=>x.tx).filter(v=>v!=null),rxs=r.samples.map(x=>x.rx).filter(v=>v!=null);
-  const bwSub=(txs.length&&rxs.length)?`Transmit p95 ${fmtBps(percentile(txs,0.95))} · Received p95 ${fmtBps(percentile(rxs,0.95))}`:'Transmit / Received with threshold bands';
+  const pks=r.samples.map(x=>x.pu).filter(v=>v!=null);
+  const puS=r.samples.filter(x=>x.pu!=null).map(x=>[x.ts,x.pu]);
+  const bwSub=(txs.length&&rxs.length)?`Transmit p95 ${fmtBps(percentile(txs,0.95))} · Received p95 ${fmtBps(percentile(rxs,0.95))}${pks.length?` · Peak ${pct1(Math.max(...pks))}`:''}`:'Transmit / Received with threshold bands';
   // forecast chart series
   const lastD=r.daily.at(-1)?.d||Date.now();
   const proj=[0,30,60,90,180].map(dd=>[lastD+dd*86400000,clamp(f.current+f.slopePerDay*dd,0,2)]);
   const events=buildTimeline(r);
   return crumb([['NOC',{view:'noc'}],[r.dev,{view:'twin',twin:{site:r.site,dev:r.dev}}],[r.intf]])+`
   <div class="verdict ${r.verdict.level}" style="margin-bottom:16px">
-    <div class="flex"><span class="lvl pill ${r.verdict.level}">${r.verdict.level}</span><span class="chip impact-${r.impact}">${r.impact} impact</span><span class="chip">${r.cls}</span><span class="spacer"></span><span class="mono small">speed ${r.speed?fmtBps(r.speed):'?'}</span>${riskBar(r.risk.score)}</div>
+    <div class="flex"><span class="lvl pill ${r.verdict.level}">${r.verdict.level}</span><span class="chip impact-${r.impact}">${r.impact} impact</span><span class="chip">${r.cls}</span>${(r.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}<span class="spacer"></span><span class="mono small">speed ${r.speed?fmtBps(r.speed):'?'}</span>${riskBar(r.risk.score)}</div>
     <h3>${esc(r.dev)} · ${esc(r.intf)} — ${esc(r.verdict.title)}</h3>
     <div class="reason">${r.verdict.reason}</div>
     <div class="act">▸ ${r.verdict.action} <span class="conf">· confidence ${(r.verdict.confidence*100).toFixed(0)}% · ${r.verdict.comparison}</span></div>
@@ -1113,8 +1169,8 @@ function view_intf(){
     <div>
       <div class="panel pad" style="margin-bottom:16px">
         <div class="sec-title"><h2>Traffic &amp; Utilization</h2><span class="sub">${bwSub}${S.maintenance.length?' · maintenance shaded':''}</span></div>
-        ${svgLineArea([{data:txS,color:'#38bdf8',wide:true,name:'Transmit'},{data:rxS,color:'#818cf8',name:'Received'}],{h:230,bands:th(r.cls),maint:S.maintenance,speed:r.speed})}
-        <div class="legend"><span><i style="background:#38bdf8"></i>Transmit</span><span><i style="background:#818cf8"></i>Received</span><span><i style="background:var(--warning)"></i>warn</span><span><i style="background:var(--critical)"></i>critical</span></div>
+        ${svgLineArea([{data:txS,color:'#38bdf8',wide:true,name:'Transmit'},{data:rxS,color:'#818cf8',name:'Received'}].concat(puS.length?[{data:puS,color:'#f472b6',dash:true,name:'Peak'}]:[]),{h:230,bands:th(r.cls),maint:S.maintenance,speed:r.speed})}
+        <div class="legend"><span><i style="background:#38bdf8"></i>Transmit</span><span><i style="background:#818cf8"></i>Received</span>${puS.length?`<span><i style="background:#f472b6"></i>Peak</span>`:''}<span><i style="background:var(--warning)"></i>warn</span><span><i style="background:var(--critical)"></i>critical</span></div>
       </div>
       <div class="grid g2" style="margin-bottom:16px">
         <div class="panel pad"><div class="sec-title"><h2>Utilization rhythm</h2><span class="sub">day × hour</span></div>${heatmap(r.heat,r.cls)}</div>
@@ -1137,6 +1193,12 @@ function view_intf(){
     </div>
     <div>
       <div class="ai" style="margin-bottom:16px"><div class="h">◆ AI summary</div><p>${r.ai}</p></div>
+      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Link settings</h2><span class="sub">override auto-classification</span></div>
+        <label class="fld"><span>Class / role tag</span><select id="metaCls">${['Core','Trading','Internet','WAN','Storage','Backup','Voice','Replication','Management','Customer'].map(c=>`<option ${r.cls===c?'selected':''}>${c}</option>`).join('')}</select></label>
+        <label class="fld"><span>Business impact</span><select id="metaImp">${['Critical','High','Medium','Low'].map(c=>`<option ${r.impact===c?'selected':''}>${c}</option>`).join('')}</select></label>
+        <label class="fld"><span>Custom tags (comma-separated)</span><input type="text" id="metaTags" value="${esc((r.tags||[]).join(', '))}" placeholder="e.g. customer-acme, dr-link"></label>
+        <div class="flex"><button class="btn sm" onclick="saveIfMeta('${r.ifid}')">Save</button>${S.ifmeta[r.ifid]?`<button class="btn sm ghost" onclick="resetIfMeta('${r.ifid}')">Reset to auto</button>`:''}</div>
+      </div>
       <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Risk factors</h2><span class="sub">${r.risk.score}/100</span></div>
         ${Object.entries(r.risk.factors).map(([k,v])=>`<div class="flex" style="margin-bottom:7px"><span style="width:90px" class="small">${k}</span><span class="track" style="flex:1;height:6px;border-radius:4px;background:rgba(120,150,200,.15);overflow:hidden"><i style="display:block;height:100%;width:${clamp(v,0,1)*100}%;background:linear-gradient(90deg,#38bdf8,#f43f5e)"></i></span></div>`).join('')}
         <div class="mini" style="margin-top:8px">× ${r.risk.impactMul} business-impact multiplier (${r.impact})</div>
@@ -1221,9 +1283,12 @@ function view_uploads(){
   if(st){const fnd=st.findings;const canCommit=fnd.block.length===0;
     stagedHtml=`<div class="panel pad" style="margin-bottom:16px;border-color:var(--stroke2)">
       <div class="sec-title"><h2>Validation Console — “${esc(st.parsed.name)}”</h2><span class="sub">${st.built.samples.length.toLocaleString()} rows · cadence ${st.built.intervalNote||'?'} · covers ${fmtDay(st.built.coverage[0])}–${fmtDay(st.built.coverage[1])}</span></div>
-      <div class="sec-title" style="margin-top:6px"><h2 style="font-size:13px">Resolved columns (understood by meaning)</h2></div>
-      <div style="margin-bottom:14px">${Object.keys(FIELD_ALIASES).filter(f=>st.parsed.resolved.map[f]!=null).map(f=>{const c=st.parsed.resolved.conf[f]||0;return `<div class="map-row"><b class="small">${f}</b><span style="text-align:center">→</span><span class="small">“${esc(st.parsed.headers[st.parsed.resolved.map[f]])}”${st.parsed.resolved.headers.find(h=>h.i===st.parsed.resolved.map[f])?.unit?' <span class="chip">unit detected</span>':''}</span><span class="mini">${Math.round(c*100)}%<div class="confbar"><i style="width:${c*100}%"></i></div></span></div>`;}).join('')}
-      ${Object.keys(FIELD_ALIASES).filter(f=>st.parsed.resolved.map[f]==null&&['device','interface','ts','tx','rx','speed'].includes(f)).map(f=>`<div class="map-row"><b class="small" style="color:#fca5a5">${f}</b><span style="text-align:center">→</span><select onchange="remap('${f}',this.value)"><option value="">— unmapped —</option>${st.parsed.headers.map((h,i)=>`<option value="${i}">${esc(h)}</option>`).join('')}</select><span class="mini">manual</span></div>`).join('')}</div>
+      <div class="sec-title" style="margin-top:6px"><h2 style="font-size:13px">Column mapping — auto-proposed, fully editable</h2><span class="sub">change any dropdown if a guess is wrong; nothing is hardcoded</span></div>
+      <div style="margin-bottom:14px">${Object.keys(FIELD_LABELS).map(f=>{
+        const mi=st.parsed.resolved.map[f];const c=st.parsed.resolved.conf[f]||0;const req=REQUIRED_FIELDS.includes(f);
+        const unit=mi!=null&&st.parsed.resolved.headers.find(h=>h.i===mi)?.unit?' <span class="chip">unit detected</span>':'';
+        return `<div class="map-row"><b class="small" style="${req&&mi==null?'color:#fca5a5':''}">${FIELD_LABELS[f]}${req?' *':''}</b><span style="text-align:center">→</span><span><select onchange="remap('${f}',this.value)" style="width:100%"><option value="">— not in this file —</option>${st.parsed.headers.map((h,i)=>`<option value="${i}" ${mi===i?'selected':''}>${esc(h)}</option>`).join('')}</select>${unit}</span><span class="mini">${mi==null?'—':(c>=0.999?'manual':Math.round(c*100)+'%')}<div class="confbar"><i style="width:${mi==null?0:c*100}%"></i></div></span></div>`;
+      }).join('')}</div>
       ${fnd.block.map(m=>`<div class="sev-block block"><b>⛔ Blocking</b> — ${m}</div>`).join('')}
       ${fnd.warn.map(m=>`<div class="sev-block warn"><b>⚠ Warning</b> — ${m}</div>`).join('')}
       ${fnd.info.map(m=>`<div class="sev-block info"><b>ℹ Info</b> — ${m}</div>`).join('')}
@@ -1335,6 +1400,14 @@ function askRCA(id){const a=A();const r=a.ifs.find(x=>x.ifid===id);const f=r.for
 function rcaCause(r){const f=r.forecast;if(f.growthMoM>0.1&&r.bhDays>=3)return'Organic business-hour demand growth';if(r.anomalies.some(a=>a.type.includes('Weekend')))return'Newly scheduled off-hours job (backup/replication) or misclassification';if(r.anomalies.some(a=>a.type.includes('imbalance')))return'Asymmetric routing / unidirectional flow';if(r.mx>0.9)return'Localized burst / elephant flow';return'Elevated utilization consistent with steady load';}
 
 /* ------------------------------ interactions ------------------------------ */
+function saveIfMeta(ifid){
+  const cls=$('#metaCls').value,impact=$('#metaImp').value;
+  const tags=$('#metaTags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  S.ifmeta[ifid]={cls,impact,tags};save('ifmeta');
+  logAudit('interface.meta',ifid,`class=${cls} impact=${impact} tags=[${tags.join(',')}]`);
+  S.analytics=null;render();toast('Link settings saved — analytics recomputed');
+}
+function resetIfMeta(ifid){delete S.ifmeta[ifid];save('ifmeta');logAudit('interface.meta.reset',ifid);S.analytics=null;render();toast('Reverted to automatic classification');}
 function addComment(id){const v=$('#cmt').value.trim();if(!v)return;(S.comments[id]=S.comments[id]||[]).push({ts:Date.now(),who:S.role,txt:v});save('comments');logAudit('comment.add',id,v);render();}
 function addMaint(){const scope=$('#mScope').value;const s=$('#mStart').value,e=$('#mEnd').value;if(!s||!e)return toast('Set start and end');
   let sc='all',target='';if(scope.startsWith('dev:')){sc='dev';target=scope.slice(4);}else if(scope.startsWith('if:')){sc='if';target=scope.slice(3);}
@@ -1372,9 +1445,11 @@ function genDemo(){
         if((dow===0)&&cls==='Core'&&rnd()>0.75)u+=0.28; // injected weekend anomaly
         u=Math.max(0.01,u+ (rnd()-0.5)*0.10);
         const util=Math.min(u,0.99);const bps=util*speed;const rx=bps*(0.55+rnd()*0.45);
-        rows.push([dev,intf,new Date(t).toISOString().slice(0,19).replace('T',' '),(bps/1e9).toFixed(3),(rx/1e9).toFixed(3),(speed/1e9)+'G']);
+        const pkT=Math.min(bps*(1.15+rnd()*0.6),speed*0.995),pkR=Math.min(rx*(1.15+rnd()*0.6),speed*0.995);
+        rows.push([dev,intf,new Date(t).toISOString().slice(0,19).replace('T',' '),
+          (bps/1e9).toFixed(3),(rx/1e9).toFixed(3),(pkT/1e9).toFixed(3),(pkR/1e9).toFixed(3),(speed/1e9)+'G',(speed/1e9)+'G']);
       }}}
-  const headers=['Device','Port','Poll Timestamp','Tx (Gbps)','Rx (Gbps)','Speed'];
+  const headers=['Device','Port','Poll Timestamp','Average Transmit (Gbps)','Average Receive (Gbps)','Peak Transmit (Gbps)','Peak Receive (Gbps)','Transmit Bandwidth','Received Bandwidth'];
   const resolved=resolveColumns(headers,rows);
   const built=buildSamples(rows,resolved,'demo_polling_14d.xlsx','staged');
   const batchId='b'+Date.now();built.samples.forEach(x=>x.batch=batchId);
@@ -1454,7 +1529,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.savePlanning=savePlanning;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.savePlanning=savePlanning;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
