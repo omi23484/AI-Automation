@@ -272,7 +272,7 @@ svg.donut{animation:popIn .55s cubic-bezier(.22,.61,.36,1) both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v6</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -338,7 +338,7 @@ const DEFAULT_CFG={
   riskWeights:{peak:0.9,avg:0.7,trend:0.8,growth:0.7,violations:1.0,anomaly:0.6,impact:1.2},
   planHorizonDays:90, upgradeLeadDays:42
 };
-const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},
+const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},
   role:'Admin', view:'exec', scope:{}, analytics:null, staged:null};
 
 async function loadAll(){
@@ -349,6 +349,7 @@ async function loadAll(){
   S.maintenance=(await IDB.get('maintenance'))||[];
   S.comments=(await IDB.get('comments'))||{};
   S.ifmeta=(await IDB.get('ifmeta'))||{};
+  S.ifinfo=(await IDB.get('ifinfo'))||{};
   const cfg=await IDB.get('cfg'); if(cfg)S.cfg=Object.assign(structuredClone(DEFAULT_CFG),cfg);
 }
 const save=(k)=>IDB.put(k,S[k==='cfg'?'cfg':k]);
@@ -365,20 +366,23 @@ function logAudit(action,target,detail){S.audit.unshift({ts:Date.now(),who:S.rol
    propose a mapping, and the user can override EVERY field in the mapping panel. */
 const FIELD_ALIASES={
   device:['device','host','hostname','node','nodename','sysname','router','switch','dev','equipment','chassis'],
-  interface:['interface','intf','port','ifname','ifdescr','ifalias','portname','name','if','link'],
+  interface:['interface','interfacename','intf','port','ifname','ifdescr','portname','name','if'],
   ts:['time','timestamp','poll','polltime','polltimestamp','datetime','date','pollts','polledat','polled','when','sampletime','pollingtime'],
-  tx:['tx','out','egress','transmit','transmitted','averagetransmit','avgtransmit','averagetx','avgtx','averageout','avgout','transmitaverage','txaverage','transmitrate','outbound','txrate','outoctets','outbits','outbps','outbytes','txbps','sent','snd','txbits','outrate','txtraffic','outtraffic'],
-  rx:['rx','in','ingress','receive','received','averagereceive','avgreceive','averagereceived','averagerx','avgrx','averagein','avgin','receiveaverage','rxaverage','receiverate','inbound','rxrate','inoctets','inbits','inbps','inbytes','rxbps','recv','rcv','rxbits','inrate','rxtraffic','intraffic'],
+  tx:['tx','out','egress','transmit','transmitted','transmitbps','transmittedbps','averagetransmit','avgtransmit','averagetx','avgtx','averageout','avgout','transmitaverage','txaverage','transmitrate','outbound','txrate','outoctets','outbits','outbps','outbytes','txbps','sent','snd','txbits','outrate','txtraffic','outtraffic'],
+  rx:['rx','in','ingress','receive','received','receivedbps','receivebps','averagereceive','avgreceive','averagereceived','averagerx','avgrx','averagein','avgin','receiveaverage','rxaverage','receiverate','inbound','rxrate','inoctets','inbits','inbps','inbytes','rxbps','recv','rcv','rxbits','inrate','rxtraffic','intraffic'],
   ptx:['peaktransmit','transmitpeak','peaktx','txpeak','peakout','maxtx','maxtransmit','peaktxbps','peakegress','maxout'],
   prx:['peakreceive','peakreceived','receivepeak','peakrx','rxpeak','peakin','maxrx','maxreceive','peakrxbps','peakingress','maxin'],
   speed:['speed','bandwidth','bw','capacity','referencebandwidth','refbandwidth','refbw','totalbandwidth','ifspeed','portspeed','linkspeed','ifspeedbps','maxspeed','negspeed'],
   speedtx:['transmitbandwidth','txbandwidth','bandwidthtransmit','bandwidthtx','transmitcapacity','txcapacity','transmitspeed','txspeed','outbandwidth','bandwidthout','outspeed'],
   speedrx:['receivedbandwidth','receivebandwidth','rxbandwidth','bandwidthreceive','bandwidthrx','receivecapacity','rxcapacity','receivespeed','rxspeed','inbandwidth','bandwidthin','inspeed'],
-  util:['util','utilization','utilisation','usage','percent','percentage','pct','load','utilpct','utilizationpercentage','percentused','busy'],
-  txpct:['averagetransmitpercent','averagetransmitpercentage','transmitpercent','transmitpercentage','txpercent','txpct','txutil','txutilization','outpercent','transmitutilization','avgtransmitpercent'],
-  rxpct:['averagereceivepercent','averagereceivepercentage','receivepercent','receivepercentage','rxpercent','rxpct','rxutil','rxutilization','inpercent','receiveutilization','avgreceivepercent'],
+  util:['util','utilization','utilisation','usage','percent','percentage','pct','load','utilpct','utilizationpercentage','percentused','busy','totalpercentutilization','totalpercent','totalutilization','overallutilization'],
+  txpct:['averagetransmitpercent','averagetransmitpercentage','transmitpercent','transmitpercentage','transmitpercentutilization','transmitutilizationpercent','txpercent','txpct','txutil','txutilization','outpercent','transmitutilization','avgtransmitpercent'],
+  rxpct:['averagereceivepercent','averagereceivepercentage','receivepercent','receivepercentage','receivedpercentutilization','receivepercentutilization','receivedpercent','receivedpercentage','receiveutilizationpercent','rxpercent','rxpct','rxutil','rxutilization','inpercent','receiveutilization','avgreceivepercent'],
   ptxpct:['peaktransmitpercent','peaktransmitpercentage','peaktxpercent','peaktxpct','peakoutpercent','peaktransmitutilization'],
-  prxpct:['peakreceivepercent','peakreceivepercentage','peakrxpercent','peakrxpct','peakinpercent','peakreceiveutilization']
+  prxpct:['peakreceivepercent','peakreceivepercentage','peakrxpercent','peakrxpct','peakinpercent','peakreceiveutilization'],
+  site:['site','sitename','location','datacenter','dc','region','pop','facility','building'],
+  ip:['ip','ipaddress','ipaddr','mgmtip','managementip','address'],
+  linkname:['linkname','link','circuit','circuitname','circuitid','linkid','descr','ifalias','alias','linkdescription']
 };
 const FIELD_LABELS={
   device:'Device',interface:'Interface',ts:'Poll timestamp',
@@ -386,9 +390,10 @@ const FIELD_LABELS={
   ptx:'Peak Transmit (rate)',prx:'Peak Receive (rate)',
   speed:'Interface bandwidth (both directions)',
   speedtx:'Transmit bandwidth (capacity)',speedrx:'Received bandwidth (capacity)',
-  util:'Utilization % (overall)',
-  txpct:'Average Transmit %',rxpct:'Average Receive %',
-  ptxpct:'Peak Transmit %',prxpct:'Peak Receive %'
+  util:'Utilization % (overall / total)',
+  txpct:'Transmit % utilization',rxpct:'Receive % utilization',
+  ptxpct:'Peak Transmit %',prxpct:'Peak Receive %',
+  site:'Site (from file)',ip:'IP address',linkname:'Link name / circuit'
 };
 const REQUIRED_FIELDS=['device','interface','ts'];
 const norm=s=>String(s==null?'':s).toLowerCase().replace(/[^a-z0-9]/g,'');
@@ -427,6 +432,10 @@ function parseTs(raw){
   if(typeof raw==='number'){ if(raw>20000&&raw<80000)return Math.round((raw-25569)*86400000); if(raw>1e11)return raw; if(raw>1e9)return raw*1000; }
   const s=String(raw).trim();
   if(/^\d+(\.\d+)?$/.test(s)){const n=parseFloat(s);if(n>20000&&n<80000)return Math.round((n-25569)*86400000);if(n>1e11)return n;if(n>1e9)return n*1000;}
+  // day-first dates: 22-06-2026 00:30 (common in exports; JS Date.parse chokes on these)
+  const dm=s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if(dm){const A=+dm[1],B=+dm[2];const d=A>12?A:(B>12?B:A),mo=A>12?B:(B>12?A:B);
+    const t=new Date(+dm[3],mo-1,d,+(dm[4]||0),+(dm[5]||0),+(dm[6]||0)).getTime();if(!isNaN(t))return t;}
   const t=Date.parse(s.replace(' ','T')); if(!isNaN(t))return t;
   const t2=Date.parse(s); return isNaN(t2)?null:t2;
 }
@@ -466,7 +475,7 @@ function resolveColumns(headers,rows){
   // Global greedy assignment: the strongest (field, column) pairs win first,
   // so an exact "Received Bandwidth"→speedrx beats a partial "received…"→rx.
   const usedH=new Set(),usedF=new Set(),map={},conf={};
-  const order=['ts','device','interface','speed','speedtx','speedrx','tx','rx','ptx','prx','util','txpct','rxpct','ptxpct','prxpct'];
+  const order=['ts','device','interface','speed','speedtx','speedrx','tx','rx','ptx','prx','util','txpct','rxpct','ptxpct','prxpct','site','ip','linkname'];
   const PCT_FIELDS=new Set(['util','txpct','rxpct','ptxpct','prxpct']);
   const RATE_FIELDS=new Set(['tx','rx','ptx','prx']);
   const cand=[];
@@ -478,9 +487,9 @@ function resolveColumns(headers,rows){
     if(RATE_FIELDS.has(f)){sc+=(sh.num||0)*0.05;if(isPctHdr)sc-=0.45;} // "Average Transmit %" must not become a rate column
     if(f==='speed'){sc+=(sh.big||0)*0.15;if(/transmit|receiv|egress|ingress/.test(hn))sc-=0.5;if(isPctHdr)sc-=0.5;}
     if(f==='speedtx'||f==='speedrx'){sc+=(sh.big||0)*0.1;if(isPctHdr)sc-=0.5;}
-    cand.push({f,i:s.i,score:clamp(sc,0,1)});
+    cand.push({f,i:s.i,raw:sc,score:clamp(sc,0,1)});
   }
-  cand.sort((a,b)=>b.score-a.score);
+  cand.sort((a,b)=>b.raw-a.raw); // raw keeps exact-alias wins ahead of boosted partial matches
   for(const c of cand){
     if(usedF.has(c.f)||usedH.has(c.i))continue;
     const need=REQUIRED_FIELDS.includes(c.f);
@@ -500,9 +509,12 @@ function buildSamples(rows,resolved,srcName,batchId){
   const val=(r,f)=>map[f]!=null?r[map[f]]:null;
   const num=(r,f)=>{const v=val(r,f);if(v==null||v==='')return null;const n=parseFloat(String(v).replace(/[^\d.eE+-]/g,''));return isNaN(n)?null:n;};
   const raw=[];
+  const info={};
   for(const r of rows){
     const dev=String(val(r,'device')??'').trim(),intf=String(val(r,'interface')??'').trim();
     if(!dev||!intf)continue;
+    const st=String(val(r,'site')??'').trim(),ipv=String(val(r,'ip')??'').trim(),ln=String(val(r,'linkname')??'').trim();
+    if(st||ipv||ln){const o=info[dev+'|'+intf]=info[dev+'|'+intf]||{};if(st)o.site=st;if(ipv)o.ip=ipv;if(ln)o.linkname=ln;}
     const ts=parseTs(val(r,'ts'));if(ts==null){issues.noTs++;continue;}
     const tx=map.tx!=null?parseRate(val(r,'tx'),units.tx):{val:null};
     const rx=map.rx!=null?parseRate(val(r,'rx'),units.rx):{val:null};
@@ -553,7 +565,7 @@ function buildSamples(rows,resolved,srcName,batchId){
     out.push({ifid:x.dev+'|'+x.intf,dev:x.dev,intf:x.intf,ts:x.ts,tx,rx,ptx,prx,pu,
       speed,speedTx:spT||null,speedRx:spR||null,util,src:srcName,batch:batchId});
   }
-  return {samples:out,issues,scaleGuessNote};
+  return {samples:out,issues,scaleGuessNote,info};
 }
 
 /* --------- CSV & XLSX readers (fully offline) --------- */
@@ -695,6 +707,8 @@ function commitStaged(){
     // maintenance tagging
     if(S.maintenance.some(m=>m.start<=x.ts&&m.end>=x.ts&&(m.scope==='all'||m.target===x.ifid||m.target===x.dev)))x.maint=1;
     S.samples.push(x);existKeys.add(k);added++;}
+  if(st.built.info)for(const k in st.built.info)S.ifinfo[k]=Object.assign(S.ifinfo[k]||{},st.built.info[k]);
+  save('ifinfo');
   S.batches.unshift({id:batchId,file:st.parsed.name,ts:Date.now(),who:S.role,rows:st.parsed.rowCount,added,
     coverage:st.built.coverage,checksum:st.built.checksum,src:'xlsx',intervalNote:st.built.intervalNote,
     entities:new Set(st.built.samples.map(x=>x.ifid)).size,map:st.parsed.resolved.map,headers:st.parsed.headers});
@@ -720,7 +734,8 @@ function classify(ifid,intf){
 }
 function siteOf(dev){const m=(dev||'').match(/^([A-Za-z]{2,6})[-_]/);return m?m[1].toUpperCase():'SITE-A';}
 const th=cls=>Object.assign({},S.cfg.thresholds,S.cfg.classThresholds[cls]||{});
-function stateOf(util,cls){if(util==null)return'nodata';const t=th(cls);if(util>=t.crit)return'critical';if(util>=t.high)return'high';if(util>=t.warn)return'warning';return'normal';}
+function stateOfT(util,t){if(util==null)return'nodata';if(util>=t.crit)return'critical';if(util>=t.high)return'high';if(util>=t.warn)return'warning';return'normal';}
+function stateOf(util,cls){return stateOfT(util,th(cls));}
 function isBH(ts){const d=new Date(ts),h=d.getHours(),bh=S.cfg.businessHours;return bh.days.includes(d.getDay())&&h>=bh.startHr&&h<bh.endHr;}
 
 function computeAnalytics(){
@@ -728,14 +743,21 @@ function computeAnalytics(){
   for(const x of S.samples){(groups[x.ifid]=groups[x.ifid]||[]).push(x);}
   const ifs=[];
   for(const ifid in groups){
-    const s=groups[ifid].filter(x=>!x.maint).sort((a,b)=>a.ts-b.ts);
+    let s=groups[ifid].filter(x=>!x.maint).sort((a,b)=>a.ts-b.ts);
     if(!s.length)continue;
-    const dev=s[0].dev,intf=s[0].intf,site=siteOf(dev);
+    const dev=s[0].dev,intf=s[0].intf;
     let {cls,impact}=classify(ifid,intf);
-    const ov=S.ifmeta[ifid]||{};               // user-set tag/impact overrides the name-based guess
+    const ov=S.ifmeta[ifid]||{};               // user-set overrides beat every automatic guess
     if(ov.cls)cls=ov.cls; if(ov.impact)impact=ov.impact;
     const tags=ov.tags||[];
-    const speed=s.map(x=>x.speed).filter(Boolean).pop()||null;
+    const info=S.ifinfo[ifid]||{};
+    const site=ov.site||info.site||siteOf(dev);
+    const tRes=Object.assign({},S.cfg.thresholds,S.cfg.classThresholds[cls]||{},ov.th||{}); // per-link thresholds win
+    const spOv=ov.speed?parseSpeed(ov.speed):null;                                          // per-link speed override
+    if(spOv)s=s.map(x=>({...x,speed:spOv,
+      util:(x.tx!=null||x.rx!=null)?Math.max(x.tx||0,x.rx||0)/spOv:x.util,
+      pu:(x.ptx!=null||x.prx!=null)?Math.max(x.ptx||0,x.prx||0)/spOv:x.pu}));
+    const speed=spOv||s.map(x=>x.speed).filter(Boolean).pop()||null;
     const speedTx=s.map(x=>x.speedTx).filter(Boolean).pop()||speed;
     const speedRx=s.map(x=>x.speedRx).filter(Boolean).pop()||speed;
     const utils=s.map(x=>x.util).filter(v=>v!=null&&v>=0&&v<=3);
@@ -744,10 +766,10 @@ function computeAnalytics(){
     const pus=s.map(x=>x.pu).filter(v=>v!=null&&v>=0&&v<=3);
     const pkP95=pus.length?percentile(pus,0.95):null,pkMax=pus.length?Math.max(...pus):null;
     // distribution (time-in-state)
-    const dist={normal:0,warning:0,high:0,critical:0};for(const u of utils)dist[stateOf(u,cls)]++;
+    const dist={normal:0,warning:0,high:0,critical:0};for(const u of utils)dist[stateOfT(u,tRes)]++;
     const tot=utils.length||1;for(const k in dist)dist[k]/=tot;
     // business-hour breaches
-    const t=th(cls);const breachesBH=s.filter(x=>x.util>=t.crit&&isBH(x.ts)).length;
+    const t=tRes;const breachesBH=s.filter(x=>x.util>=t.crit&&isBH(x.ts)).length;
     const bhDays=new Set(s.filter(x=>x.util>=t.high&&isBH(x.ts)).map(x=>new Date(x.ts).toDateString())).size;
     // baseline dow×hour
     const base={};for(const x of s){if(x.util==null)continue;const k=new Date(x.ts).getDay()+'-'+new Date(x.ts).getHours();(base[k]=base[k]||[]).push(x.util);}
@@ -768,7 +790,7 @@ function computeAnalytics(){
     // risk
     const growth=forecast.growthMoM;
     const risk=riskScore({p95,avg,pk:pkP95,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
-    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,samples:s,count:s.length,
+    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,th:tRes,ip:info.ip,linkname:info.linkname,samples:s,count:s.length,
       start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,pkP95,pkMax,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
     rec.verdict=verdictFor(rec);
     rec.ai=aiSummary(rec);
@@ -864,7 +886,7 @@ function riskScore(f){
   return {score,factors,impactMul};
 }
 function verdictFor(r){
-  const t=th(r.cls);const f=r.forecast;
+  const t=r.th||th(r.cls);const f=r.forecast;
   const critFrac=r.dist.critical,highFrac=r.dist.high;
   const growing=f.growthMoM>0.05&&f.slopePerDay>0;
   const planSoon=f.t90!=null&&f.t90<=S.cfg.planHorizonDays;
@@ -1003,16 +1025,16 @@ function donut(dist){
   segs.forEach(([k,v])=>{const len=v*C;arcs+=`<circle r="${R}" cx="70" cy="70" fill="none" stroke="${stateColor(k)}" stroke-width="18" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`;off+=len;});
   return `<svg class="donut" viewBox="0 0 140 140" width="140" height="140">${arcs}<text class="dt" x="70" y="66" text-anchor="middle" font-size="15" font-weight="700">${(dist.normal*100).toFixed(0)}%</text><text class="ax" x="70" y="82" text-anchor="middle" font-size="9">NORMAL</text></svg>`;
 }
-function heatmap(heat,cls){
+function heatmap(heat,t){
   let cells='';
   for(let d=0;d<7;d++){cells+=`<div class="dl">${DOW[d]}</div>`;
-    for(let h=0;h<24;h++){const v=heat[d+'-'+h];const st=v==null?'nodata':stateOf(v,cls);const c=v==null?'rgba(120,150,200,.06)':stateColor(st);cells+=`<div class="cell" title="${DOW[d]} ${h}:00 — ${v==null?'no data':pct1(v)}" style="background:${c};opacity:${v==null?1:0.35+clamp(v,0,1)*0.65}"></div>`;}}
+    for(let h=0;h<24;h++){const v=heat[d+'-'+h];const st=v==null?'nodata':stateOfT(v,t);const c=v==null?'rgba(120,150,200,.06)':stateColor(st);cells+=`<div class="cell" title="${DOW[d]} ${h}:00 — ${v==null?'no data':pct1(v)}" style="background:${c};opacity:${v==null?1:0.35+clamp(v,0,1)*0.65}"></div>`;}}
   let hdr='<div></div>';for(let h=0;h<24;h+=1)hdr+=`<div class="hr">${h%6===0?h:''}</div>`;
   return `<div class="heat">${hdr}${cells}</div>`;
 }
-function calHeat(daily,cls){
+function calHeat(daily,t){
   if(!daily.length)return'<div class="mini">No data</div>';
-  let out='';for(const d of daily){const st=stateOf(d.p95,cls);out+=`<div class="d" title="${fmtDay(d.d)} — p95 ${pct1(d.p95)}" style="background:${stateColor(st)};opacity:${0.35+clamp(d.p95,0,1)*0.65}"></div>`;}
+  let out='';for(const d of daily){const st=stateOfT(d.p95,t);out+=`<div class="d" title="${fmtDay(d.d)} — p95 ${pct1(d.p95)}" style="background:${stateColor(st)};opacity:${0.35+clamp(d.p95,0,1)*0.65}"></div>`;}
   return `<div class="cal">${out}</div>`;
 }
 function sparkline(daily,color='#38bdf8'){
@@ -1026,7 +1048,7 @@ function riskBar(score){const c=score>=75?'critical':score>=50?'high':score>=30?
 const NAV=[
   ['Overview',[['exec','◆','Executive'],['noc','▤','NOC'],['twin','⬡','Digital Twin']]],
   ['Analyze',[['capacity','▲','Capacity Planning'],['trends','↗','Trend Analysis'],['anomalies','⚠','Anomalies'],['historical','↺','Historical']]],
-  ['Operate',[['uploads','⭱','Uploads'],['maintenance','⚙','Maintenance'],['reports','▦','Reports'],['audit','◷','Audit Log'],['admin','⚑','Admin']]]
+  ['Operate',[['links','⛓','Link Manager'],['uploads','⭱','Uploads'],['maintenance','⚙','Maintenance'],['reports','▦','Reports'],['audit','◷','Audit Log'],['admin','⚑','Admin']]]
 ];
 function renderNav(){
   const an=S.samples.length?A():null;const crit=an?an.ifs.filter(r=>r.verdict.level==='critical').length:0;
@@ -1159,7 +1181,7 @@ function view_intf(){
   const events=buildTimeline(r);
   return crumb([['NOC',{view:'noc'}],[r.dev,{view:'twin',twin:{site:r.site,dev:r.dev}}],[r.intf]])+`
   <div class="verdict ${r.verdict.level}" style="margin-bottom:16px">
-    <div class="flex"><span class="lvl pill ${r.verdict.level}">${r.verdict.level}</span><span class="chip impact-${r.impact}">${r.impact} impact</span><span class="chip">${r.cls}</span>${(r.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}<span class="spacer"></span><span class="mono small">speed ${r.speed?fmtBps(r.speed):'?'}</span>${riskBar(r.risk.score)}</div>
+    <div class="flex"><span class="lvl pill ${r.verdict.level}">${r.verdict.level}</span><span class="chip impact-${r.impact}">${r.impact} impact</span><span class="chip">${r.cls}</span>${(r.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}<span class="spacer"></span><span class="mono small">${r.ip?esc(r.ip)+' · ':''}speed ${r.speed?fmtBps(r.speed):'?'}</span>${riskBar(r.risk.score)}</div>
     <h3>${esc(r.dev)} · ${esc(r.intf)} — ${esc(r.verdict.title)}</h3>
     <div class="reason">${r.verdict.reason}</div>
     <div class="act">▸ ${r.verdict.action} <span class="conf">· confidence ${(r.verdict.confidence*100).toFixed(0)}% · ${r.verdict.comparison}</span></div>
@@ -1169,11 +1191,11 @@ function view_intf(){
     <div>
       <div class="panel pad" style="margin-bottom:16px">
         <div class="sec-title"><h2>Traffic &amp; Utilization</h2><span class="sub">${bwSub}${S.maintenance.length?' · maintenance shaded':''}</span></div>
-        ${svgLineArea([{data:txS,color:'#38bdf8',wide:true,name:'Transmit'},{data:rxS,color:'#818cf8',name:'Received'}].concat(puS.length?[{data:puS,color:'#f472b6',dash:true,name:'Peak'}]:[]),{h:230,bands:th(r.cls),maint:S.maintenance,speed:r.speed})}
+        ${svgLineArea([{data:txS,color:'#38bdf8',wide:true,name:'Transmit'},{data:rxS,color:'#818cf8',name:'Received'}].concat(puS.length?[{data:puS,color:'#f472b6',dash:true,name:'Peak'}]:[]),{h:230,bands:r.th,maint:S.maintenance,speed:r.speed})}
         <div class="legend"><span><i style="background:#38bdf8"></i>Transmit</span><span><i style="background:#818cf8"></i>Received</span>${puS.length?`<span><i style="background:#f472b6"></i>Peak</span>`:''}<span><i style="background:var(--warning)"></i>warn</span><span><i style="background:var(--critical)"></i>critical</span></div>
       </div>
       <div class="grid g2" style="margin-bottom:16px">
-        <div class="panel pad"><div class="sec-title"><h2>Utilization rhythm</h2><span class="sub">day × hour</span></div>${heatmap(r.heat,r.cls)}</div>
+        <div class="panel pad"><div class="sec-title"><h2>Utilization rhythm</h2><span class="sub">day × hour</span></div>${heatmap(r.heat,r.th)}</div>
         <div class="panel pad"><div class="sec-title"><h2>State distribution</h2><span class="sub">time-in-state</span></div>
           <div class="flex" style="gap:20px">${donut(r.dist)}<div class="dist-legend">
             ${['normal','warning','high','critical'].map(k=>`<div class="row"><i style="background:${stateColor(k)}"></i><span style="text-transform:capitalize">${k}</span><b>${(r.dist[k]*100).toFixed(0)}%</b></div>`).join('')}
@@ -1183,7 +1205,7 @@ function view_intf(){
       </div>
       <div class="panel pad">
         <div class="sec-title"><h2>Capacity forecast</h2><span class="sub">when this link runs out of headroom · ${f.modelNote||'trend model'}</span></div>
-        ${svgLineArea([{data:r.daily.map(d=>[d.d,d.p95]),color:'#2dd4bf',wide:true,name:'Historical daily p95'},{data:proj,color:'#fb923c',dash:true,name:'Forecast'}],{h:200,bands:th(r.cls),y1:Math.max(1,f.proj[180]*1.1),speed:r.speed})}
+        ${svgLineArea([{data:r.daily.map(d=>[d.d,d.p95]),color:'#2dd4bf',wide:true,name:'Historical daily p95'},{data:proj,color:'#fb923c',dash:true,name:'Forecast'}],{h:200,bands:r.th,y1:Math.max(1,f.proj[180]*1.1),speed:r.speed})}
         <div class="legend"><span><i style="background:#2dd4bf"></i>historical p95</span><span><i style="background:#fb923c"></i>forecast</span></div>
         <div class="grid g4" style="margin-top:12px">
           ${fcell('Days to 80% full',f.t80)}${fcell('Days to 90% full',f.t90)}${fcell('Days to 95% full',f.t95)}
@@ -1197,6 +1219,15 @@ function view_intf(){
         <label class="fld"><span>Class / role tag</span><select id="metaCls">${['Core','Trading','Internet','WAN','Storage','Backup','Voice','Replication','Management','Customer'].map(c=>`<option ${r.cls===c?'selected':''}>${c}</option>`).join('')}</select></label>
         <label class="fld"><span>Business impact</span><select id="metaImp">${['Critical','High','Medium','Low'].map(c=>`<option ${r.impact===c?'selected':''}>${c}</option>`).join('')}</select></label>
         <label class="fld"><span>Custom tags (comma-separated)</span><input type="text" id="metaTags" value="${esc((r.tags||[]).join(', '))}" placeholder="e.g. customer-acme, dr-link"></label>
+        <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
+          <label class="fld"><span>Warn %</span><input type="number" id="metaWarn" value="${Math.round(r.th.warn*100)}"></label>
+          <label class="fld"><span>High %</span><input type="number" id="metaHigh" value="${Math.round(r.th.high*100)}"></label>
+          <label class="fld"><span>Crit %</span><input type="number" id="metaCrit" value="${Math.round(r.th.crit*100)}"></label>
+        </div>
+        <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px">
+          <label class="fld"><span>Speed override</span><input type="text" id="metaSpeed" value="${esc((S.ifmeta[r.ifid]||{}).speed||'')}" placeholder="${r.speed?fmtBps(r.speed):'e.g. 200M / 10G'}"></label>
+          <label class="fld"><span>Site override</span><input type="text" id="metaSite" value="${esc((S.ifmeta[r.ifid]||{}).site||'')}" placeholder="${esc(r.site)}"></label>
+        </div>
         <div class="flex"><button class="btn sm" onclick="saveIfMeta('${r.ifid}')">Save</button>${S.ifmeta[r.ifid]?`<button class="btn sm ghost" onclick="resetIfMeta('${r.ifid}')">Reset to auto</button>`:''}</div>
       </div>
       <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Risk factors</h2><span class="sub">${r.risk.score}/100</span></div>
@@ -1228,7 +1259,7 @@ function buildTimeline(r){
   const ev=[];
   ev.push({ts:r.start,k:'',txt:'📈 Monitoring began — first sample ingested'});
   for(const an of r.anomalies.slice(0,4))ev.push({ts:an.ts,k:'warning',txt:`⚠ Anomaly: ${an.type}`});
-  const t=th(r.cls);const firstBreach=r.samples.find(x=>x.util>=t.crit);
+  const t=r.th||th(r.cls);const firstBreach=r.samples.find(x=>x.util>=t.crit);
   if(firstBreach)ev.push({ts:firstBreach.ts,k:'critical',txt:`🔴 First Critical breach (${pct1(firstBreach.util)})`});
   for(const m of S.maintenance.filter(m=>m.target===r.ifid||m.target===r.dev||m.scope==='all'))ev.push({ts:m.start,k:'maint',txt:`⚙ Maintenance: ${esc(m.reason||'window')}`});
   for(const c of (S.comments[r.ifid]||[]))ev.push({ts:c.ts,k:'',txt:`💬 ${esc(c.who)}: ${esc(c.txt)}`});
@@ -1273,10 +1304,55 @@ function view_historical(){
   const a=A();const r=a.ifs.find(x=>x.ifid===S.scope.id)||a.ifs.sort((x,y)=>y.risk.score-x.risk.score)[0];
   return crumb([['Historical']])+`<div class="sec-title"><h2>Historical Analysis</h2><span class="sub">compare an interface to its own baseline</span></div>
   <div class="panel pad" style="margin-bottom:14px"><label class="fld" style="max-width:420px"><span>Interface</span><select id="histSel" onchange="S.scope.id=this.value;render()">${a.ifs.map(x=>`<option value="${x.ifid}" ${x.ifid===r.ifid?'selected':''}>${esc(x.dev)} ${esc(x.intf)}</option>`).join('')}</select></label></div>
-  <div class="panel pad"><div class="sec-title"><h2>${esc(r.dev)} ${esc(r.intf)} — utilization rhythm</h2></div>${heatmap(r.heat,r.cls)}
+  <div class="panel pad"><div class="sec-title"><h2>${esc(r.dev)} ${esc(r.intf)} — utilization rhythm</h2></div>${heatmap(r.heat,r.th)}
   <div class="ai" style="margin-top:14px"><div class="h">◆ Deviation summary</div><p>Same-weekday baseline analysis: peak load ${peakWindow(r)}. Current p95 ${pct1(r.p95)} vs period average ${pct1(r.avg)}. ${r.forecast.growthMoM>0.05?`Running ${(r.forecast.growthMoM*100).toFixed(0)}% above the previous-month baseline.`:'In line with recent baseline.'}</p></div></div>`;
 }
 
+const CLASSES=['Core','Trading','Internet','WAN','Storage','Backup','Voice','Replication','Management','Customer'];
+const IMPACTS=['Critical','High','Medium','Low'];
+function view_links(){
+  if(!S.samples.length)return needData();
+  const a=A();const q=(S.linkq||'').toLowerCase();
+  const list=a.ifs.filter(r=>!q||`${r.dev} ${r.intf} ${r.cls} ${r.site} ${r.linkname||''} ${(r.tags||[]).join(' ')}`.toLowerCase().includes(q))
+    .sort((x,y)=>x.dev.localeCompare(y.dev)||x.intf.localeCompare(y.intf));
+  const clsOpts=c=>CLASSES.map(o=>`<option ${c===o?'selected':''}>${o}</option>`).join('');
+  const impOpts=c=>IMPACTS.map(o=>`<option ${c===o?'selected':''}>${o}</option>`).join('');
+  return crumb([['Link Manager']])+`
+  <div class="sec-title"><h2>Link Manager</h2><span class="sub">${list.length} link(s) · every knob below is editable per link — nothing assumed, changes recompute analytics instantly</span></div>
+  <div class="panel pad">
+  <div class="flex" style="margin-bottom:10px"><input type="text" placeholder="Filter by device / interface / class / site / tag…" value="${esc(S.linkq||'')}" style="min-width:300px" onchange="S.linkq=this.value;render()"><span class="mini">Enter to apply · edited links show ↺</span></div>
+  <div style="overflow-x:auto"><table style="min-width:1180px"><thead><tr><th>Link</th><th>Verdict</th><th>Class</th><th>Impact</th><th>Warn %</th><th>High %</th><th>Crit %</th><th>Speed</th><th>Site</th><th>Tags</th><th></th></tr></thead><tbody>
+  ${list.map(r=>{const ov=S.ifmeta[r.ifid]||{};const t=r.th;const iid=esc(r.ifid);
+    return `<tr style="cursor:default">
+    <td><b style="cursor:pointer" data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'>${esc(r.dev)}</b> ${esc(r.intf)}${r.linkname?`<div class="mini">${esc(r.linkname)}${r.ip?' · '+esc(r.ip):''}</div>`:(r.ip?`<div class="mini">${esc(r.ip)}</div>`:'')}</td>
+    <td><span class="pill ${r.verdict.level}">${esc(r.verdict.title.split(' — ')[0].split('(')[0].trim())}</span></td>
+    <td><select onchange="lmSet('${iid}','cls',this.value)">${clsOpts(r.cls)}</select></td>
+    <td><select onchange="lmSet('${iid}','impact',this.value)">${impOpts(r.impact)}</select></td>
+    <td><input type="number" style="width:62px" value="${Math.round(t.warn*100)}" onchange="lmSetTh('${iid}','warn',this.value)"></td>
+    <td><input type="number" style="width:62px" value="${Math.round(t.high*100)}" onchange="lmSetTh('${iid}','high',this.value)"></td>
+    <td><input type="number" style="width:62px" value="${Math.round(t.crit*100)}" onchange="lmSetTh('${iid}','crit',this.value)"></td>
+    <td><input type="text" style="width:88px" value="${esc(ov.speed||'')}" placeholder="${r.speed?fmtBps(r.speed):'e.g. 10G'}" onchange="lmSet('${iid}','speed',this.value)"></td>
+    <td><input type="text" style="width:88px" value="${esc(ov.site||'')}" placeholder="${esc(r.site)}" onchange="lmSet('${iid}','site',this.value)"></td>
+    <td><input type="text" style="width:150px" value="${esc((ov.tags||[]).join(', '))}" placeholder="comma-separated" onchange="lmSet('${iid}','tags',this.value)"></td>
+    <td>${S.ifmeta[r.ifid]?`<button class="btn sm ghost" title="Reset to automatic" onclick="resetIfMeta('${iid}')">↺</button>`:''}</td>
+    </tr>`;}).join('')}
+  </tbody></table></div></div>`;
+}
+function lmSet(ifid,k,v){
+  const m=S.ifmeta[ifid]=S.ifmeta[ifid]||{};
+  if(k==='tags'){const tg=v.split(',').map(t=>t.trim()).filter(Boolean);if(tg.length)m.tags=tg;else delete m.tags;}
+  else if(v===''||v==null)delete m[k]; else m[k]=v;
+  if(!Object.keys(m).length)delete S.ifmeta[ifid];
+  save('ifmeta');logAudit('link.edit',ifid,`${k}=${v}`);S.analytics=null;render();
+}
+function lmSetTh(ifid,band,v){
+  const m=S.ifmeta[ifid]=S.ifmeta[ifid]||{};m.th=m.th||{};
+  const n=parseFloat(v);
+  if(isNaN(n))delete m.th[band];else m.th[band]=clamp(n/100,0,2);
+  if(!Object.keys(m.th).length)delete m.th;
+  if(!Object.keys(m).length)delete S.ifmeta[ifid];
+  save('ifmeta');logAudit('link.threshold',ifid,`${band}=${v}%`);S.analytics=null;render();
+}
 function view_uploads(){
   const st=S.staged;
   let stagedHtml='';
@@ -1299,8 +1375,8 @@ function view_uploads(){
   ${st?'':`<div class="panel pad" style="margin-bottom:16px"><div class="dz" id="dz"><div style="font-size:34px;opacity:.6">⭱</div><h3 style="margin:8px 0">Drop XLSX / CSV files here</h3><p class="small">Headers are understood by <b>meaning</b> (not fixed names). Bandwidth in Gbps/Mbps/Kbps/bytes is auto-normalized. History is never overwritten.</p><div class="flex" style="justify-content:center;margin-top:12px"><button class="btn" onclick="fileInput.click()">Choose files</button><button class="btn ghost" onclick="genDemo()">✨ Demo data</button></div><input type="file" id="fileInput" accept=".xlsx,.csv" multiple style="display:none"></div></div>`}
   ${stagedHtml}
   <div class="panel pad"><div class="sec-title"><h2>Upload history</h2><span class="sub">${S.batches.length} batch(es) · append-only</span></div>
-  <table><thead><tr><th>File</th><th>Uploaded</th><th>By</th><th>Coverage</th><th>Rows</th><th>Added</th><th>Interfaces</th><th>Cadence</th></tr></thead><tbody>
-  ${S.batches.map(b=>`<tr><td><b>${esc(b.file)}</b></td><td class="small">${fmtDate(b.ts)}</td><td class="small">${esc(b.who)}</td><td class="small">${b.coverage?fmtDay(b.coverage[0])+'–'+fmtDay(b.coverage[1]):'–'}</td><td class="mono">${b.rows}</td><td class="mono">${b.added}</td><td class="mono">${b.entities}</td><td class="small">${b.intervalNote||'–'}</td></tr>`).join('')||'<tr><td colspan=8 class="small">No uploads yet.</td></tr>'}
+  <table><thead><tr><th>File</th><th>Uploaded</th><th>By</th><th>Coverage</th><th>Rows</th><th>Added</th><th>Interfaces</th><th>Cadence</th><th></th></tr></thead><tbody>
+  ${S.batches.map(b=>`<tr style="cursor:default"><td><b>${esc(b.file)}</b></td><td class="small">${fmtDate(b.ts)}</td><td class="small">${esc(b.who)}</td><td class="small">${b.coverage?fmtDay(b.coverage[0])+'–'+fmtDay(b.coverage[1]):'–'}</td><td class="mono">${b.rows}</td><td class="mono">${b.added}</td><td class="mono">${b.entities}</td><td class="small">${b.intervalNote||'–'}</td><td><button class="btn sm ghost" title="Delete this batch and its samples (e.g. ingested with a wrong mapping)" onclick="removeBatch('${b.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan=9 class="small">No uploads yet.</td></tr>'}
   </tbody></table></div>`;
 }
 
@@ -1401,10 +1477,14 @@ function rcaCause(r){const f=r.forecast;if(f.growthMoM>0.1&&r.bhDays>=3)return'O
 
 /* ------------------------------ interactions ------------------------------ */
 function saveIfMeta(ifid){
-  const cls=$('#metaCls').value,impact=$('#metaImp').value;
-  const tags=$('#metaTags').value.split(',').map(t=>t.trim()).filter(Boolean);
-  S.ifmeta[ifid]={cls,impact,tags};save('ifmeta');
-  logAudit('interface.meta',ifid,`class=${cls} impact=${impact} tags=[${tags.join(',')}]`);
+  const m={cls:$('#metaCls').value,impact:$('#metaImp').value};
+  const tags=$('#metaTags').value.split(',').map(t=>t.trim()).filter(Boolean);if(tags.length)m.tags=tags;
+  const sp=($('#metaSpeed')||{}).value?.trim();if(sp)m.speed=sp;
+  const si=($('#metaSite')||{}).value?.trim();if(si)m.site=si;
+  const thv={};[['warn','#metaWarn'],['high','#metaHigh'],['crit','#metaCrit']].forEach(([b,sel])=>{const el=$(sel);if(el){const n=parseFloat(el.value);if(!isNaN(n))thv[b]=clamp(n/100,0,2);}});
+  if(Object.keys(thv).length)m.th=thv;
+  S.ifmeta[ifid]=m;save('ifmeta');
+  logAudit('interface.meta',ifid,JSON.stringify(m));
   S.analytics=null;render();toast('Link settings saved — analytics recomputed');
 }
 function resetIfMeta(ifid){delete S.ifmeta[ifid];save('ifmeta');logAudit('interface.meta.reset',ifid);S.analytics=null;render();toast('Reverted to automatic classification');}
@@ -1417,6 +1497,14 @@ function saveThresholds(){S.cfg.thresholds={warn:+$('#thWarn').value/100,high:+$
 function savePlanning(){S.cfg.businessHours.startHr=+$('#bhStart').value;S.cfg.businessHours.endHr=+$('#bhEnd').value;S.cfg.planHorizonDays=+$('#planH').value;S.cfg.upgradeLeadDays=+$('#leadD').value;save('cfg');logAudit('config.planning');S.analytics=null;toast('Saved');render();}
 function remap(field,idx){S.staged.parsed.resolved.map[field]=idx===''?null:+idx;S.staged.parsed.resolved.conf[field]=1;reStage();}
 function reStage(){const st=S.staged;st.built=buildSamples(st.parsed.rows,st.parsed.resolved,st.parsed.name,'staged');st.findings=validateStaged(st.parsed,st.built);render();}
+function removeBatch(id){
+  const b=S.batches.find(x=>x.id===id);if(!b)return;
+  if(!confirm(`Delete batch “${b.file}” and its ${b.added} samples? Use this to undo an upload committed with a wrong mapping.`))return;
+  S.samples=S.samples.filter(x=>x.batch!==id);
+  S.batches=S.batches.filter(x=>x.id!==id);
+  save('samples');save('batches');logAudit('upload.remove',b.file,`${b.added} samples deleted`);
+  S.analytics=null;render();toast('Batch removed — analytics recomputed');
+}
 function resetAll(){if(!confirm('Delete all uploaded data, batches, config and audit? This cannot be undone.'))return;S.samples=[];S.batches=[];S.maintenance=[];S.comments={};S.analytics=null;save('samples');save('batches');save('maintenance');save('comments');logAudit('data.reset','all');toast('All data cleared');go('uploads');}
 
 async function handleFiles(files){
@@ -1460,7 +1548,7 @@ function genDemo(){
 }
 
 /* ------------------------------- router ----------------------------------- */
-const VIEWS={exec:view_exec,noc:view_noc,twin:view_twin,intf:view_intf,site:view_twin_site_redirect,capacity:view_capacity,trends:view_trends,anomalies:view_anomalies,historical:view_historical,uploads:view_uploads,maintenance:view_maintenance,reports:view_reports,audit:view_audit,admin:view_admin};
+const VIEWS={exec:view_exec,noc:view_noc,twin:view_twin,intf:view_intf,links:view_links,site:view_twin_site_redirect,capacity:view_capacity,trends:view_trends,anomalies:view_anomalies,historical:view_historical,uploads:view_uploads,maintenance:view_maintenance,reports:view_reports,audit:view_audit,admin:view_admin};
 function view_twin_site_redirect(){S.scope.twinSite=S.scope.id;S.view='twin';return view_twin();}
 function go(view,scope){S.view=view;if(scope)S.scope=scope;render();}
 function navTo(obj){if(obj.twin){S.scope.twinSite=obj.twin.site;S.scope.twinDev=obj.twin.dev||null;S.view='twin';}else{S.view=obj.view;if(obj.id!=null)S.scope.id=obj.id;if(obj.view==='twin'){S.scope.twinSite=null;S.scope.twinDev=null;}}render();}
@@ -1529,7 +1617,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.savePlanning=savePlanning;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
