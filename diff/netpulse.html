@@ -1363,7 +1363,7 @@ function view_uploads(){
       <div style="margin-bottom:14px">${Object.keys(FIELD_LABELS).map(f=>{
         const mi=st.parsed.resolved.map[f];const c=st.parsed.resolved.conf[f]||0;const req=REQUIRED_FIELDS.includes(f);
         const unit=mi!=null&&st.parsed.resolved.headers.find(h=>h.i===mi)?.unit?' <span class="chip">unit detected</span>':'';
-        return `<div class="map-row"><b class="small" style="${req&&mi==null?'color:#fca5a5':''}">${FIELD_LABELS[f]}${req?' *':''}</b><span style="text-align:center">→</span><span><select onchange="remap('${f}',this.value)" style="width:100%"><option value="">— not in this file —</option>${st.parsed.headers.map((h,i)=>`<option value="${i}" ${mi===i?'selected':''}>${esc(h)}</option>`).join('')}</select>${unit}</span><span class="mini">${mi==null?'—':(c>=0.999?'manual':Math.round(c*100)+'%')}<div class="confbar"><i style="width:${mi==null?0:c*100}%"></i></div></span></div>`;
+        return `<div class="map-row"><b class="small" style="${req&&mi==null?'color:#fca5a5':''}">${FIELD_LABELS[f]}${req?' *':''}</b><span style="text-align:center">→</span><span><select onchange="remap('${f}',this.value)" style="width:100%"><option value="">— not in this file —</option>${st.parsed.headers.map((h,i)=>`<option value="${i}" ${mi===i?'selected':''}>${esc(h)}</option>`).join('')}</select>${unit}</span><span class="mini">${mi==null?'—':((st.parsed.resolved.manual||{})[f]?'manual':Math.round(c*100)+'%')}<div class="confbar"><i style="width:${mi==null?0:c*100}%"></i></div></span></div>`;
       }).join('')}</div>
       ${fnd.block.map(m=>`<div class="sev-block block"><b>⛔ Blocking</b> — ${m}</div>`).join('')}
       ${fnd.warn.map(m=>`<div class="sev-block warn"><b>⚠ Warning</b> — ${m}</div>`).join('')}
@@ -1495,7 +1495,7 @@ function addMaint(){const scope=$('#mScope').value;const s=$('#mStart').value,e=
 function delMaint(i){S.maintenance.splice(i,1);save('maintenance');logAudit('maintenance.delete','');S.analytics=null;render();}
 function saveThresholds(){S.cfg.thresholds={warn:+$('#thWarn').value/100,high:+$('#thHigh').value/100,crit:+$('#thCrit').value/100};save('cfg');logAudit('config.thresholds','',JSON.stringify(S.cfg.thresholds));S.analytics=null;toast('Thresholds saved — verdicts recomputed');render();}
 function savePlanning(){S.cfg.businessHours.startHr=+$('#bhStart').value;S.cfg.businessHours.endHr=+$('#bhEnd').value;S.cfg.planHorizonDays=+$('#planH').value;S.cfg.upgradeLeadDays=+$('#leadD').value;save('cfg');logAudit('config.planning');S.analytics=null;toast('Saved');render();}
-function remap(field,idx){S.staged.parsed.resolved.map[field]=idx===''?null:+idx;S.staged.parsed.resolved.conf[field]=1;reStage();}
+function remap(field,idx){const r=S.staged.parsed.resolved;r.map[field]=idx===''?null:+idx;r.conf[field]=1;(r.manual=r.manual||{})[field]=true;reStage();}
 function reStage(){const st=S.staged;st.built=buildSamples(st.parsed.rows,st.parsed.resolved,st.parsed.name,'staged');st.findings=validateStaged(st.parsed,st.built);render();}
 function removeBatch(id){
   const b=S.batches.find(x=>x.id===id);if(!b)return;
