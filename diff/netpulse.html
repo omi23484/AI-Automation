@@ -1,0 +1,1228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetPulse — Network Analytics & Capacity Planning</title>
+<style>
+:root{
+  --bg:#0a0e17; --bg2:#0d1320; --panel:rgba(20,28,44,0.66); --panel2:rgba(28,38,58,0.55);
+  --stroke:rgba(120,150,200,0.14); --stroke2:rgba(120,150,200,0.28);
+  --txt:#e6edf7; --muted:#8ea0bd; --muted2:#61718f;
+  --accent:#38bdf8; --accent2:#818cf8;
+  --normal:#2dd4bf; --warning:#fbbf24; --high:#fb923c; --critical:#f43f5e;
+  --down:#64748b; --nodata:#334155;
+  --crit-glow:rgba(244,63,94,0.5); --shadow:0 10px 40px rgba(0,0,0,0.45);
+  --r:14px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:
+    radial-gradient(1200px 700px at 82% -8%, rgba(56,189,248,0.10), transparent 60%),
+    radial-gradient(1000px 600px at -6% 12%, rgba(129,140,248,0.10), transparent 55%),
+    linear-gradient(180deg,#0a0e17,#080b12);
+  color:var(--txt);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+h1,h2,h3,h4{margin:0;font-weight:650;letter-spacing:.2px}
+a{color:var(--accent);text-decoration:none}
+button{font:inherit;cursor:pointer;color:var(--txt)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:rgba(120,150,200,.22);border-radius:8px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* Layout */
+#app{display:grid;grid-template-columns:236px 1fr;grid-template-rows:56px 1fr;height:100vh;grid-template-areas:"logo top" "nav main"}
+#topbar{grid-area:top;display:flex;align-items:center;gap:14px;padding:0 20px;border-bottom:1px solid var(--stroke);background:rgba(10,14,23,.5);backdrop-filter:blur(10px)}
+#brand{grid-area:logo;display:flex;align-items:center;gap:10px;padding:0 18px;border-bottom:1px solid var(--stroke);border-right:1px solid var(--stroke);background:rgba(10,14,23,.5)}
+#brand .dot{width:12px;height:12px;border-radius:50%;background:radial-gradient(circle at 30% 30%,#7ee7ff,#38bdf8);box-shadow:0 0 14px var(--accent)}
+#brand b{font-size:16px;letter-spacing:.4px}
+#nav{grid-area:nav;overflow:auto;border-right:1px solid var(--stroke);padding:12px 10px;background:rgba(9,12,20,.35)}
+#main{grid-area:main;overflow:auto;padding:22px 26px 60px}
+.navgrp{color:var(--muted2);font-size:10.5px;letter-spacing:1.4px;text-transform:uppercase;margin:14px 10px 6px;font-weight:700}
+.navitem{display:flex;align-items:center;gap:10px;padding:8px 11px;border-radius:10px;color:var(--muted);cursor:pointer;font-weight:550;font-size:13px;transition:.15s}
+.navitem:hover{background:var(--panel2);color:var(--txt)}
+.navitem.active{background:linear-gradient(90deg,rgba(56,189,248,.16),rgba(129,140,248,.10));color:#fff;box-shadow:inset 0 0 0 1px var(--stroke2)}
+.navitem .ic{width:16px;text-align:center;opacity:.9}
+.navitem .badge{margin-left:auto;background:var(--critical);color:#fff;font-size:10px;padding:1px 6px;border-radius:20px;font-weight:700}
+
+/* Topbar */
+#search{flex:1;max-width:560px;display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--stroke);border-radius:10px;padding:7px 12px;color:var(--muted)}
+#search input{flex:1;background:none;border:0;outline:0;color:var(--txt);font:inherit}
+#search kbd{font:11px/1 ui-monospace,monospace;background:rgba(255,255,255,.06);border:1px solid var(--stroke2);border-radius:5px;padding:3px 5px;color:var(--muted)}
+.topbtn{background:var(--panel);border:1px solid var(--stroke);border-radius:9px;padding:7px 11px;color:var(--muted);font-weight:600}
+.topbtn:hover{color:#fff;border-color:var(--stroke2)}
+.role{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--stroke);border-radius:20px;padding:5px 6px 5px 12px;font-size:12.5px}
+.role select{background:none;border:0;color:var(--txt);font:inherit;outline:0}
+
+/* Breadcrumb */
+.crumb{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;margin-bottom:16px;flex-wrap:wrap}
+.crumb a{color:var(--muted)} .crumb a:hover{color:#fff}
+.crumb .sep{opacity:.4}
+.crumb .here{color:#fff;font-weight:600}
+
+/* Cards & panels */
+.panel{background:var(--panel);border:1px solid var(--stroke);border-radius:var(--r);backdrop-filter:blur(14px);box-shadow:var(--shadow)}
+.pad{padding:16px 18px}
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+.g-main{grid-template-columns:1fr 340px}
+@media(max-width:1150px){.g-main,.g2,.g3,.g4{grid-template-columns:1fr}}
+.sec-title{display:flex;align-items:center;justify-content:space-between;margin:2px 0 12px}
+.sec-title h2{font-size:16px}.sec-title .sub{color:var(--muted);font-size:12.5px;font-weight:500}
+.kpi{padding:15px 16px;border-radius:var(--r);background:var(--panel);border:1px solid var(--stroke);position:relative;overflow:hidden}
+.kpi .l{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.3px}
+.kpi .v{font-size:27px;font-weight:720;margin-top:4px;letter-spacing:.5px}
+.kpi .t{font-size:11.5px;margin-top:3px;font-weight:600}
+.kpi .glow{position:absolute;right:-30px;top:-30px;width:90px;height:90px;border-radius:50%;filter:blur(24px);opacity:.5}
+.up{color:#fb7185}.down{color:#34d399}.flat{color:var(--muted)}
+
+/* Verdict banner */
+.verdict{border-radius:var(--r);padding:16px 18px;border:1px solid var(--stroke);position:relative;overflow:hidden;background:var(--panel)}
+.verdict:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px}
+.verdict.normal:before{background:var(--normal)}.verdict.warning:before{background:var(--warning)}
+.verdict.high:before{background:var(--high)}.verdict.critical:before{background:var(--critical)}
+.verdict .lvl{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;padding:3px 9px;border-radius:20px}
+.verdict h3{font-size:17px;margin:9px 0 6px}
+.verdict .reason{color:var(--muted);font-size:13px;max-width:70ch}
+.verdict .act{margin-top:10px;font-size:12.5px;color:var(--accent);font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;border:1px solid var(--stroke2)}
+.pill.normal{color:var(--normal);background:rgba(45,212,191,.1)}.pill.warning{color:var(--warning);background:rgba(251,191,36,.1)}
+.pill.high{color:var(--high);background:rgba(251,146,60,.1)}.pill.critical{color:var(--critical);background:rgba(244,63,94,.12)}
+.chip{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:6px;background:rgba(120,150,200,.12);color:var(--muted);margin-right:5px}
+.chip.impact-Critical{background:rgba(244,63,94,.16);color:#fda4af}
+.chip.impact-High{background:rgba(251,146,60,.16);color:#fdba74}
+.chip.impact-Medium{background:rgba(251,191,36,.14);color:#fde68a}
+.chip.impact-Low{background:rgba(100,116,139,.18);color:#cbd5e1}
+.conf{color:var(--muted);font-size:11.5px}
+
+/* Tables */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--muted2);font-size:10.5px;text-transform:uppercase;letter-spacing:.7px;font-weight:700;padding:8px 10px;border-bottom:1px solid var(--stroke);position:sticky;top:0;background:rgba(13,19,32,.9);backdrop-filter:blur(6px)}
+td{padding:9px 10px;border-bottom:1px solid rgba(120,150,200,.07)}
+tbody tr{cursor:pointer;transition:.12s}
+tbody tr:hover{background:var(--panel2)}
+.rank{color:var(--muted);font-variant-numeric:tabular-nums}
+.riskbar{display:inline-flex;align-items:center;gap:7px}
+.riskbar .track{width:52px;height:6px;border-radius:4px;background:rgba(120,150,200,.15);overflow:hidden}
+.riskbar .fill{height:100%;border-radius:4px}
+
+/* Digital twin */
+.twingrid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
+.tile{padding:16px;border-radius:var(--r);background:var(--panel);border:1px solid var(--stroke);cursor:pointer;transition:.16s;position:relative;overflow:hidden}
+.tile:hover{transform:translateY(-2px);border-color:var(--stroke2);box-shadow:0 14px 40px rgba(0,0,0,.5)}
+.tile .nm{font-weight:650;font-size:14.5px}
+.tile .meta{color:var(--muted);font-size:12px;margin-top:3px}
+.tile .aura{position:absolute;inset:0;opacity:.10;pointer-events:none}
+.leds{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
+.led{width:15px;height:15px;border-radius:4px;position:relative;cursor:pointer;transition:.15s}
+.led:hover{transform:scale(1.28);z-index:2}
+.led.crit{animation:pulse 1.6s infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 var(--crit-glow)}50%{box-shadow:0 0 0 4px rgba(244,63,94,0)}}
+.frontpanel{display:flex;flex-wrap:wrap;gap:5px;padding:12px;background:linear-gradient(180deg,#0c1220,#0a0f1a);border:1px solid var(--stroke);border-radius:10px}
+.port{width:20px;height:26px;border-radius:3px;display:flex;align-items:flex-end;justify-content:center;padding-bottom:2px;cursor:pointer;background:#0f1626;border:1px solid rgba(120,150,200,.2)}
+.port .pl{width:9px;height:5px;border-radius:2px}
+
+/* Charts */
+.chart svg{width:100%;display:block;overflow:visible}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-top:8px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.heat{display:grid;grid-template-columns:34px repeat(24,1fr);gap:2px;font-size:9px}
+.heat .cell{aspect-ratio:1;border-radius:2px}
+.heat .hr{color:var(--muted2);text-align:center;line-height:14px}
+.heat .dl{color:var(--muted2);line-height:1;display:flex;align-items:center}
+.cal{display:flex;gap:3px;flex-wrap:wrap}
+.cal .d{width:13px;height:13px;border-radius:3px}
+
+/* Forms / uploads */
+.dz{border:1.5px dashed var(--stroke2);border-radius:var(--r);padding:36px;text-align:center;color:var(--muted);transition:.16s;background:rgba(56,189,248,.03)}
+.dz.drag{border-color:var(--accent);background:rgba(56,189,248,.09);color:#fff}
+.btn{background:linear-gradient(180deg,#2b93cf,#1f7fbf);border:1px solid rgba(120,180,240,.4);border-radius:9px;padding:9px 15px;font-weight:650;color:#fff;box-shadow:0 6px 18px rgba(31,127,191,.3)}
+.btn:hover{filter:brightness(1.08)}
+.btn.ghost{background:var(--panel);box-shadow:none;color:var(--txt);border:1px solid var(--stroke2)}
+.btn.sm{padding:6px 11px;font-size:12.5px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+input[type=text],input[type=number],input[type=datetime-local],select,textarea{
+  background:var(--bg2);border:1px solid var(--stroke2);border-radius:8px;padding:8px 10px;color:var(--txt);font:inherit;outline:0}
+input:focus,select:focus{border-color:var(--accent)}
+label.fld{display:block;margin:10px 0}
+label.fld>span{display:block;color:var(--muted);font-size:11.5px;font-weight:600;margin-bottom:5px}
+.tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700}
+.sev-block{border-left:3px solid;padding:10px 14px;border-radius:8px;margin-bottom:10px;background:var(--panel2)}
+.sev-block.block{border-color:var(--critical)}.sev-block.warn{border-color:var(--warning)}.sev-block.info{border-color:var(--accent)}
+.map-row{display:grid;grid-template-columns:1fr 20px 1fr 90px;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid rgba(120,150,200,.07)}
+.confbar{height:5px;border-radius:3px;background:rgba(120,150,200,.15);overflow:hidden;margin-top:4px}
+.confbar>i{display:block;height:100%;background:linear-gradient(90deg,#38bdf8,#818cf8)}
+
+.tl{position:relative;margin-left:8px;padding-left:18px;border-left:2px solid var(--stroke2)}
+.tl .ev{position:relative;margin-bottom:14px}
+.tl .ev:before{content:"";position:absolute;left:-25px;top:3px;width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--bg)}
+.tl .ev.critical:before{background:var(--critical)}.tl .ev.warning:before{background:var(--warning)}
+.tl .ev.maint:before{background:var(--accent2)}.tl .ev .tm{color:var(--muted2);font-size:11px}
+.small{font-size:12px;color:var(--muted)}
+.toast{position:fixed;right:20px;bottom:20px;background:var(--panel);border:1px solid var(--stroke2);border-radius:10px;padding:12px 16px;box-shadow:var(--shadow);z-index:99;backdrop-filter:blur(14px);animation:slidein .25s}
+@keyframes slidein{from{transform:translateY(12px);opacity:0}}
+.empty{text-align:center;color:var(--muted);padding:60px 20px}
+.empty .big{font-size:40px;margin-bottom:10px;opacity:.6}
+.split{display:flex;gap:10px;flex-wrap:wrap}
+.ai{background:linear-gradient(135deg,rgba(56,189,248,.09),rgba(129,140,248,.07));border:1px solid var(--stroke2);border-radius:12px;padding:13px 15px}
+.ai .h{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:7px}
+.ai p{margin:0;font-size:13px;color:#d7e2f2;line-height:1.6}
+.dist-legend{display:flex;flex-direction:column;gap:8px;font-size:12.5px}
+.dist-legend .row{display:flex;align-items:center;gap:9px}
+.dist-legend .row i{width:11px;height:11px;border-radius:3px}
+.dist-legend .row b{margin-left:auto;font-variant-numeric:tabular-nums}
+.mini{font-size:11px;color:var(--muted)}
+.tabs{display:flex;gap:4px;background:var(--panel2);padding:4px;border-radius:10px;width:fit-content;margin-bottom:14px;flex-wrap:wrap}
+.tabs button{background:none;border:0;padding:7px 13px;border-radius:7px;color:var(--muted);font-weight:600;font-size:12.5px}
+.tabs button.active{background:var(--panel);color:#fff;box-shadow:inset 0 0 0 1px var(--stroke2)}
+.flex{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.spacer{flex:1}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="brand"><span class="dot"></span><b>NetPulse</b></div>
+  <div id="topbar">
+    <div id="search" title="Ask NetPulse (grounded, offline)">
+      <span>⌘K</span>
+      <input id="q" placeholder="Search interfaces or ask: “what happened on Core-01 yesterday?”">
+      <kbd>Enter</kbd>
+    </div>
+    <div class="spacer"></div>
+    <button class="topbtn" id="demoBtn" title="Generate realistic sample data">✨ Demo data</button>
+    <button class="topbtn" id="wallBtn" title="NOC wall mode">⛶</button>
+    <div class="role">👤 <select id="roleSel">
+      <option>Admin</option><option>Architect</option><option>NOC Lead (L3)</option>
+      <option>NOC Eng (L2)</option><option>Read-Only</option><option>Viewer</option>
+    </select></div>
+  </div>
+  <div id="nav"></div>
+  <div id="main"></div>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+/* ============================================================================
+   NetPulse — single-file offline Network Analytics & Capacity Planning app.
+   No external/CDN dependencies. Parses XLSX (via browser DecompressionStream)
+   and CSV entirely in-browser; persists to IndexedDB. Implements the header-
+   intelligence + unit-normalization + analytics/verdict/capacity/anomaly/risk
+   engines described in the /diff spec.
+============================================================================ */
+
+/* ---------------------------------- utils --------------------------------- */
+const $ = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
+const fmtBps=v=>{v=+v||0;const u=['bps','Kbps','Mbps','Gbps','Tbps'];let i=0;while(v>=1000&&i<u.length-1){v/=1000;i++;}return v.toFixed(v>=100?0:v>=10?1:2)+' '+u[i];};
+const fmtPct=v=>(v==null||isNaN(v))?'–':(v*100).toFixed(v<0.1?1:0)+'%';
+const pct1=v=>(v==null||isNaN(v))?'–':(v*100).toFixed(1)+'%';
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtDate=t=>new Date(t).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+const fmtDay=t=>new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric'});
+const days=(a,b)=>(b-a)/86400000;
+const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+function toast(msg){const t=$('#toast');t.innerHTML=`<div class="toast">${msg}</div>`;setTimeout(()=>t.innerHTML='',3200);}
+function stateColor(s){return getComputedStyle(document.documentElement).getPropertyValue('--'+s).trim()||'#888';}
+function levDist(a,b){const m=a.length,n=b.length;if(!m)return n;if(!n)return m;const d=Array.from({length:m+1},(_,i)=>[i,...Array(n).fill(0)]);for(let j=0;j<=n;j++)d[0][j]=j;for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));return d[m][n];}
+function simRatio(a,b){if(!a||!b)return 0;const L=Math.max(a.length,b.length);return 1-levDist(a,b)/L;}
+function percentile(arr,p){if(!arr.length)return 0;const a=[...arr].sort((x,y)=>x-y);const i=clamp(p,0,1)*(a.length-1);const lo=Math.floor(i),hi=Math.ceil(i);return a[lo]+(a[hi]-a[lo])*(i-lo);}
+function mean(a){return a.length?a.reduce((s,x)=>s+x,0)/a.length:0;}
+function std(a){if(a.length<2)return 0;const m=mean(a);return Math.sqrt(mean(a.map(x=>(x-m)**2)));}
+
+/* --------------------------- IndexedDB (kv store) ------------------------- */
+const IDB={db:null,
+  open(){return new Promise((res,rej)=>{const r=indexedDB.open('netpulse',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>{IDB.db=r.result;res();};r.onerror=()=>rej(r.error);});},
+  get(k){return new Promise(res=>{const t=IDB.db.transaction('kv').objectStore('kv').get(k);t.onsuccess=()=>res(t.result);t.onerror=()=>res(undefined);});},
+  put(k,v){return new Promise(res=>{const t=IDB.db.transaction('kv','readwrite').objectStore('kv').put(v,k);t.onsuccess=()=>res();t.onerror=()=>res();});}
+};
+
+/* --------------------------------- state ---------------------------------- */
+const DEFAULT_CFG={
+  thresholds:{warn:0.60,high:0.75,crit:0.90},
+  classThresholds:{Trading:{warn:0.45,high:0.60,crit:0.80},Backup:{warn:0.75,high:0.88,crit:0.96}},
+  businessHours:{startHr:9,endHr:17,days:[1,2,3,4,5]},
+  riskWeights:{peak:0.9,avg:0.7,trend:0.8,growth:0.7,violations:1.0,anomaly:0.6,impact:1.2},
+  planHorizonDays:90, upgradeLeadDays:42
+};
+const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},
+  role:'Admin', view:'exec', scope:{}, analytics:null, staged:null};
+
+async function loadAll(){
+  await IDB.open();
+  S.samples=(await IDB.get('samples'))||[];
+  S.batches=(await IDB.get('batches'))||[];
+  S.audit=(await IDB.get('audit'))||[];
+  S.maintenance=(await IDB.get('maintenance'))||[];
+  S.comments=(await IDB.get('comments'))||{};
+  const cfg=await IDB.get('cfg'); if(cfg)S.cfg=Object.assign(structuredClone(DEFAULT_CFG),cfg);
+}
+const save=(k)=>IDB.put(k,S[k==='cfg'?'cfg':k]);
+function logAudit(action,target,detail){S.audit.unshift({ts:Date.now(),who:S.role,action,target:target||'',detail:detail||''});S.audit=S.audit.slice(0,500);save('audit');}
+
+/* ============================ INGESTION LAYER ============================== */
+/* Header understanding — semantic, NOT hardcoded by position/name. */
+const FIELD_ALIASES={
+  device:['device','host','hostname','node','nodename','sysname','router','switch','dev','equipment','chassis'],
+  interface:['interface','intf','port','ifname','ifdescr','ifalias','portname','name','if','link'],
+  ts:['time','timestamp','poll','polltime','polltimestamp','datetime','date','pollts','polledat','polled','when','sampletime','pollingtime'],
+  tx:['tx','out','egress','transmit','outbound','txrate','outoctets','outbits','outbps','outbytes','txbps','sent','snd','txbits','outrate','txtraffic','outtraffic'],
+  rx:['rx','in','ingress','receive','inbound','rxrate','inoctets','inbits','inbps','inbytes','rxbps','recv','rcv','rxbits','inrate','rxtraffic','intraffic'],
+  ptx:['peaktx','txpeak','peakout','maxtx','peaktxbps','peakegress','peaktransmit','maxout'],
+  prx:['peakrx','rxpeak','peakin','maxrx','peakrxbps','peakingress','peakreceive','maxin'],
+  speed:['speed','bandwidth','bw','capacity','ifspeed','portspeed','linkspeed','ifspeedbps','maxspeed','negspeed'],
+  util:['util','utilization','utilisation','usage','percent','pct','load','utilpct','busy']
+};
+const norm=s=>String(s==null?'':s).toLowerCase().replace(/[^a-z0-9]/g,'');
+const UNIT_RE=/(\d+(?:\.\d+)?)\s*(t|g|m|k)?\s*(b(?:it|ps|\/s)?|bytes?|o(?:ctet)?s?|bps)/i;
+
+function unitMultiplierFromToken(tok){ // returns {mult, isByte} bits-per-second multiplier or null
+  if(!tok)return null; const t=tok.toLowerCase();
+  const isByte=/byte|octet|bytes|\bb(?![ip])/.test(t)&&!/bit|bps/.test(t)||/[gmk]?b\b/.test(t)&&/bytes|octet/.test(t);
+  let scale=1;
+  if(/\bt/.test(t)||/tbps|tbit|tb\b/.test(t))scale=1e12;
+  else if(/\bg/.test(t)||/gbps|gbit|gb\b|gig/.test(t))scale=1e9;
+  else if(/\bm/.test(t)||/mbps|mbit|mb\b|meg/.test(t))scale=1e6;
+  else if(/\bk/.test(t)||/kbps|kbit|kb\b/.test(t))scale=1e3;
+  const byte=/byte|octet/.test(t);
+  if(!/b|octet|bps/.test(t))return null;
+  return {mult:scale*(byte?8:1),byte};
+}
+function headerUnit(h){ // detect explicit unit inside a header string
+  const m=String(h).toLowerCase().match(/\(?\s*(t|g|m|k)?\s*(bps|bit\/s|bits?|bytes?|octets?|b\/s)\s*\)?/);
+  if(!m)return null; const info=unitMultiplierFromToken(m[0]); if(!info)return null;
+  if(/%|percent|util/.test(String(h).toLowerCase()))return null;
+  return info;
+}
+function parseSpeed(raw){
+  if(raw==null||raw==='')return null;
+  if(typeof raw==='number'){ if(raw>=1e6)return raw; if(raw>=1000)return raw*1e6; if(raw>=1)return raw*1e9; return raw; }
+  const s=String(raw).toLowerCase().trim();
+  const m=s.match(/([\d.]+)\s*(t|g|m|k)?\s*(bps|bit|b|e|gig|meg)?/);
+  if(!m)return null; let v=parseFloat(m[1]); const u=m[2];
+  if(u==='t')v*=1e12;else if(u==='g')v*=1e9;else if(u==='m')v*=1e6;else if(u==='k')v*=1e3;
+  else{ if(v>=1e6){} else if(v>=1000)v*=1e6; else v*=1e9; }
+  return v;
+}
+function parseTs(raw){
+  if(raw==null||raw==='')return null;
+  if(typeof raw==='number'){ if(raw>20000&&raw<80000)return Math.round((raw-25569)*86400000); if(raw>1e11)return raw; if(raw>1e9)return raw*1000; }
+  const s=String(raw).trim();
+  if(/^\d+(\.\d+)?$/.test(s)){const n=parseFloat(s);if(n>20000&&n<80000)return Math.round((n-25569)*86400000);if(n>1e11)return n;if(n>1e9)return n*1000;}
+  const t=Date.parse(s.replace(' ','T')); if(!isNaN(t))return t;
+  const t2=Date.parse(s); return isNaN(t2)?null:t2;
+}
+function parseRate(raw,headerInfo){ // → bits/sec (best effort) ; {val, viaCellUnit}
+  if(raw==null||raw==='')return {val:null};
+  if(typeof raw==='number'){ if(headerInfo)return {val:raw*headerInfo.mult}; return {val:raw}; }
+  const s=String(raw).trim();
+  const m=s.match(UNIT_RE);
+  if(m){const info=unitMultiplierFromToken(m[0]);if(info)return {val:parseFloat(m[1])*info.mult,viaCellUnit:true};}
+  const n=parseFloat(s.replace(/[, ]/g,'')); if(isNaN(n))return {val:null};
+  return {val:headerInfo?n*headerInfo.mult:n};
+}
+
+/* Resolve columns to canonical fields by MEANING (alias+fuzzy+value-shape). */
+function resolveColumns(headers,rows){
+  const H=headers.map((h,i)=>({i,raw:h,n:norm(h),unit:headerUnit(h)}));
+  const scores={}; // field -> [{i,score}]
+  for(const f in FIELD_ALIASES){
+    scores[f]=H.map(h=>{
+      let best=0;
+      for(const a of FIELD_ALIASES[f]){
+        if(h.n===a)best=Math.max(best,1);
+        else if(h.n.includes(a)||a.includes(h.n))best=Math.max(best,0.82);
+        else best=Math.max(best,simRatio(h.n,a)*0.75);
+      }
+      return {i:h.i,score:best};
+    });
+  }
+  // value-shape signals from sampled rows
+  const col=i=>rows.slice(0,40).map(r=>r[i]).filter(v=>v!=null&&v!=='');
+  const shape=H.map(h=>{
+    const c=col(h.i); if(!c.length)return {};
+    let dates=0,pcts=0,nums=0,big=0,mono=true,prev=-Infinity,ints=0;
+    for(const v of c){const s=String(v);if(parseTs(v)&&(isNaN(+s)|| +s>20000))dates++;if(/%/.test(s)||(+v>=0&&+v<=100&&/\./.test(s)===false&&+v>1))pcts++;const n=+String(v).replace(/[^\d.-]/g,'');if(!isNaN(n)){nums++;if(n>1e5)big++;if(Number.isInteger(n))ints++;if(n<prev)mono=false;prev=n;}}
+    return {date:dates/c.length,pct:pcts/c.length,num:nums/c.length,big:big/c.length,mono:mono&&ints/c.length>.8&&big/c.length>.5};
+  });
+  // greedy assignment, highest score wins, one header per field
+  const usedH=new Set(),map={},conf={};
+  const order=['ts','device','interface','speed','tx','rx','util','ptx','prx'];
+  for(const f of order){
+    let cand=scores[f].map(s=>{
+      let sc=s.score; const sh=shape[H.find(x=>x.i===s.i).n?s.i:s.i]||{};
+      if(f==='ts')sc+= (sh.date||0)*0.6;
+      if(f==='util')sc+=(sh.pct||0)*0.4;
+      if(f==='speed')sc+=(sh.big||0)*0.15;
+      if((f==='tx'||f==='rx'))sc+=(sh.num||0)*0.05;
+      return {i:s.i,score:clamp(sc,0,1)};
+    }).filter(s=>!usedH.has(s.i)).sort((a,b)=>b.score-a.score);
+    const top=cand[0];
+    const need=(f==='ts'||f==='device'||f==='interface');
+    if(top&&top.score>=(need?0.42:0.5)){map[f]=top.i;conf[f]=top.score;usedH.add(top.i);}
+  }
+  // fallback: if no ts column matched but a column is mostly dates
+  if(map.ts==null){const d=shape.map((s,i)=>({i:H[i].i,d:s.date||0})).sort((a,b)=>b.d-a.d)[0];if(d&&d.d>0.6){map.ts=d.i;conf.ts=d.d;}}
+  return {map,conf,headers:H,shape};
+}
+
+function buildSamples(rows,resolved,srcName,batchId){
+  const {map,headers}=resolved;
+  const hInfo=f=>map[f]!=null?headers.find(h=>h.i===map[f]).unit:null;
+  const txU=hInfo('tx'),rxU=hInfo('rx'),ptxU=hInfo('ptx'),prxU=hInfo('prx');
+  const out=[],issues={corrupt:0,noTs:0,noSpeed:0,utilRecalc:0,cellUnit:0};
+  let scaleGuessNote=null;
+  const raw=[];
+  for(const r of rows){
+    const dev=map.device!=null?String(r[map.device]??'').trim():'';
+    const intf=map.interface!=null?String(r[map.interface]??'').trim():'';
+    const ts=map.ts!=null?parseTs(r[map.ts]):null;
+    if(!dev||!intf){continue;}
+    if(ts==null){issues.noTs++;continue;}
+    let tx=map.tx!=null?parseRate(r[map.tx],txU):{val:null};
+    let rx=map.rx!=null?parseRate(r[map.rx],rxU):{val:null};
+    if(tx.viaCellUnit||rx.viaCellUnit)issues.cellUnit++;
+    const ptx=map.ptx!=null?parseRate(r[map.ptx],ptxU).val:null;
+    const prx=map.prx!=null?parseRate(r[map.prx],prxU).val:null;
+    const speed=map.speed!=null?parseSpeed(r[map.speed]):null;
+    const utilCol=map.util!=null?parseFloat(String(r[map.util]).replace(/[^\d.-]/g,'')):null;
+    raw.push({dev,intf,ts,tx:tx.val,rx:rx.val,ptx,prx,speed,utilCol});
+  }
+  // Magnitude inference: if no explicit unit AND util wildly off vs speed, rescale.
+  if(!txU&&!rxU&&raw.length){
+    const withSpeed=raw.filter(x=>x.speed>0&&(x.tx>0||x.rx>0));
+    if(withSpeed.length>20){
+      const utils=withSpeed.map(x=>Math.max(x.tx||0,x.rx||0)/x.speed);
+      const med=percentile(utils,0.5);
+      let factor=1;
+      if(med>1.5) factor = med>1500?1/1e9 : med>1.5&&med<=1500?(med>1500?1e-9:1e-6):1;
+      if(med>1.5&&med<=3000)factor=1e-6; // values look like they're in Mbps-of-bps mismatch → scale
+      if(med>3000)factor=1e-9;
+      if(med<0.0005&&med>0)factor=1e6;
+      if(factor!==1){for(const x of raw){if(x.tx!=null)x.tx*=factor;if(x.rx!=null)x.rx*=factor;}scaleGuessNote=`Auto-scaled rate values by ×${factor} (inferred from magnitude vs interface speed; no explicit unit in file).`;}
+    }
+  }
+  for(const x of raw){
+    let tx=x.tx,rx=x.rx,speed=x.speed;
+    if(!speed||speed<=0){issues.noSpeed++;}
+    let util;
+    if(speed>0&&(tx!=null||rx!=null)){util=Math.max((tx||0),(rx||0))/speed;if(x.utilCol!=null&&Math.abs(x.utilCol/100-util)>0.15)issues.utilRecalc++;}
+    else if(x.utilCol!=null){util=x.utilCol/100;}
+    else util=null;
+    if(util!=null&&(util<0||util>3)){issues.corrupt++;}
+    out.push({ifid:x.dev+'|'+x.intf,dev:x.dev,intf:x.intf,ts:x.ts,tx:tx==null?null:tx,rx:rx==null?null:rx,ptx:x.ptx,prx:x.prx,speed:speed||null,util:util==null?null:util,src:srcName,batch:batchId});
+  }
+  return {samples:out,issues,scaleGuessNote};
+}
+
+/* --------- CSV & XLSX readers (fully offline) --------- */
+function parseCSV(text){
+  const rows=[];let i=0,f='',row=[],q=false;
+  while(i<text.length){const c=text[i];
+    if(q){if(c==='"'){if(text[i+1]==='"'){f+='"';i++;}else q=false;}else f+=c;}
+    else{if(c==='"')q=true;else if(c===','){row.push(f);f='';}else if(c==='\n'){row.push(f);rows.push(row);row=[];f='';}else if(c!=='\r')f+=c;}
+    i++;}
+  if(f.length||row.length){row.push(f);rows.push(row);}
+  return rows.filter(r=>r.some(c=>String(c).trim()!==''));
+}
+async function inflateRaw(u8){
+  if('DecompressionStream'in window){
+    const ds=new DecompressionStream('deflate-raw');
+    const ab=await new Response(new Blob([u8]).stream().pipeThrough(ds)).arrayBuffer();
+    return new Uint8Array(ab);
+  }
+  throw new Error('DecompressionStream unavailable');
+}
+function parseZip(buf){
+  const dv=new DataView(buf),u8=new Uint8Array(buf);let eocd=-1;
+  for(let i=buf.byteLength-22;i>=0;i--){if(dv.getUint32(i,true)===0x06054b50){eocd=i;break;}}
+  if(eocd<0)throw new Error('Not a valid XLSX (no zip EOCD)');
+  const count=dv.getUint16(eocd+10,true);let off=dv.getUint32(eocd+16,true);
+  const entries={};
+  for(let n=0;n<count;n++){
+    if(dv.getUint32(off,true)!==0x02014b50)break;
+    const method=dv.getUint16(off+10,true),csize=dv.getUint32(off+20,true);
+    const fnLen=dv.getUint16(off+28,true),exLen=dv.getUint16(off+30,true),cmLen=dv.getUint16(off+32,true);
+    const lho=dv.getUint32(off+42,true);
+    const name=new TextDecoder().decode(u8.subarray(off+46,off+46+fnLen));
+    const lfn=dv.getUint16(lho+26,true),lex=dv.getUint16(lho+28,true);
+    const dstart=lho+30+lfn+lex;
+    entries[name]={method,data:u8.subarray(dstart,dstart+csize)};
+    off+=46+fnLen+exLen+cmLen;
+  }
+  return entries;
+}
+async function entryText(e){if(!e)return null;const raw=e.method===0?e.data:await inflateRaw(e.data);return new TextDecoder().decode(raw);}
+function colToNum(ref){const m=ref.match(/^([A-Z]+)/);if(!m)return 0;let n=0;for(const ch of m[1])n=n*26+(ch.charCodeAt(0)-64);return n-1;}
+async function parseXLSX(buf){
+  const z=parseZip(buf);
+  const shared=[];const ssx=await entryText(z['xl/sharedStrings.xml']);
+  if(ssx){const doc=new DOMParser().parseFromString(ssx,'application/xml');for(const si of doc.getElementsByTagName('si')){shared.push(si.textContent);}}
+  // pick first worksheet
+  let sheetPath='xl/worksheets/sheet1.xml';
+  const wbRels=await entryText(z['xl/_rels/workbook.xml.rels']);
+  const names=Object.keys(z).filter(k=>/^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort();
+  if(names.length)sheetPath=names[0];
+  const sx=await entryText(z[sheetPath]); if(!sx)throw new Error('No worksheet found');
+  const doc=new DOMParser().parseFromString(sx,'application/xml');
+  const rows=[];
+  for(const row of doc.getElementsByTagName('row')){
+    const cells=[];let maxc=0;
+    for(const c of row.getElementsByTagName('c')){
+      const ref=c.getAttribute('r')||'';const ci=colToNum(ref);const t=c.getAttribute('t');
+      const vEl=c.getElementsByTagName('v')[0];const isEl=c.getElementsByTagName('is')[0];
+      let val=null;
+      if(t==='s'&&vEl)val=shared[+vEl.textContent];
+      else if(t==='inlineStr'&&isEl)val=isEl.textContent;
+      else if(t==='str'&&vEl)val=vEl.textContent;
+      else if(vEl)val=isNaN(+vEl.textContent)?vEl.textContent:+vEl.textContent;
+      cells[ci]=val;maxc=Math.max(maxc,ci);
+    }
+    for(let k=0;k<=maxc;k++)if(cells[k]===undefined)cells[k]=null;
+    rows.push(cells);
+  }
+  return rows;
+}
+function findHeaderRow(rows){
+  let best=0,bestScore=-1;
+  for(let i=0;i<Math.min(rows.length,15);i++){
+    const r=rows[i]||[];const nonEmpty=r.filter(c=>c!=null&&c!=='').length;
+    const texty=r.filter(c=>typeof c==='string'&&/[a-z]/i.test(c)&&isNaN(+c)).length;
+    const score=texty*2+nonEmpty - (r.filter(c=>typeof c==='number').length);
+    if(nonEmpty>=3&&score>bestScore){bestScore=score;best=i;}
+  }
+  return best;
+}
+
+async function ingestFile(file){
+  const name=file.name;const isCsv=/\.csv$/i.test(name);
+  let matrix;
+  if(isCsv){matrix=parseCSV(await file.text());}
+  else{matrix=await parseXLSX(await file.arrayBuffer());}
+  if(!matrix||!matrix.length)throw new Error('Empty file');
+  const hr=findHeaderRow(matrix);
+  const headers=matrix[hr].map(h=>String(h??''));
+  const rows=matrix.slice(hr+1);
+  const resolved=resolveColumns(headers,rows);
+  return {name,headers,rows,resolved,headerRow:hr,rowCount:rows.length};
+}
+
+/* ------------------------------- validation ------------------------------- */
+function validateStaged(parsed,built){
+  const findings={block:[],warn:[],info:[]};
+  const {map,conf}=parsed.resolved;
+  ['device','interface','ts'].forEach(f=>{if(map[f]==null)findings.block.push(`Could not resolve a <b>${f}</b> column — map it manually to proceed.`);});
+  if(map.tx==null&&map.rx==null&&map.util==null)findings.block.push('No traffic (TX/RX) or utilization column resolved.');
+  if(map.speed==null&&map.util==null)findings.warn.push('No interface speed column — utilization % cannot be computed from rates for some rows.');
+  // low-confidence mappings
+  for(const f in conf){if(conf[f]<0.62)findings.warn.push(`Low-confidence mapping: <b>${f}</b> → “${esc(parsed.headers[map[f]])}” (${Math.round(conf[f]*100)}%). Confirm in the mapping panel.`);}
+  const s=built.samples;
+  if(s.length===0)findings.block.push('No valid rows produced after parsing.');
+  // coverage / gaps
+  const byIf={};for(const x of s){(byIf[x.ifid]=byIf[x.ifid]||[]).push(x.ts);}
+  let gapIf=0,intervalNote='';
+  const deltas=[];
+  for(const k in byIf){const t=byIf[k].sort((a,b)=>a-b);for(let i=1;i<t.length;i++)deltas.push(t[i]-t[i-1]);}
+  if(deltas.length){const med=percentile(deltas,0.5);intervalNote=`~${Math.round(med/60000)} min`;let gaps=0;for(const k in byIf){const t=byIf[k].sort((a,b)=>a-b);for(let i=1;i<t.length;i++)if(t[i]-t[i-1]>med*2.5)gaps++;}if(gaps)findings.warn.push(`<b>${gaps}</b> polling gap(s) detected (missing intervals beyond ~2.5× the ${intervalNote} cadence).`);}
+  if(built.issues.corrupt)findings.warn.push(`<b>${built.issues.corrupt}</b> corrupt value(s) (utilization &gt;100% or negative) — flagged, excluded from adverse verdicts.`);
+  if(built.issues.utilRecalc)findings.info.push(`<b>${built.issues.utilRecalc}</b> row(s): supplied utilization disagreed with rate/speed — recomputed from normalized rates.`);
+  if(built.issues.cellUnit)findings.info.push(`<b>${built.issues.cellUnit}</b> value(s) carried a per-cell unit (e.g. “1.5 Gbps”) — normalized to bps.`);
+  if(built.scaleGuessNote)findings.info.push(esc(built.scaleGuessNote));
+  // duplicate detection
+  const chk=s.length+'|'+(s[0]?.ts||0)+'|'+(s.at(-1)?.ts||0);
+  const dup=S.batches.find(b=>b.checksum===chk);
+  if(dup)findings.warn.push(`Possible <b>duplicate upload</b>: coverage/size matches batch “${esc(dup.file)}” from ${fmtDate(dup.ts)}. Committing keeps both (idempotent by interface+timestamp).`);
+  // overlap with existing samples
+  const newKeys=new Set(s.slice(0,5000).map(x=>x.ifid+'@'+x.ts));
+  let overlap=0;for(const x of S.samples){if(newKeys.has(x.ifid+'@'+x.ts)){overlap++;if(overlap>4999)break;}}
+  if(overlap)findings.warn.push(`<b>${overlap.toLocaleString()}</b> sample(s) overlap existing data (same interface+timestamp). Overlaps are skipped on commit — history is never overwritten.`);
+  // maintenance overlap
+  const tmin=Math.min(...s.map(x=>x.ts)),tmax=Math.max(...s.map(x=>x.ts));
+  if(S.maintenance.some(m=>m.start<tmax&&m.end>tmin))findings.info.push('Coverage intersects a maintenance window — affected samples will be tagged and excluded from alerts/SLA/trend.');
+  // new entities
+  const existIf=new Set(S.samples.map(x=>x.ifid));const newIf=new Set(s.map(x=>x.ifid).filter(i=>!existIf.has(i)));
+  if(newIf.size)findings.info.push(`<b>${newIf.size}</b> new interface(s) will be created.`);
+  built.checksum=chk;built.coverage=[tmin,tmax];built.intervalNote=intervalNote;built.overlap=overlap;
+  return findings;
+}
+function commitStaged(){
+  const st=S.staged;if(!st)return;
+  const batchId='b'+Date.now();
+  const existKeys=new Set(S.samples.map(x=>x.ifid+'@'+x.ts));
+  let added=0;
+  for(const x of st.built.samples){const k=x.ifid+'@'+x.ts;if(existKeys.has(k))continue;x.batch=batchId;
+    // maintenance tagging
+    if(S.maintenance.some(m=>m.start<=x.ts&&m.end>=x.ts&&(m.scope==='all'||m.target===x.ifid||m.target===x.dev)))x.maint=1;
+    S.samples.push(x);existKeys.add(k);added++;}
+  S.batches.unshift({id:batchId,file:st.parsed.name,ts:Date.now(),who:S.role,rows:st.parsed.rowCount,added,
+    coverage:st.built.coverage,checksum:st.built.checksum,src:'xlsx',intervalNote:st.built.intervalNote,
+    entities:new Set(st.built.samples.map(x=>x.ifid)).size,map:st.parsed.resolved.map,headers:st.parsed.headers});
+  save('samples');save('batches');
+  logAudit('upload.commit',st.parsed.name,`${added} samples added`);
+  S.staged=null;S.analytics=null;
+  toast(`✅ Committed “${esc(st.parsed.name)}” — ${added.toLocaleString()} new samples`);
+  go('uploads');
+}
+
+/* ============================ ANALYTICS ENGINE ============================= */
+function classify(ifid,intf){
+  const n=(intf||'').toLowerCase();
+  if(/(^|[^a-z])(po|port-?channel|core|spine|leaf|uplink)/.test(n))return{cls:'Core',impact:'Critical'};
+  if(/trad|market|exch|fix|feed/.test(n))return{cls:'Trading',impact:'Critical'};
+  if(/inet|internet|isp|wan|transit|border|edge/.test(n))return{cls:'Internet',impact:'High'};
+  if(/back|bkp|repl|dr/.test(n))return{cls:'Backup',impact:'Low'};
+  if(/stor|san|nas|iscsi/.test(n))return{cls:'Storage',impact:'High'};
+  if(/voice|voip|sip/.test(n))return{cls:'Voice',impact:'Medium'};
+  if(/mgmt|mgt|oob|console/.test(n))return{cls:'Management',impact:'Low'};
+  if(/cust|client|tenant/.test(n))return{cls:'Customer',impact:'High'};
+  return{cls:'WAN',impact:'Medium'};
+}
+function siteOf(dev){const m=(dev||'').match(/^([A-Za-z]{2,6})[-_]/);return m?m[1].toUpperCase():'SITE-A';}
+const th=cls=>Object.assign({},S.cfg.thresholds,S.cfg.classThresholds[cls]||{});
+function stateOf(util,cls){if(util==null)return'nodata';const t=th(cls);if(util>=t.crit)return'critical';if(util>=t.high)return'high';if(util>=t.warn)return'warning';return'normal';}
+function isBH(ts){const d=new Date(ts),h=d.getHours(),bh=S.cfg.businessHours;return bh.days.includes(d.getDay())&&h>=bh.startHr&&h<bh.endHr;}
+
+function computeAnalytics(){
+  const groups={};
+  for(const x of S.samples){(groups[x.ifid]=groups[x.ifid]||[]).push(x);}
+  const ifs=[];
+  for(const ifid in groups){
+    const s=groups[ifid].filter(x=>!x.maint).sort((a,b)=>a.ts-b.ts);
+    if(!s.length)continue;
+    const dev=s[0].dev,intf=s[0].intf,site=siteOf(dev);
+    const {cls,impact}=classify(ifid,intf);
+    const speed=s.map(x=>x.speed).filter(Boolean).pop()||null;
+    const utils=s.map(x=>x.util).filter(v=>v!=null&&v>=0&&v<=3);
+    const p95=percentile(utils,0.95),p99=percentile(utils,0.99),avg=mean(utils),mx=Math.max(0,...utils);
+    // distribution (time-in-state)
+    const dist={normal:0,warning:0,high:0,critical:0};for(const u of utils)dist[stateOf(u,cls)]++;
+    const tot=utils.length||1;for(const k in dist)dist[k]/=tot;
+    // business-hour breaches
+    const t=th(cls);const breachesBH=s.filter(x=>x.util>=t.crit&&isBH(x.ts)).length;
+    const bhDays=new Set(s.filter(x=>x.util>=t.high&&isBH(x.ts)).map(x=>new Date(x.ts).toDateString())).size;
+    // baseline dow×hour
+    const base={};for(const x of s){if(x.util==null)continue;const k=new Date(x.ts).getDay()+'-'+new Date(x.ts).getHours();(base[k]=base[k]||[]).push(x.util);}
+    const baseStat={};for(const k in base)baseStat[k]={m:mean(base[k]),sd:std(base[k]),n:base[k].length};
+    // heatmap dow×hour avg
+    const heat={};for(const k in base)heat[k]=mean(base[k]);
+    // anomalies
+    const anomalies=[];
+    for(const x of s){if(x.util==null)continue;const k=new Date(x.ts).getDay()+'-'+new Date(x.ts).getHours();const b=baseStat[k];if(b&&b.n>=3&&b.sd>0.001){const z=(x.util-b.m)/b.sd;if(z>3.2&&x.util>0.15)anomalies.push({ts:x.ts,type:'Traffic spike',z,util:x.util,exp:b.m});}}
+    // weekend traffic on business link
+    if(['Core','Trading','Internet','Customer'].includes(cls)){const we=s.filter(x=>[0,6].includes(new Date(x.ts).getDay())&&x.util>0.2);const wd=s.filter(x=>![0,6].includes(new Date(x.ts).getDay()));if(we.length>3&&mean(we.map(x=>x.util))>0.15&&mean(wd.map(x=>x.util))>0){const r=mean(we.map(x=>x.util));if(r>0.2)anomalies.push({ts:we[0].ts,type:'Weekend traffic on business link',util:r,exp:0.03});}}
+    // rx/tx imbalance
+    const withDir=s.filter(x=>x.tx>0&&x.rx>0);if(withDir.length>10){const ratios=withDir.map(x=>Math.max(x.tx,x.rx)/Math.min(x.tx,x.rx));const mr=percentile(ratios,0.5);if(mr>6)anomalies.push({ts:withDir[0].ts,type:'RX/TX imbalance',ratio:mr});}
+    // daily p95 series + forecast
+    const byDay={};for(const x of s){if(x.util==null)continue;const d=new Date(x.ts);d.setHours(0,0,0,0);(byDay[+d]=byDay[+d]||[]).push(x.util);}
+    const daily=Object.keys(byDay).map(Number).sort((a,b)=>a-b).map(d=>({d,p95:percentile(byDay[d],0.95)}));
+    const forecast=forecastFrom(daily,p95,cls);
+    // risk
+    const growth=forecast.growthMoM;
+    const risk=riskScore({p95,avg,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
+    const rec={ifid,dev,intf,site,cls,impact,speed,samples:s,count:s.length,
+      start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
+    rec.verdict=verdictFor(rec);
+    rec.ai=aiSummary(rec);
+    ifs.push(rec);
+  }
+  // aggregates
+  const byDev={},bySite={};
+  for(const r of ifs){(byDev[r.dev]=byDev[r.dev]||[]).push(r);(bySite[r.site]=bySite[r.site]||[]).push(r);}
+  const impactW={Critical:1,High:0.7,Medium:0.4,Low:0.2};
+  const aggRisk=list=>{let sw=0,s=0,mxr=0;for(const r of list){const w=impactW[r.impact];sw+=w;s+=r.risk.score*w;mxr=Math.max(mxr,r.risk.score);}return Math.round(clamp((s/(sw||1))*0.6+mxr*0.4,0,100));};
+  const devices=Object.entries(byDev).map(([dev,list])=>({dev,site:list[0].site,list,risk:aggRisk(list),critical:list.filter(r=>r.verdict.level==='critical').length}));
+  const sites=Object.entries(bySite).map(([site,list])=>({site,list,risk:aggRisk(list),devices:new Set(list.map(r=>r.dev)).size,critical:list.filter(r=>r.verdict.level==='critical').length}));
+  const infraRisk=aggRisk(ifs);
+  S.analytics={ifs,devices,sites,infraRisk,byDev,bySite};
+  return S.analytics;
+}
+function forecastFrom(daily,p95,cls){
+  const t=th(cls);const out={slopePerDay:0,current:p95,t80:null,t90:null,t95:null,growthMoM:0,conf:0.2,proj:{},window:null,r2:0};
+  if(daily.length<4)return out;
+  const x=daily.map((d,i)=>i),y=daily.map(d=>d.p95);
+  const n=x.length,mx=mean(x),my=mean(y);
+  let num=0,den=0;for(let i=0;i<n;i++){num+=(x[i]-mx)*(y[i]-my);den+=(x[i]-mx)**2;}
+  const slope=den?num/den:0,intercept=my-slope*mx;
+  let ssr=0,sst=0;for(let i=0;i<n;i++){const pred=slope*x[i]+intercept;ssr+=(y[i]-pred)**2;sst+=(y[i]-my)**2;}
+  const r2=sst?clamp(1-ssr/sst,0,1):0;
+  const cur=slope*(n-1)+intercept;
+  const tt=T=>slope>1e-6?(T-cur)/slope:null;
+  out.slopePerDay=slope;out.current=cur;out.r2=r2;
+  out.t80=tt(0.80);out.t90=tt(0.90);out.t95=tt(0.95);
+  out.proj={30:cur+slope*30,60:cur+slope*60,90:cur+slope*90,180:cur+slope*180};
+  const first=mean(y.slice(0,Math.max(1,Math.floor(n/3)))),last=mean(y.slice(-Math.max(1,Math.floor(n/3))));
+  out.growthMoM=first>0?(last-first)/first*(30/Math.max(1,days(daily[0].d,daily.at(-1).d))):0;
+  out.conf=clamp(0.3+r2*0.4+clamp(daily.length/30,0,1)*0.3,0,0.95);
+  if(out.t90!=null&&out.t90>0){const lead=S.cfg.upgradeLeadDays;const c=Math.max(0,out.t90-lead);out.window=[Math.round(c),Math.round(Math.max(c+15,out.t90))];}
+  return out;
+}
+function riskScore(f){
+  const W=S.cfg.riskWeights;const impactMul={Critical:1.25,High:1.05,Medium:0.85,Low:0.65}[f.impact];
+  const nl=v=>clamp(v,0,1)**1.4; // non-linear utilization curve
+  const factors={
+    'Peak util':nl(f.p95)*W.peak,
+    'Avg util':nl(f.avg)*W.avg,
+    'Trend':clamp(f.slope*60/0.5,0,1)*W.trend,
+    'Growth':clamp(f.growth/0.3,0,1)*W.growth,
+    'Violations':clamp(f.breachesBH/14,0,1)*W.violations,
+    'Anomalies':clamp(f.anomalies/4,0,1)*W.anomaly
+  };
+  const sumW=W.peak+W.avg+W.trend+W.growth+W.violations+W.anomaly;
+  let raw=Object.values(factors).reduce((a,b)=>a+b,0)/sumW;
+  const score=Math.round(clamp(raw*impactMul,0,1)*100);
+  return {score,factors,impactMul};
+}
+function verdictFor(r){
+  const t=th(r.cls);const f=r.forecast;
+  const critFrac=r.dist.critical,highFrac=r.dist.high;
+  const growing=f.growthMoM>0.05&&f.slopePerDay>0;
+  const planSoon=f.t90!=null&&f.t90>0&&f.t90<=S.cfg.planHorizonDays;
+  const wk=r.anomalies.find(a=>a.type==='Weekend traffic on business link');
+  const imb=r.anomalies.find(a=>a.type==='RX/TX imbalance');
+  let level='normal',title='Healthy',reason='Utilization within normal bounds across the observed period.',action='No action required.';
+  if(r.count<8){level='warning';title='Insufficient Data';reason='Not enough history for confident analysis.';action='Upload more polling history.';}
+  else if(r.bhDays>=5&&(critFrac>0.02||highFrac>0.1)){level='critical';title='Recurring Business-Hour Congestion'+(growing?' — Capacity Planning Required':'');
+    reason=`Utilization reached the High/Critical band on <b>${r.bhDays}</b> business day(s); p95 ${pct1(r.p95)}${growing?`, up ${(f.growthMoM*100).toFixed(0)}% MoM`:''}.`;
+    action=planSoon?`Plan a capacity upgrade within the ${f.window?f.window[0]+'–'+f.window[1]:'~60'} day window.`:'Confirm organic growth vs incident; schedule capacity review.';}
+  else if(critFrac>0.03){level='critical';title='Critical Congestion';reason=`Spent ${pct1(critFrac)} of intervals in the Critical band (p99 ${pct1(r.p99)}).`;action='Investigate now; check peer/uplinks; consider QoS; open RCA.';}
+  else if(planSoon&&growing){level='high';title='Capacity Planning Required';reason=`Forecast reaches 90% in ~<b>${Math.round(f.t90)}</b> days at current growth (+${(f.growthMoM*100).toFixed(0)}% MoM).`;action=`Plan upgrade in the ${f.window?f.window[0]+'–'+f.window[1]:'recommended'} day window.`;}
+  else if(wk){level='warning';title='Weekend Backup Traffic';reason=`Weekend traffic (~${pct1(wk.util)}) on a business-classified link normally idle on weekends.`;action='Confirm backup schedule is intended; reclassify if mislabeled.';}
+  else if(imb){level='warning';title='RX/TX Imbalance';reason=`Sustained directional imbalance (~${imb.ratio.toFixed(1)}× RX/TX).`;action='Check asymmetric routing / unidirectional flows / SPAN config.';}
+  else if(r.anomalies.length){level='warning';title='Traffic Pattern Changed';reason=`${r.anomalies.length} behavioral anomaly(ies) detected vs baseline.`;action='Compare to change/maintenance events; verify expected vs anomalous.';}
+  else if(r.p95<0.03){level='normal';title='Idle / Under-utilized';reason=`p95 utilization only ${pct1(r.p95)} — consolidation candidate.`;action='Verify still in service; candidate for reclaim.';}
+  else if(r.dist.high+r.dist.warning>0.15||growing){level='warning';title='Monitor';reason=`Elevated but sub-critical (p95 ${pct1(r.p95)}${growing?`, +${(f.growthMoM*100).toFixed(0)}% MoM`:''}).`;action='Keep under observation.';}
+  const conf=clamp(0.4+clamp(r.count/300,0,1)*0.35+f.r2*0.2+clamp(r.bhDays/7,0,0.1),0,0.97);
+  const comparison=`p95 ${pct1(r.p95)} vs baseline avg ${pct1(r.avg)} · ${r.count} samples over ${Math.round(days(r.start,r.end))||1}d`;
+  return {level,title,reason,action,confidence:conf,comparison};
+}
+function aiSummary(r){
+  const f=r.forecast;const bits=[];
+  bits.push(`${r.dev} ${r.intf} (${r.cls}, ${r.impact} impact) held a p95 utilization of ${pct1(r.p95)} over the observed ${Math.round(days(r.start,r.end))||1} days`);
+  if(r.bhDays)bits.push(`exceeding the high/critical band on ${r.bhDays} business day(s)`);
+  if(Math.abs(f.growthMoM)>0.02)bits.push(`utilization is ${f.growthMoM>0?'up':'down'} ${(Math.abs(f.growthMoM)*100).toFixed(0)}% month-over-month`);
+  let s=bits.join(', ')+'. ';
+  if(f.t90!=null&&f.t90>0&&f.t90<365)s+=`At the current growth rate it reaches 90% in approximately ${Math.round(f.t90)} days${f.window?`; plan expansion within the ${f.window[0]}–${f.window[1]} day window`:''} (confidence ${(f.conf*100).toFixed(0)}%). `;
+  else if(f.slopePerDay<=0)s+=`Trend is flat or declining — no near-term capacity risk. `;
+  if(r.anomalies.length)s+=`${r.anomalies.length} behavioral anomaly(ies) were flagged against the interface's own baseline.`;
+  return s.trim();
+}
+function A(){return S.analytics||computeAnalytics();}
+
+/* ================================ CHARTS ================================== */
+function svgLineArea(series,opts={}){
+  const w=opts.w||760,h=opts.h||220,pad={l:44,r:14,t:14,b:26};
+  const all=series.flatMap(s=>s.data);
+  if(!all.length)return `<div class="empty">No data</div>`;
+  const xs=all.map(p=>p[0]),ys=all.map(p=>p[1]);
+  const x0=Math.min(...xs),x1=Math.max(...xs)||x0+1;const y1=opts.y1!=null?opts.y1:Math.max(0.01,Math.max(...ys)*1.15);
+  const X=v=>pad.l+(v-x0)/(x1-x0||1)*(w-pad.l-pad.r);
+  const Y=v=>h-pad.b-(v/y1)*(h-pad.t-pad.b);
+  let bands='';
+  if(opts.bands){const t=opts.bands;const seg=[[t.warn,'--warning'],[t.high,'--high'],[t.crit,'--critical']];
+    seg.forEach(([v,c])=>{if(v<=y1)bands+=`<line x1="${pad.l}" x2="${w-pad.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="${stateColor(c.slice(2))}" stroke-dasharray="3 4" opacity=".5"/>`;});
+  }
+  let grid='';for(let i=0;i<=4;i++){const v=y1*i/4;grid+=`<line x1="${pad.l}" x2="${w-pad.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="rgba(120,150,200,.09)"/><text x="${pad.l-6}" y="${Y(v)+3}" text-anchor="end" font-size="9" fill="#61718f">${(v*100).toFixed(0)}%</text>`;}
+  let maint='';if(opts.maint)for(const m of opts.maint){if(m.end<x0||m.start>x1)continue;maint+=`<rect x="${X(Math.max(m.start,x0))}" y="${pad.t}" width="${Math.max(1,X(Math.min(m.end,x1))-X(Math.max(m.start,x0)))}" height="${h-pad.t-pad.b}" fill="rgba(129,140,248,.12)"/>`;}
+  let paths='';
+  series.forEach(s=>{
+    const d=s.data.filter(p=>p[1]!=null);if(!d.length)return;
+    const line=d.map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join(' ');
+    if(s.area)paths+=`<path d="${line} L${X(d.at(-1)[0])} ${Y(0)} L${X(d[0][0])} ${Y(0)} Z" fill="${s.color}" opacity=".13"/>`;
+    paths+=`<path d="${line}" fill="none" stroke="${s.color}" stroke-width="${s.wide?2.2:1.6}" stroke-linejoin="round" ${s.dash?'stroke-dasharray="4 4"':''}/>`;
+  });
+  const xlabs=[x0,(x0+x1)/2,x1].map(v=>`<text x="${X(v)}" y="${h-8}" text-anchor="middle" fill="#61718f" font-size="9">${fmtDay(v)}</text>`).join('');
+  return `<div class="chart"><svg viewBox="0 0 ${w} ${h}">${grid}${bands}${maint}${paths}${xlabs}</svg></div>`;
+}
+function donut(dist){
+  const segs=[['normal',dist.normal],['warning',dist.warning],['high',dist.high],['critical',dist.critical]];
+  const R=52,C=2*Math.PI*R;let off=0,arcs='';
+  segs.forEach(([k,v])=>{const len=v*C;arcs+=`<circle r="${R}" cx="70" cy="70" fill="none" stroke="${stateColor(k)}" stroke-width="18" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`;off+=len;});
+  return `<svg viewBox="0 0 140 140" width="140" height="140">${arcs}<text x="70" y="66" text-anchor="middle" fill="#e6edf7" font-size="15" font-weight="700">${(dist.normal*100).toFixed(0)}%</text><text x="70" y="82" text-anchor="middle" fill="#61718f" font-size="9">NORMAL</text></svg>`;
+}
+function heatmap(heat,cls){
+  let cells='';
+  for(let d=0;d<7;d++){cells+=`<div class="dl">${DOW[d]}</div>`;
+    for(let h=0;h<24;h++){const v=heat[d+'-'+h];const st=v==null?'nodata':stateOf(v,cls);const c=v==null?'rgba(120,150,200,.06)':stateColor(st);cells+=`<div class="cell" title="${DOW[d]} ${h}:00 — ${v==null?'no data':pct1(v)}" style="background:${c};opacity:${v==null?1:0.35+clamp(v,0,1)*0.65}"></div>`;}}
+  let hdr='<div></div>';for(let h=0;h<24;h+=1)hdr+=`<div class="hr">${h%6===0?h:''}</div>`;
+  return `<div class="heat">${hdr}${cells}</div>`;
+}
+function calHeat(daily,cls){
+  if(!daily.length)return'<div class="mini">No data</div>';
+  let out='';for(const d of daily){const st=stateOf(d.p95,cls);out+=`<div class="d" title="${fmtDay(d.d)} — p95 ${pct1(d.p95)}" style="background:${stateColor(st)};opacity:${0.35+clamp(d.p95,0,1)*0.65}"></div>`;}
+  return `<div class="cal">${out}</div>`;
+}
+function sparkline(daily,color='#38bdf8'){
+  if(daily.length<2)return'';const w=120,h=26;const ys=daily.map(d=>d.p95);const y1=Math.max(0.01,Math.max(...ys));
+  const pts=daily.map((d,i)=>`${(i/(daily.length-1)*w).toFixed(1)},${(h-d.p95/y1*h).toFixed(1)}`).join(' ');
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/></svg>`;
+}
+function riskBar(score){const c=score>=75?'critical':score>=50?'high':score>=30?'warning':'normal';return `<span class="riskbar"><span class="track"><span class="fill" style="width:${score}%;background:${stateColor(c)}"></span></span><b class="mono" style="color:${stateColor(c)}">${score}</b></span>`;}
+
+/* ================================ VIEWS =================================== */
+const NAV=[
+  ['Overview',[['exec','◆','Executive'],['noc','▤','NOC'],['twin','⬡','Digital Twin']]],
+  ['Analyze',[['capacity','▲','Capacity Planning'],['trends','↗','Trend Analysis'],['anomalies','⚠','Anomalies'],['historical','↺','Historical']]],
+  ['Operate',[['uploads','⭱','Uploads'],['maintenance','⚙','Maintenance'],['reports','▦','Reports'],['audit','◷','Audit Log'],['admin','⚑','Admin']]]
+];
+function renderNav(){
+  const an=S.samples.length?A():null;const crit=an?an.ifs.filter(r=>r.verdict.level==='critical').length:0;
+  $('#nav').innerHTML=NAV.map(([g,items])=>`<div class="navgrp">${g}</div>`+items.map(([v,ic,lbl])=>
+    `<div class="navitem ${S.view===v?'active':''}" data-view="${v}"><span class="ic">${ic}</span>${lbl}${v==='noc'&&crit?`<span class="badge">${crit}</span>`:''}</div>`).join('')).join('');
+}
+function crumb(parts){return `<div class="crumb">`+parts.map((p,i)=>i===parts.length-1?`<span class="here">${p[0]}</span>`:`<a data-nav='${JSON.stringify(p[1])}'>${p[0]}</a><span class="sep">›</span>`).join('')+`</div>`;}
+
+function needData(){return `<div class="empty"><div class="big">⬡</div><h2>No data yet</h2><p class="small">Upload interface polling data (XLSX/CSV) or generate realistic sample data to explore NetPulse.</p><div class="flex" style="justify-content:center;margin-top:14px"><button class="btn" onclick="genDemo()">✨ Generate demo data</button><button class="btn ghost" onclick="go('uploads')">⭱ Upload files</button></div></div>`;}
+
+function view_exec(){
+  if(!S.samples.length)return needData();
+  const a=A();const ifs=a.ifs;
+  const crit=ifs.filter(r=>r.verdict.level==='critical');
+  const growing=ifs.filter(r=>r.forecast.growthMoM>0.2).sort((x,y)=>y.forecast.growthMoM-x.forecast.growthMoM);
+  const breach90=ifs.filter(r=>r.forecast.t90!=null&&r.forecast.t90>0&&r.forecast.t90<=90);
+  const infra=a.infraRisk;
+  const topCrit=[...ifs].sort((x,y)=>y.risk.score-x.risk.score).slice(0,8);
+  const dailyInfra=infraTrend(ifs);
+  const narr=`Infrastructure posture is ${infra>=60?'elevated':infra>=35?'stable with emerging risks':'healthy'}. ${crit.length} link(s) are in a critical state and ${breach90.length} are forecast to breach 90% within 90 days. ${growing.length?`The fastest-growing link is ${growing[0].dev} ${growing[0].intf} at +${(growing[0].forecast.growthMoM*100).toFixed(0)}% MoM.`:''}`;
+  return crumb([['Executive']])+`
+  <div class="verdict ${infra>=60?'critical':infra>=35?'high':'normal'}" style="margin-bottom:16px">
+    <span class="lvl pill ${infra>=60?'critical':infra>=35?'high':'normal'}">Infrastructure Posture</span>
+    <h3>${infra>=60?'Elevated risk across infrastructure':infra>=35?'Stable, with emerging capacity risks':'Healthy infrastructure'}</h3>
+    <div class="reason">${narr}</div>
+    <div class="act">▸ Recommended: prioritize the ${breach90.length} forecast breaches and ${crit.length} critical links below. <a onclick="genReport('exec')">Generate Executive Summary →</a></div>
+  </div>
+  <div class="grid g4" style="margin-bottom:16px">
+    ${kpi('Infrastructure Risk',infra,infra>=50?'up':'flat',infra>=50?'Attention needed':'Nominal',infra>=60?'critical':infra>=35?'high':'normal')}
+    ${kpi('Critical Links',crit.length,crit.length?'up':'flat','by business impact',crit.length?'critical':'normal')}
+    ${kpi('Growing >20%/mo',growing.length,growing.length?'up':'flat','capacity watch','high')}
+    ${kpi('Forecast breach 90d',breach90.length,breach90.length?'up':'flat','reach 90% util','warning')}
+  </div>
+  <div class="grid g-main">
+    <div class="panel pad">
+      <div class="sec-title"><h2>Infrastructure utilization trend</h2><span class="sub">fleet p95, daily</span></div>
+      ${svgLineArea([{data:dailyInfra.map(d=>[d.d,d.p95]),color:'#38bdf8',area:true,wide:true}],{h:220,bands:S.cfg.thresholds})}
+      <div class="legend"><span><i style="background:#38bdf8"></i>Fleet p95 utilization</span></div>
+    </div>
+    <div class="panel pad">
+      <div class="sec-title"><h2>Site risk</h2></div>
+      ${a.sites.sort((x,y)=>y.risk-x.risk).map(s=>`<div class="flex" style="margin-bottom:10px;cursor:pointer" data-nav='${JSON.stringify({view:'site',id:s.site})}'><b style="width:80px">${esc(s.site)}</b>${riskBar(s.risk)}<span class="spacer"></span><span class="small">${s.devices} dev · ${s.list.length} intf</span></div>`).join('')}
+    </div>
+  </div>
+  <div class="grid g2" style="margin-top:16px">
+    ${topNTable('Top Critical Links',topCrit,'risk')}
+    ${topNTable('Top Growing Links',growing.slice(0,8),'growth')}
+  </div>`;
+}
+function infraTrend(ifs){
+  const map={};for(const r of ifs)for(const d of r.daily){(map[d.d]=map[d.d]||[]).push(d.p95);}
+  return Object.keys(map).map(Number).sort((a,b)=>a-b).map(d=>({d,p95:percentile(map[d],0.95)}));
+}
+function kpi(l,v,trend,t,glow){const cls=trend==='up'?'up':trend==='down'?'down':'flat';const arrow=trend==='up'?'▲':trend==='down'?'▼':'—';
+  return `<div class="kpi"><div class="glow" style="background:${stateColor(glow||'normal')}"></div><div class="l">${l}</div><div class="v mono">${v}</div><div class="t ${cls}">${arrow} ${t}</div></div>`;}
+function topNTable(title,list,mode){
+  return `<div class="panel pad"><div class="sec-title"><h2>${title}</h2></div><table><thead><tr><th>#</th><th>Interface</th><th>Class</th><th>${mode==='growth'?'MoM':'p95'}</th><th>${mode==='growth'?'Fcst 90d':'Risk'}</th><th>Verdict</th></tr></thead><tbody>${list.map((r,i)=>`<tr data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><td class="rank">${i+1}</td><td><b>${esc(r.dev)}</b> ${esc(r.intf)}</td><td><span class="chip">${r.cls}</span></td><td class="mono">${mode==='growth'?(r.forecast.growthMoM>0?'+':'')+(r.forecast.growthMoM*100).toFixed(0)+'%':pct1(r.p95)}</td><td>${mode==='growth'?pct1(r.forecast.proj[90]):riskBar(r.risk.score)}</td><td><span class="pill ${r.verdict.level}">${r.verdict.title.split('—')[0].trim()}</span></td></tr>`).join('')||'<tr><td colspan=6 class="small">None</td></tr>'}</tbody></table></div>`;
+}
+
+function view_noc(){
+  if(!S.samples.length)return needData();
+  const a=A();const impactRank={Critical:0,High:1,Medium:2,Low:3};
+  const queue=[...a.ifs].filter(r=>r.verdict.level!=='normal').sort((x,y)=>(impactRank[x.impact]-impactRank[y.impact])||(y.risk.score-x.risk.score));
+  const allAnom=a.ifs.flatMap(r=>r.anomalies.map(an=>({...an,r}))).sort((x,y)=>y.ts-x.ts).slice(0,12);
+  const maintNow=S.maintenance.filter(m=>m.start<=Date.now()&&m.end>=Date.now());
+  return crumb([['NOC']])+`
+  <div class="verdict ${queue.some(r=>r.verdict.level==='critical')?'critical':'warning'}" style="margin-bottom:16px">
+    <span class="lvl pill ${queue.some(r=>r.verdict.level==='critical')?'critical':'normal'}">NOC Status</span>
+    <h3>${queue.length} item(s) need attention · ${queue.filter(r=>r.verdict.level==='critical').length} Critical</h3>
+    <div class="reason">Ranked by business impact × risk. ${maintNow.length?`<b>${maintNow.length} maintenance window(s) active</b> — alerts suppressed for affected links.`:'No active maintenance.'}</div>
+  </div>
+  <div class="grid g-main">
+    <div>
+      <div class="sec-title"><h2>Attention queue</h2><span class="sub">impact-ranked</span></div>
+      ${queue.slice(0,40).map(r=>nocCard(r)).join('')||'<div class="panel pad small">All monitored interfaces are healthy. 🎉</div>'}
+    </div>
+    <div>
+      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Live anomaly feed</h2></div>
+        ${allAnom.map(an=>`<div class="flex" style="margin-bottom:9px;cursor:pointer" data-nav='${JSON.stringify({view:'intf',id:an.r.ifid})}'><span class="tag" style="background:rgba(251,146,60,.15);color:#fdba74">⚠</span><div><div style="font-size:12.5px"><b>${esc(an.r.dev)}</b> ${esc(an.r.intf)}</div><div class="mini">${an.type} · ${fmtDate(an.ts)}</div></div></div>`).join('')||'<div class="mini">No anomalies detected.</div>'}
+      </div>
+      <div class="panel pad">
+        <div class="sec-title"><h2>Fleet health</h2></div>
+        ${['critical','high','warning','normal'].map(s=>{const n=a.ifs.filter(r=>r.verdict.level===s).length;return `<div class="flex" style="margin-bottom:8px"><i style="width:11px;height:11px;border-radius:3px;background:${stateColor(s)}"></i><span style="text-transform:capitalize">${s}</span><span class="spacer"></span><b class="mono">${n}</b></div>`;}).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+function nocCard(r){
+  return `<div class="verdict ${r.verdict.level}" style="margin-bottom:12px;cursor:pointer" data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'>
+    <div class="flex"><span class="lvl pill ${r.verdict.level}">${r.verdict.level}</span><span class="chip impact-${r.impact}">${r.impact}</span><span class="chip">${r.cls}</span><span class="spacer"></span>${riskBar(r.risk.score)}</div>
+    <h3 style="font-size:15px">${esc(r.verdict.title)} — ${esc(r.dev)} ${esc(r.intf)}</h3>
+    <div class="reason">${r.verdict.reason}</div>
+    <div class="act">▸ ${r.verdict.action} <span class="conf">· confidence ${(r.verdict.confidence*100).toFixed(0)}%</span></div>
+  </div>`;
+}
+
+function view_twin(){
+  if(!S.samples.length)return needData();
+  const a=A();const id=S.scope.twinSite,dev=S.scope.twinDev;
+  if(dev){const d=a.devices.find(x=>x.dev===dev);if(d)return twinDevice(d);}
+  if(id){const s=a.sites.find(x=>x.site===id);if(s)return twinSite(s);}
+  return crumb([['Digital Twin']])+`<div class="sec-title"><h2>Data Center Digital Twin</h2><span class="sub">click a site to descend · LED colour = health verdict</span></div>
+  <div class="twingrid">${a.sites.sort((x,y)=>y.risk-x.risk).map(s=>{const st=s.risk>=75?'critical':s.risk>=50?'high':s.risk>=30?'warning':'normal';return `<div class="tile" data-twin='${JSON.stringify({site:s.site})}'><div class="aura" style="background:${stateColor(st)}"></div><div class="flex"><div class="nm">🏢 ${esc(s.site)}</div><span class="spacer"></span>${riskBar(s.risk)}</div><div class="meta">${s.devices} devices · ${s.list.length} interfaces · ${s.critical} critical</div><div class="leds">${s.list.slice(0,40).map(r=>led(r)).join('')}</div></div>`;}).join('')}</div>`;
+}
+function twinSite(s){
+  const a=A();const devs=a.devices.filter(d=>d.site===s.site).sort((x,y)=>y.risk-x.risk);
+  return crumb([['Digital Twin',{view:'twin'}],[s.site]])+`<div class="sec-title"><h2>🏢 ${esc(s.site)}</h2><span class="sub">${devs.length} devices</span></div>
+  <div class="twingrid">${devs.map(d=>{const st=d.risk>=75?'critical':d.risk>=50?'high':d.risk>=30?'warning':'normal';return `<div class="tile" data-twin='${JSON.stringify({site:s.site,dev:d.dev})}'><div class="aura" style="background:${stateColor(st)}"></div><div class="flex"><div class="nm">🖧 ${esc(d.dev)}</div><span class="spacer"></span>${riskBar(d.risk)}</div><div class="meta">${d.list.length} interfaces · ${d.critical} critical</div><div class="leds">${d.list.map(r=>led(r)).join('')}</div></div>`;}).join('')}</div>`;
+}
+function twinDevice(d){
+  return crumb([['Digital Twin',{view:'twin'}],[d.site,{view:'twin',twin:{site:d.site}}],[d.dev]])+`<div class="sec-title"><h2>🖧 ${esc(d.dev)}</h2><span class="sub">front panel · click a port for analytics</span></div>
+  <div class="panel pad" style="margin-bottom:16px"><div class="frontpanel">${d.list.map(r=>`<div class="port" title="${esc(r.intf)} — ${r.verdict.title} (${pct1(r.p95)})" data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><div class="pl" style="background:${stateColor(r.verdict.level)}${r.verdict.level==='critical'?';box-shadow:0 0 6px '+stateColor('critical'):''}"></div></div>`).join('')}</div></div>
+  <table><thead><tr><th>Port</th><th>Class</th><th>Impact</th><th>p95</th><th>Risk</th><th>Verdict</th></tr></thead><tbody>${d.list.sort((x,y)=>y.risk.score-x.risk.score).map(r=>`<tr data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><td><b>${esc(r.intf)}</b></td><td><span class="chip">${r.cls}</span></td><td><span class="chip impact-${r.impact}">${r.impact}</span></td><td class="mono">${pct1(r.p95)}</td><td>${riskBar(r.risk.score)}</td><td><span class="pill ${r.verdict.level}">${esc(r.verdict.title.split('—')[0].trim())}</span></td></tr>`).join('')}</tbody></table>`;
+}
+function led(r){return `<div class="led ${r.verdict.level==='critical'?'crit':''}" title="${esc(r.intf)} — ${r.verdict.title} (${pct1(r.p95)})" style="background:${stateColor(r.verdict.level)}" data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'></div>`;}
+
+function view_intf(){
+  const a=A();const r=a.ifs.find(x=>x.ifid===S.scope.id);
+  if(!r)return needData();
+  const f=r.forecast;
+  const series=r.samples.filter(x=>x.util!=null).map(x=>[x.ts,x.util]);
+  const txS=r.samples.filter(x=>x.tx!=null&&r.speed).map(x=>[x.ts,x.tx/r.speed]);
+  const rxS=r.samples.filter(x=>x.rx!=null&&r.speed).map(x=>[x.ts,x.rx/r.speed]);
+  // forecast chart series
+  const lastD=r.daily.at(-1)?.d||Date.now();
+  const proj=[0,30,60,90,180].map(dd=>[lastD+dd*86400000,clamp(f.current+f.slopePerDay*dd,0,2)]);
+  const events=buildTimeline(r);
+  return crumb([['NOC',{view:'noc'}],[r.dev,{view:'twin',twin:{site:r.site,dev:r.dev}}],[r.intf]])+`
+  <div class="verdict ${r.verdict.level}" style="margin-bottom:16px">
+    <div class="flex"><span class="lvl pill ${r.verdict.level}">${r.verdict.level}</span><span class="chip impact-${r.impact}">${r.impact} impact</span><span class="chip">${r.cls}</span><span class="spacer"></span><span class="mono small">speed ${r.speed?fmtBps(r.speed):'?'}</span>${riskBar(r.risk.score)}</div>
+    <h3>${esc(r.dev)} · ${esc(r.intf)} — ${esc(r.verdict.title)}</h3>
+    <div class="reason">${r.verdict.reason}</div>
+    <div class="act">▸ ${r.verdict.action} <span class="conf">· confidence ${(r.verdict.confidence*100).toFixed(0)}% · ${r.verdict.comparison}</span></div>
+    <div style="margin-top:10px" class="flex"><button class="btn sm ghost" onclick="askRCA('${r.ifid}')">🔍 Explain (RCA)</button><button class="btn sm ghost" onclick="genReport('intf','${r.ifid}')">▦ Add to report</button></div>
+  </div>
+  <div class="grid g-main">
+    <div>
+      <div class="panel pad" style="margin-bottom:16px">
+        <div class="sec-title"><h2>Utilization</h2><span class="sub">TX / RX with threshold bands${S.maintenance.length?' · maintenance shaded':''}</span></div>
+        ${svgLineArea([{data:txS,color:'#38bdf8',wide:true},{data:rxS,color:'#818cf8'}],{h:230,bands:th(r.cls),maint:S.maintenance})}
+        <div class="legend"><span><i style="background:#38bdf8"></i>TX util</span><span><i style="background:#818cf8"></i>RX util</span><span><i style="background:var(--warning)"></i>warn</span><span><i style="background:var(--critical)"></i>critical</span></div>
+      </div>
+      <div class="grid g2" style="margin-bottom:16px">
+        <div class="panel pad"><div class="sec-title"><h2>Utilization rhythm</h2><span class="sub">day × hour</span></div>${heatmap(r.heat,r.cls)}</div>
+        <div class="panel pad"><div class="sec-title"><h2>State distribution</h2><span class="sub">time-in-state</span></div>
+          <div class="flex" style="gap:20px">${donut(r.dist)}<div class="dist-legend">
+            ${['normal','warning','high','critical'].map(k=>`<div class="row"><i style="background:${stateColor(k)}"></i><span style="text-transform:capitalize">${k}</span><b>${(r.dist[k]*100).toFixed(0)}%</b></div>`).join('')}
+          </div></div>
+          <div class="ai" style="margin-top:12px"><div class="h">◆ AI explanation</div><p>${distExplain(r)}</p></div>
+        </div>
+      </div>
+      <div class="panel pad">
+        <div class="sec-title"><h2>Capacity forecast</h2><span class="sub">30/60/90/180-day projection</span></div>
+        ${svgLineArea([{data:r.daily.map(d=>[d.d,d.p95]),color:'#2dd4bf',wide:true},{data:proj,color:'#fb923c',dash:true}],{h:200,bands:th(r.cls),y1:Math.max(1,f.proj[180]*1.1)})}
+        <div class="legend"><span><i style="background:#2dd4bf"></i>historical p95</span><span><i style="background:#fb923c"></i>forecast</span></div>
+        <div class="grid g4" style="margin-top:12px">
+          ${fcell('Time to 80%',f.t80)}${fcell('Time to 90%',f.t90)}${fcell('Time to 95%',f.t95)}
+          <div class="kpi"><div class="l">Upgrade window</div><div class="v mono" style="font-size:18px">${f.window?f.window[0]+'–'+f.window[1]+'d':'—'}</div><div class="t flat">conf ${(f.conf*100).toFixed(0)}%</div></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="ai" style="margin-bottom:16px"><div class="h">◆ AI summary</div><p>${r.ai}</p></div>
+      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Risk factors</h2><span class="sub">${r.risk.score}/100</span></div>
+        ${Object.entries(r.risk.factors).map(([k,v])=>`<div class="flex" style="margin-bottom:7px"><span style="width:90px" class="small">${k}</span><span class="track" style="flex:1;height:6px;border-radius:4px;background:rgba(120,150,200,.15);overflow:hidden"><i style="display:block;height:100%;width:${clamp(v,0,1)*100}%;background:linear-gradient(90deg,#38bdf8,#f43f5e)"></i></span></div>`).join('')}
+        <div class="mini" style="margin-top:8px">× ${r.risk.impactMul} business-impact multiplier (${r.impact})</div>
+      </div>
+      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Anomalies</h2></div>
+        ${r.anomalies.length?r.anomalies.map(an=>`<div style="margin-bottom:9px"><b class="small" style="color:#fdba74">⚠ ${an.type}</b><div class="mini">${fmtDate(an.ts)}${an.z?` · z=${an.z.toFixed(1)}`:''}${an.util?` · ~${pct1(an.util)}`:''}</div></div>`).join(''):'<div class="mini">No anomalies vs baseline.</div>'}
+      </div>
+      <div class="panel pad"><div class="sec-title"><h2>Timeline</h2></div>
+        <div class="tl">${events.map(e=>`<div class="ev ${e.k}"><div class="tm">${fmtDate(e.ts)}</div><div>${e.txt}</div></div>`).join('')||'<div class="mini">No events.</div>'}</div>
+        <div class="flex" style="margin-top:10px"><input type="text" id="cmt" placeholder="Add a comment / annotation" style="flex:1"><button class="btn sm" onclick="addComment('${r.ifid}')">Add</button></div>
+      </div>
+    </div>
+  </div>`;
+}
+function fcell(l,v){const days=v!=null&&v>0&&v<3650?Math.round(v)+'d':(v!=null&&v<=0?'now':'—');return `<div class="kpi"><div class="l">${l}</div><div class="v mono" style="font-size:20px">${days}</div></div>`;}
+function distExplain(r){
+  const crit=r.dist.critical,high=r.dist.high;
+  if(crit>0.02)return `${pct1(crit)} of polling intervals were in the Critical band and ${pct1(high)} High. Congestion clusters ${peakWindow(r)}, concentrated in business hours — consistent with a ${r.forecast.growthMoM>0.05?'growing':'chronically loaded'} link that warrants capacity review.`;
+  if(high+r.dist.warning>0.2)return `The link spends ${pct1(high+r.dist.warning)} of intervals elevated (Warning/High) but rarely Critical. Peaks cluster ${peakWindow(r)}. Monitor for trend.`;
+  return `The link is comfortably within normal bounds (${pct1(r.dist.normal)} of intervals Normal). No congestion pattern of concern.`;
+}
+function peakWindow(r){let best=null,bv=-1;for(const k in r.heat){if(r.heat[k]>bv){bv=r.heat[k];best=k;}}if(!best)return'across the week';const[d,h]=best.split('-');return `around ${h}:00 on ${DOW[+d]}`;}
+function buildTimeline(r){
+  const ev=[];
+  ev.push({ts:r.start,k:'',txt:'📈 Monitoring began — first sample ingested'});
+  for(const an of r.anomalies.slice(0,4))ev.push({ts:an.ts,k:'warning',txt:`⚠ Anomaly: ${an.type}`});
+  const t=th(r.cls);const firstBreach=r.samples.find(x=>x.util>=t.crit);
+  if(firstBreach)ev.push({ts:firstBreach.ts,k:'critical',txt:`🔴 First Critical breach (${pct1(firstBreach.util)})`});
+  for(const m of S.maintenance.filter(m=>m.target===r.ifid||m.target===r.dev||m.scope==='all'))ev.push({ts:m.start,k:'maint',txt:`⚙ Maintenance: ${esc(m.reason||'window')}`});
+  for(const c of (S.comments[r.ifid]||[]))ev.push({ts:c.ts,k:'',txt:`💬 ${esc(c.who)}: ${esc(c.txt)}`});
+  return ev.sort((a,b)=>b.ts-a.ts);
+}
+
+function view_capacity(){
+  if(!S.samples.length)return needData();
+  const a=A();const list=[...a.ifs].filter(r=>r.forecast.t90!=null).sort((x,y)=>{const ax=x.forecast.t90>0?x.forecast.t90:1e9,ay=y.forecast.t90>0?y.forecast.t90:1e9;return ax-ay;});
+  const breaching=list.filter(r=>r.forecast.t90>0&&r.forecast.t90<=90);
+  return crumb([['Capacity Planning']])+`
+  <div class="verdict ${breaching.length?'high':'normal'}" style="margin-bottom:16px"><span class="lvl pill ${breaching.length?'high':'normal'}">Capacity Outlook</span>
+    <h3>${breaching.length} link(s) forecast to breach 90% within 90 days</h3>
+    <div class="reason">Forecasts use robust trend regression on daily p95 (busy-period). Recommended windows account for a ${S.cfg.upgradeLeadDays}-day upgrade lead time.</div>
+    <div class="act"><a onclick="genReport('capacity')">Generate Weekly Capacity Report →</a></div></div>
+  <div class="panel pad"><table><thead><tr><th>Interface</th><th>Class</th><th>Impact</th><th>Current p95</th><th>Slope/mo</th><th>Time→80%</th><th>Time→90%</th><th>Time→95%</th><th>Upgrade window</th><th>Conf</th></tr></thead><tbody>
+  ${list.slice(0,60).map(r=>{const f=r.forecast;const tt=v=>v!=null&&v>0&&v<3650?Math.round(v)+'d':(v!=null&&v<=0?'now':'—');const urgent=f.t90>0&&f.t90<=90;return `<tr data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><td><b>${esc(r.dev)}</b> ${esc(r.intf)}</td><td><span class="chip">${r.cls}</span></td><td><span class="chip impact-${r.impact}">${r.impact}</span></td><td class="mono">${pct1(f.current)}</td><td class="mono ${f.slopePerDay>0?'up':'down'}">${(f.slopePerDay*30*100).toFixed(1)}%</td><td class="mono">${tt(f.t80)}</td><td class="mono" style="${urgent?'color:var(--critical);font-weight:700':''}">${tt(f.t90)}</td><td class="mono">${tt(f.t95)}</td><td class="mono">${f.window?f.window[0]+'–'+f.window[1]+'d':'—'}</td><td class="mono">${(f.conf*100).toFixed(0)}%</td></tr>`;}).join('')}
+  </tbody></table></div>`;
+}
+function view_trends(){
+  if(!S.samples.length)return needData();
+  const a=A();const grow=[...a.ifs].sort((x,y)=>y.forecast.growthMoM-x.forecast.growthMoM);
+  return crumb([['Trend Analysis']])+`<div class="grid g2">
+    ${topNTable('Top Growing Links',grow.filter(r=>r.forecast.growthMoM>0).slice(0,10),'growth')}
+    ${topNTable('Top Declining Links',grow.filter(r=>r.forecast.growthMoM<0).reverse().slice(0,10),'growth')}
+  </div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Fleet growth distribution</h2></div>
+  <table><thead><tr><th>Interface</th><th>Class</th><th>MoM growth</th><th>Trend</th><th>p95</th></tr></thead><tbody>
+  ${grow.slice(0,40).map(r=>`<tr data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><td><b>${esc(r.dev)}</b> ${esc(r.intf)}</td><td><span class="chip">${r.cls}</span></td><td class="mono ${r.forecast.growthMoM>0?'up':'down'}">${r.forecast.growthMoM>0?'+':''}${(r.forecast.growthMoM*100).toFixed(0)}%</td><td>${sparkline(r.daily,r.forecast.growthMoM>0?'#fb7185':'#34d399')}</td><td class="mono">${pct1(r.p95)}</td></tr>`).join('')}
+  </tbody></table></div>`;
+}
+function view_anomalies(){
+  if(!S.samples.length)return needData();
+  const a=A();const all=a.ifs.flatMap(r=>r.anomalies.map(an=>({...an,r}))).sort((x,y)=>{const ir={Critical:0,High:1,Medium:2,Low:3};return ir[x.r.impact]-ir[y.r.impact]||y.ts-x.ts;});
+  return crumb([['Anomalies']])+`<div class="sec-title"><h2>Anomaly feed</h2><span class="sub">${all.length} detected · baseline-relative, impact-ranked</span></div>
+  <div class="panel pad"><table><thead><tr><th>Type</th><th>Interface</th><th>Class</th><th>Impact</th><th>When</th><th>Detail</th></tr></thead><tbody>
+  ${all.map(an=>`<tr data-nav='${JSON.stringify({view:'intf',id:an.r.ifid})}'><td><b style="color:#fdba74">⚠ ${an.type}</b></td><td><b>${esc(an.r.dev)}</b> ${esc(an.r.intf)}</td><td><span class="chip">${an.r.cls}</span></td><td><span class="chip impact-${an.r.impact}">${an.r.impact}</span></td><td class="small">${fmtDate(an.ts)}</td><td class="mono small">${an.z?`z=${an.z.toFixed(1)}, ~${pct1(an.util)} vs exp ${pct1(an.exp)}`:an.ratio?`${an.ratio.toFixed(1)}× imbalance`:an.util?`~${pct1(an.util)}`:''}</td></tr>`).join('')||'<tr><td colspan=6 class="small">No anomalies detected.</td></tr>'}
+  </tbody></table></div>`;
+}
+function view_historical(){
+  if(!S.samples.length)return needData();
+  const a=A();const r=a.ifs.find(x=>x.ifid===S.scope.id)||a.ifs.sort((x,y)=>y.risk.score-x.risk.score)[0];
+  return crumb([['Historical']])+`<div class="sec-title"><h2>Historical Analysis</h2><span class="sub">compare an interface to its own baseline</span></div>
+  <div class="panel pad" style="margin-bottom:14px"><label class="fld" style="max-width:420px"><span>Interface</span><select id="histSel" onchange="S.scope.id=this.value;render()">${a.ifs.map(x=>`<option value="${x.ifid}" ${x.ifid===r.ifid?'selected':''}>${esc(x.dev)} ${esc(x.intf)}</option>`).join('')}</select></label></div>
+  <div class="panel pad"><div class="sec-title"><h2>${esc(r.dev)} ${esc(r.intf)} — utilization rhythm</h2></div>${heatmap(r.heat,r.cls)}
+  <div class="ai" style="margin-top:14px"><div class="h">◆ Deviation summary</div><p>Same-weekday baseline analysis: peak load ${peakWindow(r)}. Current p95 ${pct1(r.p95)} vs period average ${pct1(r.avg)}. ${r.forecast.growthMoM>0.05?`Running ${(r.forecast.growthMoM*100).toFixed(0)}% above the previous-month baseline.`:'In line with recent baseline.'}</p></div></div>`;
+}
+
+function view_uploads(){
+  const st=S.staged;
+  let stagedHtml='';
+  if(st){const fnd=st.findings;const canCommit=fnd.block.length===0;
+    stagedHtml=`<div class="panel pad" style="margin-bottom:16px;border-color:var(--stroke2)">
+      <div class="sec-title"><h2>Validation Console — “${esc(st.parsed.name)}”</h2><span class="sub">${st.built.samples.length.toLocaleString()} rows · cadence ${st.built.intervalNote||'?'} · covers ${fmtDay(st.built.coverage[0])}–${fmtDay(st.built.coverage[1])}</span></div>
+      <div class="sec-title" style="margin-top:6px"><h2 style="font-size:13px">Resolved columns (understood by meaning)</h2></div>
+      <div style="margin-bottom:14px">${Object.keys(FIELD_ALIASES).filter(f=>st.parsed.resolved.map[f]!=null).map(f=>{const c=st.parsed.resolved.conf[f]||0;return `<div class="map-row"><b class="small">${f}</b><span style="text-align:center">→</span><span class="small">“${esc(st.parsed.headers[st.parsed.resolved.map[f]])}”${st.parsed.resolved.headers.find(h=>h.i===st.parsed.resolved.map[f])?.unit?' <span class="chip">unit detected</span>':''}</span><span class="mini">${Math.round(c*100)}%<div class="confbar"><i style="width:${c*100}%"></i></div></span></div>`;}).join('')}
+      ${Object.keys(FIELD_ALIASES).filter(f=>st.parsed.resolved.map[f]==null&&['device','interface','ts','tx','rx','speed'].includes(f)).map(f=>`<div class="map-row"><b class="small" style="color:#fca5a5">${f}</b><span style="text-align:center">→</span><select onchange="remap('${f}',this.value)"><option value="">— unmapped —</option>${st.parsed.headers.map((h,i)=>`<option value="${i}">${esc(h)}</option>`).join('')}</select><span class="mini">manual</span></div>`).join('')}</div>
+      ${fnd.block.map(m=>`<div class="sev-block block"><b>⛔ Blocking</b> — ${m}</div>`).join('')}
+      ${fnd.warn.map(m=>`<div class="sev-block warn"><b>⚠ Warning</b> — ${m}</div>`).join('')}
+      ${fnd.info.map(m=>`<div class="sev-block info"><b>ℹ Info</b> — ${m}</div>`).join('')}
+      <div class="flex" style="margin-top:14px"><button class="btn" ${canCommit?'':'disabled'} onclick="commitStaged()">✓ Commit ${st.built.samples.length-st.built.overlap} new samples</button><button class="btn ghost" onclick="S.staged=null;render()">Cancel</button>${canCommit?'':'<span class="small" style="color:#fca5a5">Resolve blocking issues to commit.</span>'}</div>
+    </div>`;
+  }
+  return crumb([['Uploads']])+`
+  ${st?'':`<div class="panel pad" style="margin-bottom:16px"><div class="dz" id="dz"><div style="font-size:34px;opacity:.6">⭱</div><h3 style="margin:8px 0">Drop XLSX / CSV files here</h3><p class="small">Headers are understood by <b>meaning</b> (not fixed names). Bandwidth in Gbps/Mbps/Kbps/bytes is auto-normalized. History is never overwritten.</p><div class="flex" style="justify-content:center;margin-top:12px"><button class="btn" onclick="fileInput.click()">Choose files</button><button class="btn ghost" onclick="genDemo()">✨ Demo data</button></div><input type="file" id="fileInput" accept=".xlsx,.csv" multiple style="display:none"></div></div>`}
+  ${stagedHtml}
+  <div class="panel pad"><div class="sec-title"><h2>Upload history</h2><span class="sub">${S.batches.length} batch(es) · append-only</span></div>
+  <table><thead><tr><th>File</th><th>Uploaded</th><th>By</th><th>Coverage</th><th>Rows</th><th>Added</th><th>Interfaces</th><th>Cadence</th></tr></thead><tbody>
+  ${S.batches.map(b=>`<tr><td><b>${esc(b.file)}</b></td><td class="small">${fmtDate(b.ts)}</td><td class="small">${esc(b.who)}</td><td class="small">${b.coverage?fmtDay(b.coverage[0])+'–'+fmtDay(b.coverage[1]):'–'}</td><td class="mono">${b.rows}</td><td class="mono">${b.added}</td><td class="mono">${b.entities}</td><td class="small">${b.intervalNote||'–'}</td></tr>`).join('')||'<tr><td colspan=8 class="small">No uploads yet.</td></tr>'}
+  </tbody></table></div>`;
+}
+
+function view_maintenance(){
+  const a=S.samples.length?A():{ifs:[],devices:[]};
+  return crumb([['Maintenance']])+`<div class="grid g-main">
+    <div class="panel pad"><div class="sec-title"><h2>Maintenance windows</h2><span class="sub">excluded from alerts / SLA / trend</span></div>
+    <table><thead><tr><th>Scope</th><th>Start</th><th>End</th><th>Reason</th><th>By</th><th></th></tr></thead><tbody>
+    ${S.maintenance.map((m,i)=>`<tr><td>${m.scope==='all'?'All':esc(m.target)}</td><td class="small">${fmtDate(m.start)}</td><td class="small">${fmtDate(m.end)}</td><td class="small">${esc(m.reason||'')}</td><td class="small">${esc(m.who)}</td><td><button class="btn sm ghost" onclick="delMaint(${i})">✕</button></td></tr>`).join('')||'<tr><td colspan=6 class="small">No maintenance windows.</td></tr>'}
+    </tbody></table></div>
+    <div class="panel pad"><div class="sec-title"><h2>New window</h2></div>
+      <label class="fld"><span>Scope</span><select id="mScope"><option value="all">All interfaces</option>${a.devices.map(d=>`<option value="dev:${esc(d.dev)}">Device: ${esc(d.dev)}</option>`).join('')}${a.ifs.map(r=>`<option value="if:${esc(r.ifid)}">Intf: ${esc(r.dev)} ${esc(r.intf)}</option>`).join('')}</select></label>
+      <label class="fld"><span>Start</span><input type="datetime-local" id="mStart"></label>
+      <label class="fld"><span>End</span><input type="datetime-local" id="mEnd"></label>
+      <label class="fld"><span>Reason</span><input type="text" id="mReason" placeholder="e.g. line-card replacement"></label>
+      <button class="btn" onclick="addMaint()">Add window</button>
+    </div></div>`;
+}
+function view_reports(){
+  const reports=[['exec','Executive Summary'],['capacity','Weekly Capacity Report'],['trend','Monthly Trend Report'],['busy','Top Busy Links'],['critical','Top Critical Links'],['idle','Idle Links'],['impact','Business Impact Report']];
+  return crumb([['Reports']])+`<div class="sec-title"><h2>Business Reports</h2><span class="sub">generated · grounded · exportable</span></div>
+  <div class="grid g3">${reports.map(([k,l])=>`<div class="panel pad"><div class="sec-title"><h2 style="font-size:14px">${l}</h2></div><div class="flex"><button class="btn sm" onclick="genReport('${k}')">Generate</button></div></div>`).join('')}</div>
+  <div id="reportOut" style="margin-top:16px"></div>`;
+}
+function view_audit(){
+  return crumb([['Audit Log']])+`<div class="sec-title"><h2>Audit Trail</h2><span class="sub">append-only · ${S.audit.length} events</span></div>
+  <div class="panel pad"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead><tbody>
+  ${S.audit.map(e=>`<tr style="cursor:default"><td class="small">${fmtDate(e.ts)}</td><td class="small">${esc(e.who)}</td><td><span class="chip">${esc(e.action)}</span></td><td class="small">${esc(e.target)}</td><td class="small">${esc(e.detail)}</td></tr>`).join('')||'<tr><td colspan=5 class="small">No audit events yet.</td></tr>'}
+  </tbody></table></div>`;
+}
+function view_admin(){
+  const t=S.cfg.thresholds,bh=S.cfg.businessHours;
+  return crumb([['Admin']])+`<div class="tabs"><button class="active">Thresholds & Rules</button></div>
+  <div class="grid g2">
+    <div class="panel pad"><div class="sec-title"><h2>Global thresholds</h2><span class="sub">utilization bands</span></div>
+      <label class="fld"><span>Warning ≥ (%)</span><input type="number" id="thWarn" value="${(t.warn*100).toFixed(0)}"></label>
+      <label class="fld"><span>High ≥ (%)</span><input type="number" id="thHigh" value="${(t.high*100).toFixed(0)}"></label>
+      <label class="fld"><span>Critical ≥ (%)</span><input type="number" id="thCrit" value="${(t.crit*100).toFixed(0)}"></label>
+      <button class="btn" onclick="saveThresholds()">Save thresholds</button>
+    </div>
+    <div class="panel pad"><div class="sec-title"><h2>Business hours & planning</h2></div>
+      <label class="fld"><span>Business start hour</span><input type="number" id="bhStart" value="${bh.startHr}"></label>
+      <label class="fld"><span>Business end hour</span><input type="number" id="bhEnd" value="${bh.endHr}"></label>
+      <label class="fld"><span>Planning horizon (days)</span><input type="number" id="planH" value="${S.cfg.planHorizonDays}"></label>
+      <label class="fld"><span>Upgrade lead time (days)</span><input type="number" id="leadD" value="${S.cfg.upgradeLeadDays}"></label>
+      <button class="btn" onclick="savePlanning()">Save</button>
+    </div>
+  </div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Class-specific policies</h2><span class="sub">stricter/looser bands per interface class</span></div>
+  <table><thead><tr><th>Class</th><th>Warn</th><th>High</th><th>Critical</th><th>Default impact</th></tr></thead><tbody>
+  ${['Core','Trading','Internet','WAN','Storage','Backup','Voice','Management','Customer'].map(c=>{const ct=th(c);const im=classify('',c).impact;return `<tr style="cursor:default"><td><span class="chip">${c}</span></td><td class="mono">${(ct.warn*100).toFixed(0)}%</td><td class="mono">${(ct.high*100).toFixed(0)}%</td><td class="mono">${(ct.crit*100).toFixed(0)}%</td><td><span class="chip impact-${im}">${im}</span></td></tr>`;}).join('')}
+  </tbody></table></div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Data management</h2></div><div class="flex"><button class="btn ghost" onclick="exportAll()">⤓ Export all data (JSON)</button><button class="btn ghost" onclick="resetAll()" style="color:#fca5a5">Reset all data</button></div></div>`;
+}
+
+/* ------------------------------ report gen -------------------------------- */
+function genReport(kind,id){
+  const a=A();let title='',body='';
+  const tbl=(rows,cols)=>`<table><thead><tr>${cols.map(c=>`<th>${c[0]}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${c[1](r)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  if(kind==='exec'){title='Executive Summary';const crit=a.ifs.filter(r=>r.verdict.level==='critical');const b90=a.ifs.filter(r=>r.forecast.t90>0&&r.forecast.t90<=90);
+    body=`<div class="ai"><div class="h">◆ Narrative</div><p>Infrastructure risk stands at <b>${a.infraRisk}/100</b> across ${a.sites.length} site(s) and ${a.ifs.length} interfaces. ${crit.length} link(s) are critical; ${b90.length} are forecast to breach 90% utilization within 90 days. Recommended focus: the highest-risk business-critical links listed below.</p></div>
+    <h3 style="margin:16px 0 8px">Top exposures</h3>${tbl([...a.ifs].sort((x,y)=>y.risk.score-x.risk.score).slice(0,10),[['Interface',r=>`${esc(r.dev)} ${esc(r.intf)}`],['Class',r=>r.cls],['Impact',r=>r.impact],['Risk',r=>r.risk.score],['Verdict',r=>r.verdict.title]])}`;}
+  else if(kind==='capacity'){title='Weekly Capacity Report';const list=a.ifs.filter(r=>r.forecast.t90>0).sort((x,y)=>x.forecast.t90-y.forecast.t90).slice(0,15);
+    body=tbl(list,[['Interface',r=>`${esc(r.dev)} ${esc(r.intf)}`],['Class',r=>r.cls],['p95',r=>pct1(r.p95)],['MoM',r=>(r.forecast.growthMoM*100).toFixed(0)+'%'],['Time→90%',r=>Math.round(r.forecast.t90)+'d'],['Upgrade window',r=>r.forecast.window?r.forecast.window.join('–')+'d':'—'],['Conf',r=>(r.forecast.conf*100).toFixed(0)+'%']]);}
+  else if(kind==='trend'){title='Monthly Trend Report';const g=[...a.ifs].sort((x,y)=>y.forecast.growthMoM-x.forecast.growthMoM).slice(0,15);
+    body=tbl(g,[['Interface',r=>`${esc(r.dev)} ${esc(r.intf)}`],['Class',r=>r.cls],['MoM growth',r=>(r.forecast.growthMoM>0?'+':'')+(r.forecast.growthMoM*100).toFixed(0)+'%'],['p95',r=>pct1(r.p95)]]);}
+  else if(kind==='busy'){title='Top Busy Links';const g=[...a.ifs].sort((x,y)=>y.p95-x.p95).slice(0,15);body=tbl(g,[['Interface',r=>`${esc(r.dev)} ${esc(r.intf)}`],['Class',r=>r.cls],['p95',r=>pct1(r.p95)],['Peak',r=>pct1(r.mx)]]);}
+  else if(kind==='critical'){title='Top Critical Links';const g=[...a.ifs].filter(r=>r.verdict.level==='critical').sort((x,y)=>y.risk.score-x.risk.score);body=tbl(g,[['Interface',r=>`${esc(r.dev)} ${esc(r.intf)}`],['Impact',r=>r.impact],['Risk',r=>r.risk.score],['Verdict',r=>r.verdict.title]])||'<p>No critical links.</p>';}
+  else if(kind==='idle'){title='Idle Links';const g=[...a.ifs].filter(r=>r.p95<0.05).sort((x,y)=>x.p95-y.p95);body=tbl(g,[['Interface',r=>`${esc(r.dev)} ${esc(r.intf)}`],['Class',r=>r.cls],['p95',r=>pct1(r.p95)]])||'<p>No idle links.</p>';}
+  else if(kind==='impact'){title='Business Impact Report';const ir={Critical:0,High:1,Medium:2,Low:3};const g=[...a.ifs].filter(r=>r.verdict.level!=='normal').sort((x,y)=>ir[x.impact]-ir[y.impact]||y.risk.score-x.risk.score);body=tbl(g.slice(0,20),[['Interface',r=>`${esc(r.dev)} ${esc(r.intf)}`],['Impact',r=>r.impact],['Verdict',r=>r.verdict.title],['Risk',r=>r.risk.score]]);}
+  else if(kind==='intf'){const r=a.ifs.find(x=>x.ifid===id);title='Interface Report — '+r.dev+' '+r.intf;body=`<div class="ai"><div class="h">◆ Summary</div><p>${r.ai}</p></div>`;}
+  logAudit('report.generate',title);
+  const html=`<div class="panel pad" id="rpt"><div class="flex"><h2>${title}</h2><span class="spacer"></span><span class="small">${new Date().toLocaleString()}</span><button class="btn sm ghost" onclick="exportReport('${esc(title)}')">⤓ Export HTML</button><button class="btn sm ghost" onclick="window.print()">🖨 PDF</button></div><div class="small" style="margin:6px 0 14px">NetPulse · generated report · excludes maintenance windows</div>${body}</div>`;
+  const out=$('#reportOut');
+  if(out){out.innerHTML=html;out.scrollIntoView({behavior:'smooth'});}
+  else{go('reports');setTimeout(()=>{$('#reportOut').innerHTML=html;},50);}
+}
+function exportReport(title){const el=$('#rpt');if(!el)return;const blob=new Blob([`<!doctype html><meta charset=utf8><title>${title}</title><body style="background:#0a0e17;color:#e6edf7;font-family:sans-serif;padding:30px">${el.innerHTML}</body>`],{type:'text/html'});dl(blob,title.replace(/\W+/g,'_')+'.html');logAudit('report.export',title);}
+function dl(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;a.click();URL.revokeObjectURL(u);}
+function exportAll(){dl(new Blob([JSON.stringify({batches:S.batches,samples:S.samples,cfg:S.cfg,audit:S.audit},null,0)],{type:'application/json'}),'netpulse_export.json');logAudit('data.export','all');}
+
+function askRCA(id){const a=A();const r=a.ifs.find(x=>x.ifid===id);const f=r.forecast;const firstBreach=r.samples.find(x=>x.util>=th(r.cls).crit);
+  const rel=a.byDev[r.dev].filter(x=>x.ifid!==id).sort((x,y)=>y.risk.score-x.risk.score).slice(0,3);
+  const msg=`
+  <div class="ai" style="text-align:left"><div class="h">🔍 RCA — ${esc(r.dev)} ${esc(r.intf)}</div>
+  <p><b>When did it start?</b> ${firstBreach?fmtDate(firstBreach.ts):'No hard breach; elevated trend'}<br>
+  <b>Recurring?</b> ${r.bhDays>=3?`Yes — high/critical on ${r.bhDays} business days`:'Not strongly recurring'}<br>
+  <b>Business hours?</b> ${r.breachesBH>0?`Yes — ${r.breachesBH} business-hour breaches`:'Mostly off-hours'}<br>
+  <b>Growth trend?</b> ${(f.growthMoM*100).toFixed(0)}% MoM, ${f.slopePerDay>0?'rising':'flat/declining'}<br>
+  <b>Related interfaces?</b> ${rel.map(x=>esc(x.intf)).join(', ')||'none correlated'}<br>
+  <b>Maintenance correlation?</b> ${S.maintenance.some(m=>m.target===r.ifid||m.target===r.dev)?'Overlaps a maintenance window':'None'}<br>
+  <b>Likely cause?</b> ${rcaCause(r)}<br>
+  <b>Recommended next steps?</b> ${r.verdict.action}</p></div>`;
+  toast('RCA generated — see interface');logAudit('rca.generate',r.ifid);
+  const banner=$('.verdict');if(banner)banner.insertAdjacentHTML('afterend',`<div style="margin-bottom:16px">${msg}</div>`);
+}
+function rcaCause(r){const f=r.forecast;if(f.growthMoM>0.1&&r.bhDays>=3)return'Organic business-hour demand growth';if(r.anomalies.some(a=>a.type.includes('Weekend')))return'Newly scheduled off-hours job (backup/replication) or misclassification';if(r.anomalies.some(a=>a.type.includes('imbalance')))return'Asymmetric routing / unidirectional flow';if(r.mx>0.9)return'Localized burst / elephant flow';return'Elevated utilization consistent with steady load';}
+
+/* ------------------------------ interactions ------------------------------ */
+function addComment(id){const v=$('#cmt').value.trim();if(!v)return;(S.comments[id]=S.comments[id]||[]).push({ts:Date.now(),who:S.role,txt:v});save('comments');logAudit('comment.add',id,v);render();}
+function addMaint(){const scope=$('#mScope').value;const s=$('#mStart').value,e=$('#mEnd').value;if(!s||!e)return toast('Set start and end');
+  let sc='all',target='';if(scope.startsWith('dev:')){sc='dev';target=scope.slice(4);}else if(scope.startsWith('if:')){sc='if';target=scope.slice(3);}
+  S.maintenance.push({scope:sc,target,start:new Date(s).getTime(),end:new Date(e).getTime(),reason:$('#mReason').value,who:S.role});save('maintenance');logAudit('maintenance.create',target||'all');S.analytics=null;render();toast('Maintenance window added');}
+function delMaint(i){S.maintenance.splice(i,1);save('maintenance');logAudit('maintenance.delete','');S.analytics=null;render();}
+function saveThresholds(){S.cfg.thresholds={warn:+$('#thWarn').value/100,high:+$('#thHigh').value/100,crit:+$('#thCrit').value/100};save('cfg');logAudit('config.thresholds','',JSON.stringify(S.cfg.thresholds));S.analytics=null;toast('Thresholds saved — verdicts recomputed');render();}
+function savePlanning(){S.cfg.businessHours.startHr=+$('#bhStart').value;S.cfg.businessHours.endHr=+$('#bhEnd').value;S.cfg.planHorizonDays=+$('#planH').value;S.cfg.upgradeLeadDays=+$('#leadD').value;save('cfg');logAudit('config.planning');S.analytics=null;toast('Saved');render();}
+function remap(field,idx){S.staged.parsed.resolved.map[field]=idx===''?null:+idx;S.staged.parsed.resolved.conf[field]=1;reStage();}
+function reStage(){const st=S.staged;st.built=buildSamples(st.parsed.rows,st.parsed.resolved,st.parsed.name,'staged');st.findings=validateStaged(st.parsed,st.built);render();}
+function resetAll(){if(!confirm('Delete all uploaded data, batches, config and audit? This cannot be undone.'))return;S.samples=[];S.batches=[];S.maintenance=[];S.comments={};S.analytics=null;save('samples');save('batches');save('maintenance');save('comments');logAudit('data.reset','all');toast('All data cleared');go('uploads');}
+
+async function handleFiles(files){
+  for(const f of files){
+    try{const parsed=await ingestFile(f);const built=buildSamples(parsed.rows,parsed.resolved,parsed.name,'staged');const findings=validateStaged(parsed,built);S.staged={parsed,built,findings};render();}
+    catch(e){toast('❌ '+esc(f.name)+': '+esc(e.message));console.error(e);}
+    break; // one at a time through the validation console
+  }
+}
+
+/* --------------------------------- demo ----------------------------------- */
+function genDemo(){
+  const sites=['LON','NYC'];const devs=['Core-01','Core-02','Edge-01','Leaf-11','Leaf-12','Agg-01'];
+  const intfs=[['Ethernet1/1','Core'],['Ethernet1/2','Trading'],['Ethernet1/3','Internet'],['Po10','Core'],['Ethernet2/1','Backup'],['Ethernet2/2','Storage'],['Ethernet2/3','Customer'],['mgmt0','Management']];
+  const speeds={Core:1e11,Trading:1e10,Internet:1e10,Backup:1e10,Storage:4e10,Customer:1e10,Management:1e9};
+  const now=Date.now();const start=now-14*86400000;const rows=[];
+  let seed=42;const rnd=()=>{seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff;};
+  for(let si=0;si<sites.length;si++)for(let di=0;di<3;di++){const dev=sites[si]+'-'+devs[di+si*3%devs.length];
+    for(const [intf,cls] of intfs){const speed=speeds[cls];const base=({Trading:.35,Core:.4,Internet:.5,Backup:.15,Storage:.3,Customer:.45,Management:.05})[cls]||.3;
+      const growth=(cls==='Trading'||cls==='Internet'||cls==='Customer')?(0.35+rnd()*0.5):(rnd()*0.12);
+      for(let t=start;t<now;t+=3600000){const d=new Date(t);const hr=d.getHours(),dow=d.getDay();const prog=(t-start)/(now-start);
+        let u=base*(1+growth*prog);
+        if(dow>=1&&dow<=5&&hr>=9&&hr<17)u*=1.35+ (cls==='Trading'?0.35:0);
+        else u*=0.5;
+        if((dow===0||dow===6)&&cls==='Backup')u=0.8+rnd()*0.15;
+        if((dow===0)&&cls==='Core'&&rnd()>0.75)u+=0.28; // injected weekend anomaly
+        u=Math.max(0.01,u+ (rnd()-0.5)*0.10);
+        const util=Math.min(u,0.99);const bps=util*speed;const rx=bps*(0.55+rnd()*0.45);
+        rows.push([dev,intf,new Date(t).toISOString().slice(0,19).replace('T',' '),(bps/1e9).toFixed(3),(rx/1e9).toFixed(3),(speed/1e9)+'G']);
+      }}}
+  const headers=['Device','Port','Poll Timestamp','Tx (Gbps)','Rx (Gbps)','Speed'];
+  const resolved=resolveColumns(headers,rows);
+  const built=buildSamples(rows,resolved,'demo_polling_14d.xlsx','staged');
+  const batchId='b'+Date.now();built.samples.forEach(x=>x.batch=batchId);
+  S.samples=S.samples.concat(built.samples);
+  S.batches.unshift({id:batchId,file:'demo_polling_14d.xlsx',ts:Date.now(),who:S.role,rows:rows.length,added:built.samples.length,coverage:[start,now],checksum:'demo',src:'demo',intervalNote:'~60 min',entities:new Set(built.samples.map(x=>x.ifid)).size,map:resolved.map,headers});
+  save('samples');save('batches');logAudit('demo.generate','',built.samples.length+' samples');
+  S.analytics=null;toast('✨ Demo data generated — '+built.samples.length.toLocaleString()+' samples');go('exec');
+}
+
+/* ------------------------------- router ----------------------------------- */
+const VIEWS={exec:view_exec,noc:view_noc,twin:view_twin,intf:view_intf,site:view_twin_site_redirect,capacity:view_capacity,trends:view_trends,anomalies:view_anomalies,historical:view_historical,uploads:view_uploads,maintenance:view_maintenance,reports:view_reports,audit:view_audit,admin:view_admin};
+function view_twin_site_redirect(){S.scope.twinSite=S.scope.id;S.view='twin';return view_twin();}
+function go(view,scope){S.view=view;if(scope)S.scope=scope;render();}
+function navTo(obj){if(obj.twin){S.scope.twinSite=obj.twin.site;S.scope.twinDev=obj.twin.dev||null;S.view='twin';}else{S.view=obj.view;if(obj.id!=null)S.scope.id=obj.id;if(obj.view==='twin'){S.scope.twinSite=null;S.scope.twinDev=null;}}render();}
+function render(){
+  renderNav();
+  const fn=VIEWS[S.view]||view_exec;
+  try{$('#main').innerHTML=fn();}catch(e){$('#main').innerHTML=`<div class="empty"><div class="big">⚠</div><h2>Render error</h2><p class="small">${esc(e.message)}</p></div>`;console.error(e);}
+  wireDynamic();
+}
+function wireDynamic(){
+  const dz=$('#dz');
+  if(dz){const inp=$('#fileInput');window.fileInput=inp;
+    inp.onchange=e=>handleFiles(e.target.files);
+    ['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('drag');}));
+    ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('drag');}));
+    dz.addEventListener('drop',e=>handleFiles(e.dataTransfer.files));
+  }
+}
+
+/* ------------------------------- events ----------------------------------- */
+document.addEventListener('click',e=>{
+  const nav=e.target.closest('[data-view]');if(nav){go(nav.dataset.view);return;}
+  const n=e.target.closest('[data-nav]');if(n){navTo(JSON.parse(n.dataset.nav));return;}
+  const tw=e.target.closest('[data-twin]');if(tw){navTo({twin:JSON.parse(tw.dataset.twin)});return;}
+});
+$('#roleSel').onchange=e=>{S.role=e.target.value;logAudit('role.switch',e.target.value);toast('Viewing as '+e.target.value);};
+$('#demoBtn').onclick=genDemo;
+$('#wallBtn').onclick=()=>{document.documentElement.requestFullscreen?.();};
+$('#q').addEventListener('keydown',e=>{if(e.key==='Enter')handleQuery(e.target.value);});
+document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();$('#q').focus();}});
+function handleQuery(q){
+  if(!q.trim())return;if(!S.samples.length){toast('No data yet');return;}
+  const a=A();const ql=q.toLowerCase();
+  // entity match
+  let hit=a.ifs.find(r=>ql.includes(r.intf.toLowerCase())&&ql.includes(r.dev.toLowerCase()))||a.ifs.find(r=>ql.includes(r.dev.toLowerCase()))||a.ifs.find(r=>ql.includes(r.intf.toLowerCase()));
+  if(hit){navTo({view:'intf',id:hit.ifid});toast('Grounded answer: '+hit.verdict.title+' — '+pct1(hit.p95)+' p95');return;}
+  if(/critical|worst|risk/.test(ql)){const r=[...a.ifs].sort((x,y)=>y.risk.score-x.risk.score)[0];navTo({view:'intf',id:r.ifid});toast('Highest-risk link: '+r.dev+' '+r.intf);return;}
+  if(/capacity|forecast|upgrade|saturat/.test(ql)){go('capacity');return;}
+  if(/anomal/.test(ql)){go('anomalies');return;}
+  toast('No entity matched. Try “Core-01 Ethernet1/2” or “worst link”.');
+}
+
+/* -------------------------------- boot ------------------------------------ */
+(async function(){await loadAll();if(!S.samples.length)S.view='exec';render();})();
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.savePlanning=savePlanning;window.remap=remap;window.resetAll=resetAll;window.S=S;
+</script>
+</body>
+</html>
