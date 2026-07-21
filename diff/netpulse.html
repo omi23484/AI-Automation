@@ -272,7 +272,7 @@ svg.donut{animation:popIn .55s cubic-bezier(.22,.61,.36,1) both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v7</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v8</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -420,7 +420,7 @@ function headerUnit(h){ // detect explicit unit inside a header string
 function parseSpeed(raw){
   if(raw==null||raw==='')return null;
   if(typeof raw==='number'){ if(raw>=1e6)return raw; if(raw>=1000)return raw*1e6; if(raw>=1)return raw*1e9; return raw; }
-  const s=String(raw).toLowerCase().trim();
+  const s=String(raw).toLowerCase().trim().replace(/,/g,'');
   const m=s.match(/([\d.]+)\s*(t|g|m|k)?\s*(bps|bit|b|e|gig|meg)?/);
   if(!m)return null; let v=parseFloat(m[1]); const u=m[2];
   if(u==='t')v*=1e12;else if(u==='g')v*=1e9;else if(u==='m')v*=1e6;else if(u==='k')v*=1e3;
@@ -439,14 +439,14 @@ function parseTs(raw){
   const t=Date.parse(s.replace(' ','T')); if(!isNaN(t))return t;
   const t2=Date.parse(s); return isNaN(t2)?null:t2;
 }
-function parseRate(raw,headerInfo){ // → bits/sec (best effort) ; {val, viaCellUnit}
+function parseRate(raw,headerInfo){ // → bits/sec ; {val, viaCellUnit, unit:true if ANY explicit unit was applied}
   if(raw==null||raw==='')return {val:null};
-  if(typeof raw==='number'){ if(headerInfo)return {val:raw*headerInfo.mult}; return {val:raw}; }
-  const s=String(raw).trim();
+  if(typeof raw==='number'){ if(headerInfo)return {val:raw*headerInfo.mult,unit:true}; return {val:raw}; }
+  const s=String(raw).trim().replace(/,/g,''); // strip thousand separators BEFORE unit match ("1,700.00 Mbps")
   const m=s.match(UNIT_RE);
-  if(m){const info=unitMultiplierFromToken(m[0]);if(info)return {val:parseFloat(m[1])*info.mult,viaCellUnit:true};}
-  const n=parseFloat(s.replace(/[, ]/g,'')); if(isNaN(n))return {val:null};
-  return {val:headerInfo?n*headerInfo.mult:n};
+  if(m){const info=unitMultiplierFromToken(m[0]);if(info)return {val:parseFloat(m[1])*info.mult,viaCellUnit:true,unit:true};}
+  const n=parseFloat(s.replace(/ /g,'')); if(isNaN(n))return {val:null};
+  return headerInfo?{val:n*headerInfo.mult,unit:true}:{val:n};
 }
 
 /* Resolve columns to canonical fields by MEANING (alias+fuzzy+value-shape). */
@@ -526,21 +526,28 @@ function buildSamples(rows,resolved,srcName,batchId){
     const spTx=(map.speedtx!=null?parseSpeed(val(r,'speedtx')):null)||sp;
     const spRx=(map.speedrx!=null?parseSpeed(val(r,'speedrx')):null)||sp;
     raw.push({dev,intf,ts,tx:tx.val,rx:rx.val,ptx:ptx.val,prx:prx.val,spTx,spRx,
+      tU:tx.unit,rU:rx.unit,pTU:ptx.unit,pRU:prx.unit,
       txp:num(r,'txpct'),rxp:num(r,'rxpct'),ptxp:num(r,'ptxpct'),prxp:num(r,'prxpct'),utilCol:num(r,'util')});
   }
-  // Magnitude inference: no explicit unit and rates implausible vs capacity → rescale all rate columns together.
-  if(!units.tx&&!units.rx&&raw.length){
-    const withSpeed=raw.filter(x=>(x.spTx>0||x.spRx>0)&&(x.tx>0||x.rx>0));
-    if(withSpeed.length>20){
-      const utils=withSpeed.map(x=>Math.max(x.tx||0,x.rx||0)/Math.max(x.spTx||0,x.spRx||0));
-      const med=percentile(utils,0.5);
+  // Magnitude inference — per column, and ONLY for values that carried no explicit
+  // unit (neither in the cell text nor the header). A value that arrived as
+  // "25.41 Mbps" is already correct bps and must NEVER be rescaled — a file that
+  // mixes text cells and plain numeric cells would otherwise get the unit-tagged
+  // values blown up by the correction meant for the unit-less ones.
+  {
+    const inferCols=[['tx','tU'],['rx','rU'],['ptx','pTU'],['prx','pRU']];
+    const scaled=[];
+    for(const [col,flag] of inferCols){
+      const un=raw.filter(x=>x[col]!=null&&x[col]>0&&!x[flag]&&(x.spTx>0||x.spRx>0));
+      if(un.length<10)continue;
+      const med=percentile(un.map(x=>x[col]/Math.max(x.spTx||0,x.spRx||0)),0.5);
       let factor=1;
       if(med>1.5&&med<=3000)factor=1e-6;
-      if(med>3000)factor=1e-9;
-      if(med<0.0005&&med>0)factor=1e6;
-      if(factor!==1){for(const x of raw){for(const k of ['tx','rx','ptx','prx'])if(x[k]!=null)x[k]*=factor;}
-        scaleGuessNote=`Auto-scaled rate values by ×${factor} (inferred from magnitude vs interface bandwidth; no explicit unit in file).`;}
+      else if(med>3000)factor=1e-9;
+      else if(med>0&&med<0.0005)factor=1e6;
+      if(factor!==1){for(const x of raw)if(x[col]!=null&&!x[flag])x[col]*=factor;scaled.push(`${col} ×${factor}`);}
     }
+    if(scaled.length)scaleGuessNote=`Auto-scaled unit-less values (${scaled.join(', ')}) from magnitude vs interface bandwidth; values carrying an explicit unit were left untouched.`;
   }
   for(const x of raw){
     const spT=x.spTx,spR=x.spRx;
@@ -572,7 +579,8 @@ function buildSamples(rows,resolved,srcName,batchId){
     out.push({ifid:x.dev+'|'+x.intf,dev:x.dev,intf:x.intf,ts:x.ts,tx,rx,ptx,prx,pu,
       speed,speedTx:spT||null,speedRx:spR||null,util,bad:bad||undefined,src:srcName,batch:batchId});
   }
-  return {samples:out,issues,scaleGuessNote,info};
+  const extremes=[...out].filter(x=>x.util!=null).sort((a,b)=>(b.util||0)-(a.util||0)).slice(0,5);
+  return {samples:out,issues,scaleGuessNote,info,extremes};
 }
 
 /* --------- CSV & XLSX readers (fully offline) --------- */
@@ -627,9 +635,9 @@ async function parseXLSX(buf){
   const doc=new DOMParser().parseFromString(sx,'application/xml');
   const rows=[];
   for(const row of doc.getElementsByTagName('row')){
-    const cells=[];let maxc=0;
+    const cells=[];let maxc=0,nextCol=0;
     for(const c of row.getElementsByTagName('c')){
-      const ref=c.getAttribute('r')||'';const ci=colToNum(ref);const t=c.getAttribute('t');
+      const ref=c.getAttribute('r');const ci=ref?colToNum(ref):nextCol;nextCol=ci+1;const t=c.getAttribute('t');
       const vEl=c.getElementsByTagName('v')[0];const isEl=c.getElementsByTagName('is')[0];
       let val=null;
       if(t==='s'&&vEl)val=shared[+vEl.textContent];
@@ -1380,6 +1388,11 @@ function view_uploads(){
       ${fnd.block.map(m=>`<div class="sev-block block"><b>⛔ Blocking</b> — ${m}</div>`).join('')}
       ${fnd.warn.map(m=>`<div class="sev-block warn"><b>⚠ Warning</b> — ${m}</div>`).join('')}
       ${fnd.info.map(m=>`<div class="sev-block info"><b>ℹ Info</b> — ${m}</div>`).join('')}
+      ${st.built.extremes&&st.built.extremes.length?`
+      <div class="sec-title" style="margin-top:10px"><h2 style="font-size:13px">Parse inspector — highest parsed values</h2><span class="sub">verify the backend read your numbers correctly before committing</span></div>
+      <table><thead><tr><th>Time</th><th>Interface</th><th>Transmit</th><th>Received</th><th>Capacity</th><th>Util</th><th></th></tr></thead><tbody>
+      ${st.built.extremes.map(x=>`<tr style="cursor:default"><td class="small">${fmtDate(x.ts)}</td><td class="small"><b>${esc(x.dev)}</b> ${esc(x.intf)}</td><td class="mono">${x.tx!=null?fmtBps(x.tx):'–'}</td><td class="mono">${x.rx!=null?fmtBps(x.rx):'–'}</td><td class="mono">${x.speed?fmtBps(x.speed):'–'}</td><td class="mono" style="${x.util>1.2?'color:var(--critical);font-weight:700':''}">${pct1(x.util)}</td><td class="mini">${x.bad?'flagged artifact':''}</td></tr>`).join('')}
+      </tbody></table>`:''}
       <div class="flex" style="margin-top:14px"><button class="btn" ${canCommit?'':'disabled'} onclick="commitStaged()">✓ Commit ${st.built.samples.length-st.built.overlap} new samples</button><button class="btn ghost" onclick="S.staged=null;render()">Cancel</button>${canCommit?'':'<span class="small" style="color:#fca5a5">Resolve blocking issues to commit.</span>'}</div>
     </div>`;
   }
