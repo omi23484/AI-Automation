@@ -182,6 +182,53 @@ label.fld>span{display:block;color:var(--muted);font-size:11.5px;font-weight:600
 .tabs button.active{background:var(--panel);color:#fff;box-shadow:inset 0 0 0 1px var(--stroke2)}
 .flex{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .spacer{flex:1}
+
+/* ------------------------- Fluid animation layer ------------------------- */
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px) scale(.99)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes popIn{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}
+@keyframes drawLine{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes fadeArea{from{opacity:0}to{opacity:.13}}
+@keyframes growBar{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes floatBlob{0%{transform:translate(0,0)}50%{transform:translate(46px,-34px)}100%{transform:translate(0,0)}}
+@keyframes floatBlob2{0%{transform:translate(0,0)}50%{transform:translate(-54px,26px)}100%{transform:translate(0,0)}}
+@keyframes breathe{0%,100%{opacity:.85}50%{opacity:1}}
+@keyframes ledBreathe{0%,100%{box-shadow:0 0 0 0 rgba(45,212,191,0)}50%{box-shadow:0 0 6px 0 rgba(45,212,191,.35)}}
+
+/* slow drifting glassmorphic light — depth behind the translucent panels */
+body::before{content:"";position:fixed;inset:-25%;z-index:-1;pointer-events:none;
+  background:radial-gradient(520px 520px at 28% 38%,rgba(56,189,248,.11),transparent 62%);animation:floatBlob 24s ease-in-out infinite}
+body::after{content:"";position:fixed;inset:-25%;z-index:-1;pointer-events:none;
+  background:radial-gradient(620px 620px at 72% 62%,rgba(129,140,248,.11),transparent 62%);animation:floatBlob2 30s ease-in-out infinite}
+
+/* staggered entrance for cards on every view render */
+.reveal{animation:fadeUp .52s cubic-bezier(.22,.61,.36,1) both}
+#main.swap{animation:fadeIn .3s ease both}
+
+/* hover lift */
+.kpi{transition:transform .2s cubic-bezier(.22,.61,.36,1),box-shadow .2s}
+.kpi:hover{transform:translateY(-3px);box-shadow:0 18px 44px rgba(0,0,0,.5)}
+.panel{transition:transform .2s cubic-bezier(.22,.61,.36,1),box-shadow .2s,border-color .2s}
+.verdict{transition:transform .2s cubic-bezier(.22,.61,.36,1),box-shadow .2s}
+.verdict[data-nav]:hover{transform:translateY(-2px);box-shadow:0 16px 40px rgba(0,0,0,.45)}
+.pill,.chip{transition:transform .15s} .navitem .badge{animation:breathe 2s ease-in-out infinite}
+
+/* chart draw-on */
+.chart path.draw{stroke-dasharray:1;stroke-dashoffset:1;animation:drawLine 1.15s cubic-bezier(.4,0,.2,1) forwards}
+.chart path.drawdash{opacity:0;animation:fadeIn .55s .55s ease forwards}
+.chart path.areafill{opacity:0;animation:fadeArea .8s .28s ease forwards}
+svg.donut{animation:popIn .55s cubic-bezier(.22,.61,.36,1) both}
+
+/* growing bars (width-agnostic via scaleX) */
+.riskbar .fill,.confbar>i,.track>i{transform-origin:left;animation:growBar .95s cubic-bezier(.22,.61,.36,1) both}
+
+/* healthy-LED gentle breathe, critical already pulses */
+.led{animation:popIn .4s ease both}
+.port .pl{transition:box-shadow .2s}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
+}
 </style>
 </head>
 <body>
@@ -733,8 +780,8 @@ function svgLineArea(series,opts={}){
   series.forEach(s=>{
     const d=s.data.filter(p=>p[1]!=null);if(!d.length)return;
     const line=d.map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join(' ');
-    if(s.area)paths+=`<path d="${line} L${X(d.at(-1)[0])} ${Y(0)} L${X(d[0][0])} ${Y(0)} Z" fill="${s.color}" opacity=".13"/>`;
-    paths+=`<path d="${line}" fill="none" stroke="${s.color}" stroke-width="${s.wide?2.2:1.6}" stroke-linejoin="round" ${s.dash?'stroke-dasharray="4 4"':''}/>`;
+    if(s.area)paths+=`<path class="areafill" d="${line} L${X(d.at(-1)[0])} ${Y(0)} L${X(d[0][0])} ${Y(0)} Z" fill="${s.color}"/>`;
+    paths+=`<path class="${s.dash?'drawdash':'draw'}" pathLength="1" d="${line}" fill="none" stroke="${s.color}" stroke-width="${s.wide?2.2:1.6}" stroke-linejoin="round" ${s.dash?'stroke-dasharray="4 4"':''}/>`;
   });
   const xlabs=[x0,(x0+x1)/2,x1].map(v=>`<text x="${X(v)}" y="${h-8}" text-anchor="middle" fill="#61718f" font-size="9">${fmtDay(v)}</text>`).join('');
   return `<div class="chart"><svg viewBox="0 0 ${w} ${h}">${grid}${bands}${maint}${paths}${xlabs}</svg></div>`;
@@ -743,7 +790,7 @@ function donut(dist){
   const segs=[['normal',dist.normal],['warning',dist.warning],['high',dist.high],['critical',dist.critical]];
   const R=52,C=2*Math.PI*R;let off=0,arcs='';
   segs.forEach(([k,v])=>{const len=v*C;arcs+=`<circle r="${R}" cx="70" cy="70" fill="none" stroke="${stateColor(k)}" stroke-width="18" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`;off+=len;});
-  return `<svg viewBox="0 0 140 140" width="140" height="140">${arcs}<text x="70" y="66" text-anchor="middle" fill="#e6edf7" font-size="15" font-weight="700">${(dist.normal*100).toFixed(0)}%</text><text x="70" y="82" text-anchor="middle" fill="#61718f" font-size="9">NORMAL</text></svg>`;
+  return `<svg class="donut" viewBox="0 0 140 140" width="140" height="140">${arcs}<text x="70" y="66" text-anchor="middle" fill="#e6edf7" font-size="15" font-weight="700">${(dist.normal*100).toFixed(0)}%</text><text x="70" y="82" text-anchor="middle" fill="#61718f" font-size="9">NORMAL</text></svg>`;
 }
 function heatmap(heat,cls){
   let cells='';
@@ -1181,10 +1228,26 @@ const VIEWS={exec:view_exec,noc:view_noc,twin:view_twin,intf:view_intf,site:view
 function view_twin_site_redirect(){S.scope.twinSite=S.scope.id;S.view='twin';return view_twin();}
 function go(view,scope){S.view=view;if(scope)S.scope=scope;render();}
 function navTo(obj){if(obj.twin){S.scope.twinSite=obj.twin.site;S.scope.twinDev=obj.twin.dev||null;S.view='twin';}else{S.view=obj.view;if(obj.id!=null)S.scope.id=obj.id;if(obj.view==='twin'){S.scope.twinSite=null;S.scope.twinDev=null;}}render();}
+const reduceMotion=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+function staggerReveal(){
+  if(reduceMotion)return;
+  const cards=$$('#main .panel, #main > .grid > .kpi, #main .verdict, #main .tile');
+  cards.forEach((c,i)=>{c.classList.add('reveal');c.style.animationDelay=Math.min(i*45,520)+'ms';});
+}
+function animateCounters(){
+  if(reduceMotion)return;
+  $$('#main .kpi .v').forEach(el=>{
+    const m=el.textContent.trim().match(/^(\d+)(%?)$/);if(!m)return;
+    const target=+m[1],sfx=m[2],dur=760,t0=performance.now();el.textContent='0'+sfx;
+    (function tick(t){const p=clamp((t-t0)/dur);el.textContent=Math.round(target*(1-Math.pow(1-p,3)))+sfx;if(p<1)requestAnimationFrame(tick);})(t0);
+  });
+}
 function render(){
   renderNav();
-  const fn=VIEWS[S.view]||view_exec;
-  try{$('#main').innerHTML=fn();}catch(e){$('#main').innerHTML=`<div class="empty"><div class="big">⚠</div><h2>Render error</h2><p class="small">${esc(e.message)}</p></div>`;console.error(e);}
+  const main=$('#main');const fn=VIEWS[S.view]||view_exec;
+  try{main.innerHTML=fn();}catch(e){main.innerHTML=`<div class="empty"><div class="big">⚠</div><h2>Render error</h2><p class="small">${esc(e.message)}</p></div>`;console.error(e);}
+  main.classList.remove('swap');void main.offsetWidth;main.classList.add('swap');
+  staggerReveal();animateCounters();
   wireDynamic();
 }
 function wireDynamic(){
