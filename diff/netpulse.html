@@ -182,6 +182,8 @@ svg.donut .ax{fill:var(--muted2)}
 .heat .cell{aspect-ratio:1;border-radius:2px}
 .heat .hr{color:var(--muted2);text-align:center;line-height:14px}
 .heat .dl{color:var(--muted2);line-height:1;display:flex;align-items:center}
+.heat .tlh{color:var(--muted2);font-size:8px;text-align:left;border-left:1px solid var(--stroke2);padding-left:1px;line-height:10px;height:10px}
+.heat .cell.selcell{outline:2px solid var(--accent);outline-offset:1px;position:relative;z-index:2}
 .cal{display:flex;gap:3px;flex-wrap:wrap}
 .cal .d{width:13px;height:13px;border-radius:3px}
 
@@ -283,7 +285,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v17</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v18</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -358,6 +360,7 @@ const DEFAULT_CFG={
   businessHours:{startHr:9,endHr:17,days:[1,2,3,4,5]},
   riskWeights:{peak:0.9,avg:0.7,trend:0.8,growth:0.7,violations:1.0,anomaly:0.6,impact:1.2},
   planHorizonDays:90, upgradeLeadDays:42,
+  thresholdsOff:null, // optional separate bands for non-business hours (null = same as business)
   // Link-upgrade policy — editable: recommend/auto-flag upgrade when utilization
   // crosses utilPct on `days` distinct days (optionally business-hours only).
   upgradeRule:{utilPct:80, days:5, businessHoursOnly:true, mode:'recommend'}
@@ -859,6 +862,9 @@ function computeAnalytics(){
     const info=S.ifinfo[ifid]||{};
     const site=ov.site||info.site||siteOf(dev);
     const tRes=Object.assign({},S.cfg.thresholds,S.cfg.classThresholds[cls]||{},ov.th||{}); // per-link thresholds win
+    const tOffRes=Object.assign({},tRes,S.cfg.thresholdsOff||{},ov.thOff||{});               // off-hours bands (fall back to business)
+    const hasOffBands=!!(S.cfg.thresholdsOff||ov.thOff);
+    const tForS=x=>(!hasOffBands||isBH(x.ts))?tRes:tOffRes;
     const spOv=ov.speed?parseSpeed(ov.speed):null;                                          // per-link speed override
     if(spOv)s=s.map(x=>{const u=(x.tx!=null||x.rx!=null)?Math.max(x.tx||0,x.rx||0)/spOv:x.util;
       const pk=(x.ptx!=null||x.prx!=null)?Math.max(x.ptx||0,x.prx||0)/spOv:x.pu;
@@ -875,8 +881,9 @@ function computeAnalytics(){
     const pus=s.map(x=>x.pu).filter(v=>v!=null&&v>=0&&v<=3);
     const pkP95=pus.length?percentile(pus,0.95):null,pkMax=pus.length?amax(pus):null;
     // distribution (time-in-state)
-    const dist={normal:0,warning:0,high:0,critical:0};for(const u of utils)dist[stateOfT(u,tRes)]++;
-    const tot=utils.length||1;for(const k in dist)dist[k]/=tot;
+    const dist={normal:0,warning:0,high:0,critical:0};let distN=0;
+    for(const x of s){if(x.util==null||x.util<0||x.util>3)continue;dist[stateOfT(x.util,tForS(x))]++;distN++;}
+    for(const k in dist)dist[k]/=(distN||1);
     // business-hour breaches
     const t=tRes;const breachesBH=s.filter(x=>x.util>=t.crit&&isBH(x.ts)).length;
     const bhDays=new Set(s.filter(x=>x.util>=t.high&&isBH(x.ts)).map(x=>new Date(x.ts).toDateString())).size;
@@ -910,7 +917,7 @@ function computeAnalytics(){
     // risk
     const growth=forecast.growthMoM;
     const risk=riskScore({p95,avg,pk:pkP95,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
-    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,th:tRes,ip:info.ip,linkname:info.linkname,badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
+    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,th:tRes,thOff:hasOffBands?tOffRes:null,ip:info.ip,linkname:info.linkname,badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
       start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,pkP95,pkMax,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
     rec.verdict=verdictFor(rec);
     rec.ai=aiSummary(rec);
@@ -1210,15 +1217,30 @@ function donut(dist){
   segs.forEach(([k,v])=>{const len=v*C;arcs+=`<circle r="${R}" cx="70" cy="70" fill="none" stroke="${stateColor(k)}" stroke-width="18" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`;off+=len;});
   return `<svg class="donut" viewBox="0 0 140 140" width="140" height="140">${arcs}<text class="dt" x="70" y="66" text-anchor="middle" font-size="15" font-weight="700">${(dist.normal*100).toFixed(0)}%</text><text class="ax" x="70" y="82" text-anchor="middle" font-size="9">NORMAL</text></svg>`;
 }
-function heatmap(heat,t){
+function heatmap(heat,t,tOffP,speed){
   const bhc=S.cfg.businessHours;
+  const hasOff=!!(tOffP&&(tOffP.warn!==t.warn||tOffP.high!==t.high||tOffP.crit!==t.crit));
+  const tOff=tOffP||t;
+  const p2=h=>String(h).padStart(2,'0');
+  // ---- horizontal timeline header: hour ticks every 3h + business-window strip ----
+  let tl='<div class="dl" style="font-size:8px">hour</div>';
+  for(let h=0;h<24;h++){const isB=h>=bhc.startHr&&h<bhc.endHr;
+    tl+=`<div class="tlh" style="${isB?'color:var(--accent);font-weight:700':''}">${h%3===0?p2(h):''}</div>`;}
+  let strip='<div></div>';
+  for(let h=0;h<24;h++){const isB=h>=bhc.startHr&&h<bhc.endHr;
+    strip+=`<div style="height:5px;border-radius:2px;background:${isB?'var(--accent)':'rgba(120,150,200,.20)'};opacity:${isB?.8:1}" title="${p2(h)}:00–${p2(h+1)}:00 ${isB?'business':'off-hours'}"></div>`;}
+  // ---- cells: banded against business OR off-hours limits, click → details ----
   let cells='';
   for(let d=0;d<7;d++){cells+=`<div class="dl">${DOW[d]}</div>`;
-    for(let h=0;h<24;h++){const v=heat[d+'-'+h];const st=v==null?'nodata':stateOfT(v,t);const c=v==null?'rgba(120,150,200,.06)':stateColor(st);
+    for(let h=0;h<24;h++){const v=heat[d+'-'+h];
       const isB=bhc.days.includes(d)&&h>=bhc.startHr&&h<bhc.endHr;
-      cells+=`<div class="cell" title="${DOW[d]} ${h}:00${isB?' (business hours)':''} — ${v==null?'no data':pct1(v)}" style="background:${c};opacity:${v==null?1:0.35+clamp(v,0,1)*0.65}${isB?';box-shadow:inset 0 0 0 1px rgba(56,189,248,.45)':''}"></div>`;}}
-  let hdr='<div></div>';for(let h=0;h<24;h+=1){const isB=h>=bhc.startHr&&h<bhc.endHr;hdr+=`<div class="hr" style="${isB?'color:var(--accent);font-weight:700':''}">${(h%6===0||h===bhc.startHr||h===bhc.endHr)?h:''}</div>`;}
-  return `<div class="heat">${hdr}${cells}</div><div class="mini" style="margin-top:6px"><i style="display:inline-block;width:9px;height:9px;border:1px solid rgba(56,189,248,.7);border-radius:2px;vertical-align:-1px"></i> outlined cells = business hours (${bhc.startHr}:00–${bhc.endHr}:00)</div>`;
+      const tb=isB?t:tOff;
+      const st=v==null?'nodata':stateOfT(v,tb);const c=v==null?'rgba(120,150,200,.06)':stateColor(st);
+      const info=v==null?'':`${DOW[d]} ${p2(h)}:00–${p2((h+1)%24)}:00 · ${isB?'business hours':'off-hours'} · avg utilization ${pct1(v)}${speed?` (~${fmtBps(v*speed)})`:''} · ${st} band — ${isB?'business':'off-hours'} limits ${Math.round(tb.warn*100)}/${Math.round(tb.high*100)}/${Math.round(tb.crit*100)}%`;
+      cells+=`<div class="cell" ${v!=null?`data-info="${esc(info)}"`:''} title="${v==null?`${DOW[d]} ${p2(h)}:00 — no data`:esc(info)}" style="background:${c};opacity:${v==null?1:0.35+clamp(v,0,1)*0.65}${isB?';box-shadow:inset 0 0 0 1px rgba(56,189,248,.45)':''};cursor:${v!=null?'pointer':'default'}"></div>`;}}
+  return `<div class="heatwrap"><div class="heat">${tl}${strip}${cells}</div>
+  <div class="heattip mini" style="display:none;margin-top:7px;padding:7px 10px;border:1px solid var(--stroke2);border-radius:8px;background:var(--panel2);color:var(--txt)"></div>
+  <div class="mini" style="margin-top:6px"><i style="display:inline-block;width:9px;height:9px;border:1px solid rgba(56,189,248,.7);border-radius:2px;vertical-align:-1px"></i> outlined = business hours ${bhc.startHr}:00–${bhc.endHr}:00 (limits ${Math.round(t.warn*100)}/${Math.round(t.high*100)}/${Math.round(t.crit*100)}%)${hasOff?` · off-hours limits ${Math.round(tOff.warn*100)}/${Math.round(tOff.high*100)}/${Math.round(tOff.crit*100)}%`:''} · click a cell for exact numbers</div></div>`;
 }
 function calHeat(daily,t){
   if(!daily.length)return'<div class="mini">No data</div>';
@@ -1388,13 +1410,13 @@ function led(r){return `<div class="led ${r.verdict.level==='critical'?'crit':''
 // Business-hours vs off-hours split for one link (uses the link's own thresholds).
 function bhStats(r){
   const t=r.th||th(r.cls);
-  const mk=list=>{const u=list.map(x=>x.util).filter(v=>v!=null);
-    const dist={normal:0,warning:0,high:0,critical:0};for(const v of u)dist[stateOfT(v,t)]++;
+  const mk=(list,tb)=>{const u=list.map(x=>x.util).filter(v=>v!=null);
+    const dist={normal:0,warning:0,high:0,critical:0};for(const v of u)dist[stateOfT(v,tb)]++;
     const n=u.length||1;for(const k in dist)dist[k]/=n;
     return {n:u.length,avg:mean(u),p95:percentile(u,0.95),max:amax(u,0),dist};};
   const bh=[],off=[];
   for(const x of r.samples)(isBH(x.ts)?bh:off).push(x);
-  return {bh:mk(bh),off:mk(off)};
+  return {bh:mk(bh,t),off:mk(off,r.thOff||t)}; // off-hours judged against its own limits
 }
 function bhCol(label,stx,r){
   const bar=['normal','warning','high','critical'].map(k=>`<i style="display:block;height:100%;width:${(stx.dist[k]*100).toFixed(1)}%;background:${stateColor(k)}"></i>`).join('');
@@ -1458,7 +1480,8 @@ function view_intf(){
   let distV=r.dist,heatV=r.heat;
   if(hasFlt){
     distV={normal:0,warning:0,high:0,critical:0};const hb={};let nD=0;
-    for(const x of fsam){if(x.util==null)continue;distV[stateOfT(x.util,r.th)]++;nD++;
+    const tForV=x=>isBH(x.ts)?r.th:(r.thOff||r.th);
+    for(const x of fsam){if(x.util==null)continue;distV[stateOfT(x.util,tForV(x))]++;nD++;
       const k=new Date(x.ts).getDay()+'-'+new Date(x.ts).getHours();(hb[k]=hb[k]||[]).push(x.util);}
     for(const k in distV)distV[k]/=(nD||1);
     heatV={};for(const k in hb)heatV[k]=mean(hb[k]);
@@ -1507,7 +1530,7 @@ function view_intf(){
         <div class="ai" style="margin-top:12px"><div class="h">◆ What this means</div><p>${bhInsight(bhx,r)}</p></div>
       </div>
       <div class="grid g2" style="margin-bottom:16px">
-        <div class="panel pad"><div class="sec-title"><h2>Utilization rhythm</h2><span class="sub">day × hour</span></div>${heatmap(heatV,r.th)}</div>
+        <div class="panel pad"><div class="sec-title"><h2>Utilization rhythm</h2><span class="sub">day × hour</span></div>${heatmap(heatV,r.th,r.thOff,r.speed)}</div>
         <div class="panel pad"><div class="sec-title"><h2>State distribution</h2><span class="sub">time-in-state</span></div>
           <div class="flex" style="gap:20px">${donut(distV)}<div class="dist-legend">
             ${['normal','warning','high','critical'].map(k=>`<div class="row"><i style="background:${stateColor(k)}"></i><span style="text-transform:capitalize">${k}</span><b>${(distV[k]*100).toFixed(0)}%</b></div>`).join('')}
@@ -1535,6 +1558,11 @@ function view_intf(){
           <label class="fld"><span>Warn %</span><input type="number" id="metaWarn" value="${Math.round(r.th.warn*100)}"></label>
           <label class="fld"><span>High %</span><input type="number" id="metaHigh" value="${Math.round(r.th.high*100)}"></label>
           <label class="fld"><span>Crit %</span><input type="number" id="metaCrit" value="${Math.round(r.th.crit*100)}"></label>
+        </div>
+        <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
+          <label class="fld"><span>Off-hrs Warn %</span><input type="number" id="metaWarnO" value="${(S.ifmeta[r.ifid]||{}).thOff?Math.round(((S.ifmeta[r.ifid].thOff.warn??r.th.warn))*100):''}" placeholder="${Math.round(((r.thOff||r.th).warn)*100)}"></label>
+          <label class="fld"><span>Off-hrs High %</span><input type="number" id="metaHighO" value="${(S.ifmeta[r.ifid]||{}).thOff?Math.round(((S.ifmeta[r.ifid].thOff.high??r.th.high))*100):''}" placeholder="${Math.round(((r.thOff||r.th).high)*100)}"></label>
+          <label class="fld"><span>Off-hrs Crit %</span><input type="number" id="metaCritO" value="${(S.ifmeta[r.ifid]||{}).thOff?Math.round(((S.ifmeta[r.ifid].thOff.crit??r.th.crit))*100):''}" placeholder="${Math.round(((r.thOff||r.th).crit)*100)}"></label>
         </div>
         <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px">
           <label class="fld"><span>Speed override</span><input type="text" id="metaSpeed" value="${esc((S.ifmeta[r.ifid]||{}).speed||'')}" placeholder="${r.speed?fmtBps(r.speed):'e.g. 200M / 10G'}"></label>
@@ -1620,7 +1648,7 @@ function view_historical(){
   const a=A();const r=a.ifs.find(x=>x.ifid===S.scope.id)||a.ifs.sort((x,y)=>y.risk.score-x.risk.score)[0];
   return crumb([['Historical']])+`<div class="sec-title"><h2>Historical Analysis</h2><span class="sub">compare an interface to its own baseline</span></div>
   <div class="panel pad" style="margin-bottom:14px"><label class="fld" style="max-width:420px"><span>Interface</span><select id="histSel" onchange="S.scope.id=this.value;render()">${a.ifs.map(x=>`<option value="${x.ifid}" ${x.ifid===r.ifid?'selected':''}>${esc(x.dev)} ${esc(x.intf)}</option>`).join('')}</select></label></div>
-  <div class="panel pad"><div class="sec-title"><h2>${esc(r.dev)} ${esc(r.intf)} — utilization rhythm</h2></div>${heatmap(heatV,r.th)}
+  <div class="panel pad"><div class="sec-title"><h2>${esc(r.dev)} ${esc(r.intf)} — utilization rhythm</h2></div>${heatmap(heatV,r.th,r.thOff,r.speed)}
   <div class="ai" style="margin-top:14px"><div class="h">◆ Deviation summary</div><p>Same-weekday baseline analysis: peak load ${peakWindow(r)}. Current p95 ${pct1(r.p95)} vs period average ${pct1(r.avg)}. ${r.forecast.growthMoM>0.05?`Running ${(r.forecast.growthMoM*100).toFixed(0)}% above the previous-month baseline.`:'In line with recent baseline.'}</p></div></div>`;
 }
 
@@ -1637,7 +1665,7 @@ function view_links(){
   <div class="sec-title"><h2>Link Manager</h2><span class="sub">${list.length} link(s) · every knob below is editable per link — nothing assumed, changes recompute analytics instantly</span></div>
   <div class="panel pad">
   <div class="flex" style="margin-bottom:10px"><input type="text" placeholder="Filter by device / interface / class / site / tag…" value="${esc(S.linkq||'')}" style="min-width:300px" onchange="S.linkq=this.value;render()"><span class="mini">Enter to apply · edited links show ↺</span></div>
-  <div style="overflow-x:auto"><table style="min-width:1180px"><thead><tr><th>Link</th><th>Verdict</th><th>Class</th><th>Impact</th><th>Warn %</th><th>High %</th><th>Crit %</th><th>Speed</th><th>Site</th><th>Tags</th><th></th></tr></thead><tbody>
+  <div style="overflow-x:auto"><table style="min-width:1180px"><thead><tr><th>Link</th><th>Verdict</th><th>Class</th><th>Impact</th><th>Warn %</th><th>High %</th><th>Crit %</th><th>Off-hrs W/H/C %</th><th>Speed</th><th>Site</th><th>Tags</th><th></th></tr></thead><tbody>
   ${list.map(r=>{const ov=S.ifmeta[r.ifid]||{};const t=r.th;const iid=esc(r.ifid);
     return `<tr style="cursor:default">
     <td><b style="cursor:pointer" data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'>${esc(r.dev)}</b> ${esc(r.intf)}${r.linkname?`<div class="mini">${esc(r.linkname)}${r.ip?' · '+esc(r.ip):''}</div>`:(r.ip?`<div class="mini">${esc(r.ip)}</div>`:'')}</td>
@@ -1647,6 +1675,7 @@ function view_links(){
     <td><input type="number" style="width:62px" value="${Math.round(t.warn*100)}" onchange="lmSetTh('${iid}','warn',this.value)"></td>
     <td><input type="number" style="width:62px" value="${Math.round(t.high*100)}" onchange="lmSetTh('${iid}','high',this.value)"></td>
     <td><input type="number" style="width:62px" value="${Math.round(t.crit*100)}" onchange="lmSetTh('${iid}','crit',this.value)"></td>
+    <td><div class="flex" style="gap:3px;flex-wrap:nowrap">${['warn','high','crit'].map(bd=>`<input type="number" style="width:52px" value="${ov.thOff&&ov.thOff[bd]!=null?Math.round(ov.thOff[bd]*100):''}" placeholder="${Math.round(((r.thOff||t)[bd])*100)}" title="off-hours ${bd} %" onchange="lmSetThOff('${iid}','${bd}',this.value)">`).join('')}</div></td>
     <td><input type="text" style="width:88px" value="${esc(ov.speed||'')}" placeholder="${r.speed?fmtBps(r.speed):'e.g. 10G'}" onchange="lmSet('${iid}','speed',this.value)"></td>
     <td><input type="text" style="width:88px" value="${esc(ov.site||'')}" placeholder="${esc(r.site)}" onchange="lmSet('${iid}','site',this.value)"></td>
     <td><input type="text" style="width:150px" value="${esc((ov.tags||[]).join(', '))}" placeholder="comma-separated" onchange="lmSet('${iid}','tags',this.value)"></td>
@@ -1660,6 +1689,14 @@ function lmSet(ifid,k,v){
   else if(v===''||v==null)delete m[k]; else m[k]=v;
   if(!Object.keys(m).length)delete S.ifmeta[ifid];
   save('ifmeta');logAudit('link.edit',ifid,`${k}=${v}`);S.analytics=null;render();
+}
+function lmSetThOff(ifid,band,v){
+  const m=S.ifmeta[ifid]=S.ifmeta[ifid]||{};m.thOff=m.thOff||{};
+  const n=parseFloat(v);
+  if(isNaN(n))delete m.thOff[band];else m.thOff[band]=clamp(n/100,0,2);
+  if(!Object.keys(m.thOff).length)delete m.thOff;
+  if(!Object.keys(m).length)delete S.ifmeta[ifid];
+  save('ifmeta');logAudit('link.thresholdOff',ifid,`${band}=${v}%`);S.analytics=null;render();
 }
 function lmSetTh(ifid,band,v){
   const m=S.ifmeta[ifid]=S.ifmeta[ifid]||{};m.th=m.th||{};
@@ -1738,6 +1775,13 @@ function view_admin(){
       <label class="fld"><span>Warning ≥ (%)</span><input type="number" id="thWarn" value="${(t.warn*100).toFixed(0)}"></label>
       <label class="fld"><span>High ≥ (%)</span><input type="number" id="thHigh" value="${(t.high*100).toFixed(0)}"></label>
       <label class="fld"><span>Critical ≥ (%)</span><input type="number" id="thCrit" value="${(t.crit*100).toFixed(0)}"></label>
+      <div class="sec-title" style="margin-top:12px"><h2 style="font-size:13px">Off-hours limits (optional)</h2><span class="sub">nights & weekends — blank = same as business</span></div>
+      <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <label class="fld"><span>Warn %</span><input type="number" id="thWarnO" value="${S.cfg.thresholdsOff?Math.round((S.cfg.thresholdsOff.warn??t.warn)*100):''}" placeholder="${(t.warn*100).toFixed(0)}"></label>
+        <label class="fld"><span>High %</span><input type="number" id="thHighO" value="${S.cfg.thresholdsOff?Math.round((S.cfg.thresholdsOff.high??t.high)*100):''}" placeholder="${(t.high*100).toFixed(0)}"></label>
+        <label class="fld"><span>Crit %</span><input type="number" id="thCritO" value="${S.cfg.thresholdsOff?Math.round((S.cfg.thresholdsOff.crit??t.crit)*100):''}" placeholder="${(t.crit*100).toFixed(0)}"></label>
+      </div>
+      <div class="mini" style="margin-bottom:10px">Lets a backup link run hot at night without alarming, while business hours stay strict.</div>
       <button class="btn" onclick="saveThresholds()">Save thresholds</button>
     </div>
     <div class="panel pad"><div class="sec-title"><h2>Business hours & planning</h2></div>
@@ -1884,6 +1928,8 @@ function saveIfMeta(ifid){
   const si=($('#metaSite')||{}).value?.trim();if(si)m.site=si;
   const thv={};[['warn','#metaWarn'],['high','#metaHigh'],['crit','#metaCrit']].forEach(([b,sel])=>{const el=$(sel);if(el){const n=parseFloat(el.value);if(!isNaN(n))thv[b]=clamp(n/100,0,2);}});
   if(Object.keys(thv).length)m.th=thv;
+  const thvO={};[['warn','#metaWarnO'],['high','#metaHighO'],['crit','#metaCritO']].forEach(([b,sel])=>{const el=$(sel);if(el&&el.value.trim()!==''){const n=parseFloat(el.value);if(!isNaN(n))thvO[b]=clamp(n/100,0,2);}});
+  if(Object.keys(thvO).length)m.thOff=thvO;
   S.ifmeta[ifid]=m;save('ifmeta');
   logAudit('interface.meta',ifid,JSON.stringify(m));
   S.analytics=null;render();toast('Link settings saved — analytics recomputed');
@@ -1894,7 +1940,13 @@ function addMaint(){const scope=$('#mScope').value;const s=$('#mStart').value,e=
   let sc='all',target='';if(scope.startsWith('dev:')){sc='dev';target=scope.slice(4);}else if(scope.startsWith('if:')){sc='if';target=scope.slice(3);}
   S.maintenance.push({scope:sc,target,start:new Date(s).getTime(),end:new Date(e).getTime(),reason:$('#mReason').value,who:S.role});save('maintenance');logAudit('maintenance.create',target||'all');S.analytics=null;render();toast('Maintenance window added');}
 function delMaint(i){S.maintenance.splice(i,1);save('maintenance');logAudit('maintenance.delete','');S.analytics=null;render();}
-function saveThresholds(){S.cfg.thresholds={warn:+$('#thWarn').value/100,high:+$('#thHigh').value/100,crit:+$('#thCrit').value/100};save('cfg');logAudit('config.thresholds','',JSON.stringify(S.cfg.thresholds));S.analytics=null;toast('Thresholds saved — verdicts recomputed');render();}
+function saveThresholds(){
+  S.cfg.thresholds={warn:+$('#thWarn').value/100,high:+$('#thHigh').value/100,crit:+$('#thCrit').value/100};
+  const ow=parseFloat($('#thWarnO')?.value),oh=parseFloat($('#thHighO')?.value),oc=parseFloat($('#thCritO')?.value);
+  const off={};if(!isNaN(ow))off.warn=clamp(ow/100,0,2);if(!isNaN(oh))off.high=clamp(oh/100,0,2);if(!isNaN(oc))off.crit=clamp(oc/100,0,2);
+  S.cfg.thresholdsOff=Object.keys(off).length?off:null;
+  save('cfg');logAudit('config.thresholds','',JSON.stringify({business:S.cfg.thresholds,offHours:S.cfg.thresholdsOff}));
+  S.analytics=null;toast('Thresholds saved — verdicts recomputed');render();}
 function savePlanning(){S.cfg.businessHours.startHr=+$('#bhStart').value;S.cfg.businessHours.endHr=+$('#bhEnd').value;S.cfg.planHorizonDays=+$('#planH').value;S.cfg.upgradeLeadDays=+$('#leadD').value;save('cfg');logAudit('config.planning');S.analytics=null;toast('Saved');render();}
 function saveUpgrade(){S.cfg.upgradeRule={utilPct:clamp(+$('#upPct').value,1,100),days:Math.max(1,+$('#upDays').value|0),businessHoursOnly:$('#upBH').checked,mode:$('#upMode').value};save('cfg');logAudit('config.upgrade','',JSON.stringify(S.cfg.upgradeRule));S.analytics=null;toast('Upgrade policy saved — verdicts recomputed');render();}
 function remap(field,idx){const r=S.staged.parsed.resolved;r.map[field]=idx===''?null:+idx;r.conf[field]=1;(r.manual=r.manual||{})[field]=true;reStage();}
@@ -2001,6 +2053,11 @@ function wireDynamic(){
 
 /* ------------------------------- events ----------------------------------- */
 document.addEventListener('click',e=>{
+  const hc=e.target.closest('.heat .cell[data-info]');
+  if(hc){const wrap=hc.closest('.heatwrap');
+    if(wrap){wrap.querySelectorAll('.selcell').forEach(x=>x.classList.remove('selcell'));hc.classList.add('selcell');
+      const tip=wrap.querySelector('.heattip');if(tip){tip.textContent=hc.dataset.info;tip.style.display='block';}}
+    return;}
   const cz=e.target.closest('[data-cz]');
   if(cz){const cfg=chartAt(e);if(cfg){const mid=(cfg.vx0+cfg.vx1)/2;
     if(cz.dataset.cz==='in')chartZoom(cfg,mid,0.6);
@@ -2031,7 +2088,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
