@@ -272,7 +272,7 @@ svg.donut{animation:popIn .55s cubic-bezier(.22,.61,.36,1) both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v13</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v14</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -879,7 +879,14 @@ function computeAnalytics(){
     const heat={};for(const k in base)heat[k]=mean(base[k]);
     // anomalies
     const anomalies=[];
-    for(const x of s){if(x.util==null)continue;const k=new Date(x.ts).getDay()+'-'+new Date(x.ts).getHours();const b=baseStat[k];if(b&&b.n>=3&&b.sd>0.001){const z=(x.util-b.m)/b.sd;if(z>3.2&&x.util>0.15)anomalies.push({ts:x.ts,type:'Traffic spike',z,util:x.util,exp:b.m});}}
+    // Baseline (dow×hour) z-score, guarded three ways so a thin/noisy baseline
+    // can't manufacture a "spike": (1) at least 5 historical points for that slot,
+    // (2) the absolute jump above the baseline must itself be meaningful (>=8pp),
+    // not just many small stddevs on a very tightly-clustered baseline,
+    // (3) still requires the raw value to be operationally non-trivial (>15%).
+    for(const x of s){if(x.util==null)continue;const k=new Date(x.ts).getDay()+'-'+new Date(x.ts).getHours();const b=baseStat[k];
+      if(b&&b.n>=5&&b.sd>0.001){const z=(x.util-b.m)/b.sd;const jump=x.util-b.m;
+        if(z>3.2&&jump>=0.08&&x.util>0.15)anomalies.push({ts:x.ts,type:'Traffic spike',z,util:x.util,exp:b.m,jump});}}
     // weekend traffic on business link
     if(['Core','Trading','Internet','Customer'].includes(cls)){const we=s.filter(x=>[0,6].includes(new Date(x.ts).getDay())&&x.util>0.2);const wd=s.filter(x=>![0,6].includes(new Date(x.ts).getDay()));if(we.length>3&&mean(we.map(x=>x.util))>0.15&&mean(wd.map(x=>x.util))>0){const r=mean(we.map(x=>x.util));if(r>0.2)anomalies.push({ts:we[0].ts,type:'Weekend traffic on business link',util:r,exp:0.03});}}
     // rx/tx imbalance
@@ -1374,7 +1381,7 @@ function view_intf(){
         <div class="mini" style="margin-top:8px">× ${r.risk.impactMul} business-impact multiplier (${r.impact})</div>
       </div>
       <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Anomalies</h2></div>
-        ${r.anomalies.length?r.anomalies.map(an=>`<div style="margin-bottom:9px"><b class="small" style="color:#fdba74">⚠ ${an.type}</b><div class="mini">${fmtDate(an.ts)}${an.z?` · z=${an.z.toFixed(1)}`:''}${an.util?` · ~${pct1(an.util)}`:''}</div></div>`).join(''):'<div class="mini">No anomalies vs baseline.</div>'}
+        ${r.anomalies.length?r.anomalies.map(an=>`<div style="margin-bottom:9px"><b class="small" style="color:#fdba74">⚠ ${an.type}</b><div class="mini">${fmtDate(an.ts)}${an.util!=null?` · reached ~${pct1(an.util)}`:''}${an.exp!=null?` vs a typical ~${pct1(an.exp)} at this same hour/weekday`:''}${an.z?` · ${an.z.toFixed(1)}σ above normal for this slot`:''}</div></div>`).join(''):'<div class="mini">No anomalies vs baseline.</div>'}
       </div>
       <div class="panel pad"><div class="sec-title"><h2>Timeline</h2></div>
         <div class="tl">${events.map(e=>`<div class="ev ${e.k}"><div class="tm">${fmtDate(e.ts)}</div><div>${e.txt}</div></div>`).join('')||'<div class="mini">No events.</div>'}</div>
