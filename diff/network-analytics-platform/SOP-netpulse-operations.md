@@ -80,8 +80,16 @@ Track how often specific links cross the upgrade threshold over a chosen window.
 
 When satisfied, the link gets the **"Link Upgrade Recommended"** verdict. A live "Current rule" line summarizes the setting. **Save upgrade policy** to apply. Per-link overrides are possible via Link Manager thresholds.
 
-### 2.4 Class-specific policies (reference table)
-Shows the effective Warn/High/Critical bands and default business impact per class (Core, Trading, Internet, WAN, Storage, Backup, Voice, Management, Customer). Trading/Core are stricter; Backup is looser by design.
+### 2.4 Forecast & provisioning
+- **Forecast metric** — fit the capacity trend to **p95** (sustained busy, default), **p99** (near-peak), or **max** (peak). Peak-sizing shops pick p99/max.
+- **Direction** — *Combined* (worse of TX/RX, default) or *Split* — forecast **TX and RX separately** and report the direction that saturates first (shown as "TX-bound"/"RX-bound").
+- **Provision to N× peak** — installed capacity target as a multiple of peak traffic (e.g. 1.5×). The interface forecast panel shows the recommended capacity (N × peak) and whether the current line rate meets it; the Regulatory Capacity Report adds a "Recommended capacity" column. A higher N = a lower peak-utilization ceiling (N=1.5 → 66%, N=2 → 50%).
+
+### 2.5 Class-specific policies (editable)
+Set **Warn/High/Critical %** per class (Core, Trading, Internet, WAN, Storage, Backup, Voice, Replication, Management, Customer). Leave a cell blank to use the global band. Trading/Core are stricter, Backup looser by default — adjust to your standards and **Save class bands**; verdicts recompute.
+
+### CSV export on tables
+Most tables (Upgrade Watch, Capacity forecast, Link Manager, Anomalies, Audit) have a **⤓ CSV** button in the header that exports exactly the rows shown, for use in Excel or a ticket.
 
 ### 2.5 Data management
 - **⤓ Export all data (JSON)** — full local backup.

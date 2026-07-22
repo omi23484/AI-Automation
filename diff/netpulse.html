@@ -289,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v23</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v25</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -361,6 +361,7 @@ const IDB={db:null,
 const DEFAULT_CFG={
   thresholds:{warn:0.60,high:0.75,crit:0.90},
   classThresholds:{Trading:{warn:0.45,high:0.60,crit:0.80},Backup:{warn:0.75,high:0.88,crit:0.96}},
+  forecastMetric:'p95', forecastDirection:'combined', provisionFactor:1.5,
   businessHours:{startHr:9,startMin:0,endHr:17,endMin:0,days:[1,2,3,4,5]},
   riskWeights:{peak:0.9,avg:0.7,trend:0.8,growth:0.7,violations:1.0,anomaly:0.6,impact:1.2},
   planHorizonDays:90, upgradeLeadDays:42,
@@ -921,9 +922,23 @@ function computeAnalytics(){
     // rx/tx imbalance
     const withDir=s.filter(x=>x.tx>0&&x.rx>0);if(withDir.length>10){const ratios=withDir.map(x=>Math.max(x.tx,x.rx)/Math.min(x.tx,x.rx));const mr=percentile(ratios,0.5);if(mr>6)anomalies.push({ts:withDir[0].ts,type:'RX/TX imbalance',ratio:mr});}
     // daily p95 series + forecast
-    const byDay={};for(const x of s){if(x.util==null)continue;const d=new Date(x.ts);d.setHours(0,0,0,0);(byDay[+d]=byDay[+d]||[]).push(x.util);}
-    const daily=Object.keys(byDay).map(Number).sort((a,b)=>a-b).map(d=>({d,p95:percentile(byDay[d],0.95)}));
-    const forecast=forecastFrom(daily,p95,cls);
+    // daily series for forecasting — metric (p95/p99/max) and direction (combined / TX & RX split)
+    const fm=S.cfg.forecastMetric||'p95';const pctl=fm==='p99'?0.99:fm==='max'?1:0.95;
+    const dseries=(valFn)=>{const bd={};for(const x of s){const v=valFn(x);if(v==null)continue;const d=new Date(x.ts);d.setHours(0,0,0,0);(bd[+d]=bd[+d]||[]).push(v);}return Object.keys(bd).map(Number).sort((a,b)=>a-b).map(d=>({d,p95:percentile(bd[d],pctl)}));};
+    let daily,forecast,fnote=(fm!=='p95'?fm:'');
+    if((S.cfg.forecastDirection||'combined')==='split'){
+      const txD=dseries(x=>speedTx&&x.tx!=null?x.tx/speedTx:null),rxD=dseries(x=>speedRx&&x.rx!=null?x.rx/speedRx:null);
+      const fTx=txD.length?forecastFrom(txD,percentile(txD.map(d=>d.p95),0.95),cls):null;
+      const fRx=rxD.length?forecastFrom(rxD,percentile(rxD.map(d=>d.p95),0.95),cls):null;
+      const sc=f=>f&&f.t90!=null&&f.t90>=0?f.t90:1e9;
+      const txBind=sc(fTx)<=sc(fRx)&&fTx||!fRx;
+      forecast=(txBind?fTx:fRx)||fTx||fRx||forecastFrom(dseries(x=>x.util),p95,cls);
+      daily=(txBind?txD:rxD).length?(txBind?txD:rxD):dseries(x=>x.util);
+      forecast.dir=txBind?'TX':'RX';forecast.otherDir=txBind?'RX':'TX';
+      forecast.otherCur=(txBind?fRx:fTx)?.current;forecast.otherT90=(txBind?fRx:fTx)?.t90;
+      fnote=`${forecast.dir}-bound${fm!=='p95'?' · '+fm:''}`;
+    }else{daily=dseries(x=>x.util);forecast=forecastFrom(daily,p95,cls);}
+    if(fnote)forecast.modelNote=(forecast.modelNote?forecast.modelNote+' · ':'')+fnote;
     // risk
     const growth=forecast.growthMoM;
     const risk=riskScore({p95,avg,pk:pkP95,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
@@ -1556,6 +1571,8 @@ function view_intf(){
           ${fcell('Days to 80% full',f.t80)}${fcell('Days to 90% full',f.t90)}${fcell('Days to 95% full',f.t95)}
           <div class="kpi"><div class="l">Upgrade window</div><div class="v mono" style="font-size:18px">${f.window?f.window[0]+'–'+f.window[1]+'d':'—'}</div><div class="t flat">conf ${(f.conf*100).toFixed(0)}%</div></div>
         </div>
+        ${(()=>{const N=S.cfg.provisionFactor||1.5;const peak=(r.pkP95!=null?Math.max(r.pkP95,r.mx):r.mx);const peakBps=r.speed?peak*r.speed:null;const recBps=peakBps?peakBps*N:null;const meets=r.speed&&recBps!=null?r.speed>=recBps:null;
+          return `<div class="ai" style="margin-top:12px"><div class="h">◆ Provisioning target</div><p>Policy: installed capacity ≥ <b>${N}× peak</b> (peak‑utilization ceiling ${(100/N).toFixed(0)}%). Peak here is <b>${pct1(peak)}</b>${peakBps?` (~${fmtBps(peakBps)})`:''}, so recommended capacity is <b>${recBps?fmtBps(recBps):'—'}</b>. Current capacity ${r.speed?fmtBps(r.speed):'?'} — ${meets==null?'unknown':meets?'<b style="color:var(--normal)">meets the target</b>':'<b style="color:var(--critical)">below target; upgrade to the next tier</b>'}.</p></div>`;})()}
       </div>
     </div>
     <div>
@@ -1629,7 +1646,7 @@ function view_capacity(){
     <h3>${breaching.length} link(s) forecast to breach 90% within 90 days</h3>
     <div class="reason">Forecasts use robust trend regression on daily p95 (busy-period). Recommended windows account for a ${S.cfg.upgradeLeadDays}-day upgrade lead time.</div>
     <div class="act"><a onclick="genReport('capacity')">Generate Weekly Capacity Report →</a></div></div>
-  <div class="panel pad"><table><thead><tr><th>Interface</th><th>Class</th><th>Impact</th><th>Current p95</th><th>Slope/mo</th><th>Time→80%</th><th>Time→90%</th><th>Time→95%</th><th>Upgrade window</th><th>Conf</th></tr></thead><tbody>
+  <div class="panel pad"><div class="sec-title"><h2>Capacity forecast table</h2><span class="sub">${list.length} link(s) · ${(S.cfg.forecastMetric||'p95')} · ${(S.cfg.forecastDirection||'combined')==='split'?'TX/RX split':'combined'} &nbsp; ${csvBtn('#main table','capacity_forecast.csv')}</span></div><table><thead><tr><th>Interface</th><th>Class</th><th>Impact</th><th>Current p95</th><th>Slope/mo</th><th>Time→80%</th><th>Time→90%</th><th>Time→95%</th><th>Upgrade window</th><th>Conf</th></tr></thead><tbody>
   ${list.slice(0,60).map(r=>{const f=r.forecast;const tt=v=>v!=null&&v>0&&v<3650?Math.round(v)+'d':(v!=null&&v<=0?'now':'—');const urgent=f.t90!=null&&f.t90<=90;return `<tr data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><td><b>${esc(r.dev)}</b> ${esc(r.intf)}</td><td><span class="chip">${r.cls}</span></td><td><span class="chip impact-${r.impact}">${r.impact}</span></td><td class="mono">${pct1(f.current)}</td><td class="mono ${f.slopePerDay>0?'up':'down'}">${(f.slopePerDay*30*100).toFixed(1)}%</td><td class="mono">${tt(f.t80)}</td><td class="mono" style="${urgent?'color:var(--critical);font-weight:700':''}">${tt(f.t90)}</td><td class="mono">${tt(f.t95)}</td><td class="mono">${f.window?f.window[0]+'–'+f.window[1]+'d':'—'}</td><td class="mono">${(f.conf*100).toFixed(0)}%</td></tr>`;}).join('')}
   </tbody></table></div>`;
 }
@@ -1648,7 +1665,7 @@ function view_trends(){
 function view_anomalies(){
   if(!S.samples.length)return needData();
   const a=A();const all=a.ifs.flatMap(r=>r.anomalies.map(an=>({...an,r}))).sort((x,y)=>{const ir={Critical:0,High:1,Medium:2,Low:3};return ir[x.r.impact]-ir[y.r.impact]||y.ts-x.ts;});
-  return crumb([['Anomalies']])+`<div class="sec-title"><h2>Anomaly feed</h2><span class="sub">${all.length} detected · baseline-relative, impact-ranked</span></div>
+  return crumb([['Anomalies']])+`<div class="sec-title"><h2>Anomaly feed</h2><span class="sub">${all.length} detected · baseline-relative, impact-ranked &nbsp; ${csvBtn('#main table','anomalies.csv')}</span></div>
   <div class="panel pad"><table><thead><tr><th>Type</th><th>Interface</th><th>Class</th><th>Impact</th><th>When</th><th>Detail</th></tr></thead><tbody>
   ${all.map(an=>`<tr data-nav='${JSON.stringify({view:'intf',id:an.r.ifid})}'><td><b style="color:var(--anomtxt)">⚠ ${an.type}</b></td><td><b>${esc(an.r.dev)}</b> ${esc(an.r.intf)}</td><td><span class="chip">${an.r.cls}</span></td><td><span class="chip impact-${an.r.impact}">${an.r.impact}</span></td><td class="small">${fmtDate(an.ts)}</td><td class="mono small">${an.z?`z=${an.z.toFixed(1)}, ~${pct1(an.util)} vs exp ${pct1(an.exp)}`:an.ratio?`${an.ratio.toFixed(1)}× imbalance`:an.util?`~${pct1(an.util)}`:''}</td></tr>`).join('')||'<tr><td colspan=6 class="small">No anomalies detected.</td></tr>'}
   </tbody></table></div>`;
@@ -1672,7 +1689,7 @@ function view_links(){
   const clsOpts=c=>CLASSES.map(o=>`<option ${c===o?'selected':''}>${o}</option>`).join('');
   const impOpts=c=>IMPACTS.map(o=>`<option ${c===o?'selected':''}>${o}</option>`).join('');
   return crumb([['Link Manager']])+`
-  <div class="sec-title"><h2>Link Manager</h2><span class="sub">${list.length} link(s) · every knob below is editable per link — nothing assumed, changes recompute analytics instantly</span></div>
+  <div class="sec-title"><h2>Link Manager</h2><span class="sub">${list.length} link(s) · every knob is editable — changes recompute instantly &nbsp; ${csvBtn('#main table','link_manager.csv')}</span></div>
   <div class="panel pad">
   <div class="flex" style="margin-bottom:10px"><input type="text" placeholder="Filter by device / interface / class / site / tag…" value="${esc(S.linkq||'')}" style="min-width:300px" onchange="S.linkq=this.value;render()"><span class="mini">Enter to apply · edited links show ↺</span></div>
   <div style="overflow-x:auto"><table style="min-width:1180px"><thead><tr><th>Link</th><th>Verdict</th><th>Class</th><th>Impact</th><th>Warn %</th><th>High %</th><th>Crit %</th><th>Off-hrs W/H/C %</th><th>Speed</th><th>Site</th><th>Tags</th><th></th></tr></thead><tbody>
@@ -1812,7 +1829,7 @@ function view_upgrade(){
     ${kpi('Meeting trigger',metCount,metCount?'up':'flat','≥'+ur.days+' days',metCount?'critical':'normal')}
     ${kpi('Policy',ur.utilPct+'%','flat',ur.businessHoursOnly?'business hrs':'all hours','warning')}
   </div>
-  <div class="panel pad"><div class="sec-title"><h2>Threshold hits per link — last ${win} days</h2><span class="sub">${ur.utilPct}%${ur.businessHoursOnly?' · business hours':''} · trigger ${ur.days}d</span></div>
+  <div class="panel pad"><div class="sec-title"><h2>Threshold hits per link — last ${win} days</h2><span class="sub">${ur.utilPct}%${ur.businessHoursOnly?' · business hours':''} · trigger ${ur.days}d &nbsp; ${csvBtn('#main table','upgrade_watch.csv')}</span></div>
   <div style="overflow-x:auto"><table style="min-width:900px"><thead><tr><th>Link</th><th>Class</th><th>Impact</th><th>Capacity</th><th>Hits (window)</th><th>Days hit</th><th>Peak</th><th>Last hit</th><th>Trigger</th><th></th></tr></thead><tbody>
   ${rows.map(({r,h})=>{const mx=amax(rows.map(x=>x.h.hits))||1;const bw=(h.hits/mx*100).toFixed(0);
     return `<tr><td style="cursor:pointer" data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><b>${esc(r.dev)}</b> ${esc(r.intf)}${r.linkname?`<div class="mini">${esc(r.linkname)}</div>`:''}</td>
@@ -1857,7 +1874,7 @@ function view_reports(){
   <div id="reportOut" style="margin-top:16px"></div>`;
 }
 function view_audit(){
-  return crumb([['Audit Log']])+`<div class="sec-title"><h2>Audit Trail</h2><span class="sub">append-only · ${S.audit.length} events</span></div>
+  return crumb([['Audit Log']])+`<div class="sec-title"><h2>Audit Trail</h2><span class="sub">append-only · ${S.audit.length} events &nbsp; ${csvBtn('#main table','audit_log.csv')}</span></div>
   <div class="panel pad"><table><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead><tbody>
   ${S.audit.map(e=>`<tr style="cursor:default"><td class="small">${fmtDate(e.ts)}</td><td class="small">${esc(e.who)}</td><td><span class="chip">${esc(e.action)}</span></td><td class="small">${esc(e.target)}</td><td class="small">${esc(e.detail)}</td></tr>`).join('')||'<tr><td colspan=5 class="small">No audit events yet.</td></tr>'}
   </tbody></table></div>`;
@@ -1898,10 +1915,25 @@ function view_admin(){
     <div class="small" style="margin:6px 0 12px;color:var(--muted)">Current rule: <b>util &gt; ${S.cfg.upgradeRule.utilPct}%${S.cfg.upgradeRule.businessHoursOnly?' in business hours':''} for ${S.cfg.upgradeRule.days} day(s) → ${S.cfg.upgradeRule.mode==='auto'?'auto-flag':'recommend'} upgrade</b></div>
     <button class="btn" onclick="saveUpgrade()">Save upgrade policy</button>
   </div>
-  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Class-specific policies</h2><span class="sub">stricter/looser bands per interface class</span></div>
-  <table><thead><tr><th>Class</th><th>Warn</th><th>High</th><th>Critical</th><th>Default impact</th></tr></thead><tbody>
-  ${['Core','Trading','Internet','WAN','Storage','Backup','Voice','Management','Customer'].map(c=>{const ct=th(c);const im=classify('',c).impact;return `<tr style="cursor:default"><td><span class="chip">${c}</span></td><td class="mono">${(ct.warn*100).toFixed(0)}%</td><td class="mono">${(ct.high*100).toFixed(0)}%</td><td class="mono">${(ct.crit*100).toFixed(0)}%</td><td><span class="chip impact-${im}">${im}</span></td></tr>`;}).join('')}
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Forecast &amp; provisioning</h2><span class="sub">how capacity forecasts are computed</span></div>
+    <div class="grid g3">
+      <label class="fld"><span>Forecast metric</span><select id="fcMetric"><option value="p95" ${(S.cfg.forecastMetric||'p95')==='p95'?'selected':''}>p95 (sustained busy)</option><option value="p99" ${S.cfg.forecastMetric==='p99'?'selected':''}>p99 (near-peak)</option><option value="max" ${S.cfg.forecastMetric==='max'?'selected':''}>max (peak)</option></select></label>
+      <label class="fld"><span>Direction</span><select id="fcDir"><option value="combined" ${(S.cfg.forecastDirection||'combined')==='combined'?'selected':''}>Combined (worse of TX/RX)</option><option value="split" ${S.cfg.forecastDirection==='split'?'selected':''}>Split — forecast TX &amp; RX separately</option></select></label>
+      <label class="fld"><span>Provision to N× peak</span><input type="number" step="0.1" id="provN" value="${S.cfg.provisionFactor||1.5}"></label>
+    </div>
+    <div class="mini" style="margin-bottom:10px">Metric = which daily level the trend is fit to. Split forecasts each direction and reports the one that saturates first. Provisioning target sizes recommended capacity to N× peak traffic (peak‑utilization ceiling ${(100/(S.cfg.provisionFactor||1.5)).toFixed(0)}%).</div>
+    <button class="btn" onclick="saveForecastCfg()">Save forecast settings</button>
+  </div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Class-specific policies</h2><span class="sub">editable — utilization bands per interface class (blank = use global)</span></div>
+  <div style="overflow-x:auto"><table style="min-width:520px"><thead><tr><th>Class</th><th>Warn %</th><th>High %</th><th>Critical %</th><th>Default impact</th></tr></thead><tbody>
+  ${['Core','Trading','Internet','WAN','Storage','Backup','Voice','Replication','Management','Customer'].map(c=>{const ov=S.cfg.classThresholds[c]||{};const g=S.cfg.thresholds;const im=classify('',c).impact;
+    return `<tr style="cursor:default"><td><span class="chip">${c}</span></td>
+    <td><input type="number" style="width:64px" id="ct_${c}_warn" value="${ov.warn!=null?Math.round(ov.warn*100):''}" placeholder="${Math.round(g.warn*100)}"></td>
+    <td><input type="number" style="width:64px" id="ct_${c}_high" value="${ov.high!=null?Math.round(ov.high*100):''}" placeholder="${Math.round(g.high*100)}"></td>
+    <td><input type="number" style="width:64px" id="ct_${c}_crit" value="${ov.crit!=null?Math.round(ov.crit*100):''}" placeholder="${Math.round(g.crit*100)}"></td>
+    <td><span class="chip impact-${im}">${im}</span></td></tr>`;}).join('')}
   </tbody></table></div>
+  <button class="btn" style="margin-top:12px" onclick="saveClassThresholds()">Save class bands</button></div>
   <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Compliance &amp; regulatory (SEBI / RBI / CERT-In)</h2><span class="sub">used by the Regulatory Capacity Report</span></div>
     <div class="grid g2">
       <label class="fld"><span>Institution / entity name</span><input type="text" id="regInst" value="${esc(S.cfg.institution||'')}" placeholder="e.g. BSE Ltd — Network Operations"></label>
@@ -2085,10 +2117,12 @@ function genRegReport(scope,fmt){
       ['Prepared by',c.reportPreparedBy||'',' ','Reviewed by',c.reportReviewedBy||'',' ','Approved by',c.reportApprovedBy||''],
       ['Classification','Confidential — regulatory']
     ];
-    const summ=[['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)',`Peak %`,`p95 %`,`Avg %`,`% time > ${Tp}% (all)`,`% time > ${Tp}% (mkt hrs)`,`Days > ${Tp}%`,`Headroom to ${Tp}% (pp)`,`Headroom to 100% (pp)`,`Days to ${Tp}%`,'Augmentation required','Verdict']];
-    for(const x of D.rows)summ.push([x.r.dev,x.r.intf,x.r.linkname||'',x.r.site,x.r.cls,x.r.impact,x.r.speed?+(x.r.speed/1e6).toFixed(0):'',
+    const summ=[['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)',`Peak %`,`p95 %`,`Avg %`,`% time > ${Tp}% (all)`,`% time > ${Tp}% (mkt hrs)`,`Days > ${Tp}%`,`Headroom to ${Tp}% (pp)`,`Headroom to 100% (pp)`,`Days to ${Tp}%`,`Recommended capacity (${(S.cfg.provisionFactor||1.5)}×peak, Mbps)`,'Augmentation required','Verdict']];
+    const N=S.cfg.provisionFactor||1.5;
+    for(const x of D.rows){const recMbps=x.r.speed?+((x.peak*x.r.speed*N)/1e6).toFixed(0):'';
+      summ.push([x.r.dev,x.r.intf,x.r.linkname||'',x.r.site,x.r.cls,x.r.impact,x.r.speed?+(x.r.speed/1e6).toFixed(0):'',
       +(x.peak*100).toFixed(1),+(x.p95*100).toFixed(1),+(x.avg*100).toFixed(1),+(x.pctOver*100).toFixed(2),+(x.mktPctOver*100).toFixed(2),x.breachDays,
-      +(x.headThr*100).toFixed(1),+(x.head100*100).toFixed(1),x.tReg==null?'no trend':(x.tReg<=0?'AT/OVER':Math.round(x.tReg)),x.augment?'YES':'No',x.r.verdict.title]);
+      +(x.headThr*100).toFixed(1),+(x.head100*100).toFixed(1),x.tReg==null?'no trend':(x.tReg<=0?'AT/OVER':Math.round(x.tReg)),recMbps,x.augment?'YES':'No',x.r.verdict.title]);}
     const breach=[['Device','Interface','Site','Timestamp','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Market hours',`Threshold %`]];
     let n=0,trunc=false;
     for(const x of D.rows){for(const s of x.r.samples){if(s.util==null||s.util<D.T)continue;if(n++>=50000){trunc=true;break;}
@@ -2152,6 +2186,16 @@ function genRegReport(scope,fmt){
   else{const w=window.open('','_blank');if(!w){toast('Allow pop-ups to export PDF');return;}w.document.write(html);w.document.close();w.onload=()=>{setTimeout(()=>{w.focus();w.print();},250);};toast('Opening print dialog — choose “Save as PDF”');}
 }
 const fmtTsPlain=ts=>{const d=new Date(ts),p2=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;};
+function csvCell(v){v=String(v==null?'':v).replace(/\s+/g,' ').trim();return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
+function exportTableCSV(sel,name){
+  const tbl=typeof sel==='string'?document.querySelector(sel):sel;if(!tbl){toast('No table to export');return;}
+  const rows=[...tbl.querySelectorAll('tr')].map(tr=>[...tr.querySelectorAll('th,td')]
+    .filter(c=>!c.querySelector('button')&&!c.classList.contains('noexport'))
+    .map(c=>{if(c.getAttribute('data-csv'))return csvCell(c.getAttribute('data-csv'));const cl=c.cloneNode(true);cl.querySelectorAll('.info').forEach(x=>x.remove());return csvCell(cl.textContent);}).join(','));
+  dl(new Blob([rows.join('\n')],{type:'text/csv'}),name||'netpulse_table.csv');
+  logAudit('table.csv',name||'');toast('CSV downloaded');
+}
+function csvBtn(sel,name){return `<button class="btn sm ghost" onclick="exportTableCSV('${sel}','${name}')">⤓ CSV</button>`;}
 function dl(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;a.click();URL.revokeObjectURL(u);}
 function exportAll(){dl(new Blob([JSON.stringify({batches:S.batches,samples:S.samples,cfg:S.cfg,audit:S.audit},null,0)],{type:'application/json'}),'netpulse_export.json');logAudit('data.export','all');}
 
@@ -2267,6 +2311,10 @@ function saveThresholds(){
   save('cfg');logAudit('config.thresholds','',JSON.stringify({business:S.cfg.thresholds,offHours:S.cfg.thresholdsOff}));
   S.analytics=null;toast('Thresholds saved — verdicts recomputed');render();}
 function savePlanning(){S.cfg.businessHours.startHr=+$('#bhStart').value;S.cfg.businessHours.endHr=+$('#bhEnd').value;S.cfg.planHorizonDays=+$('#planH').value;S.cfg.upgradeLeadDays=+$('#leadD').value;save('cfg');logAudit('config.planning');S.analytics=null;toast('Saved');render();}
+function saveForecastCfg(){S.cfg.forecastMetric=$('#fcMetric').value;S.cfg.forecastDirection=$('#fcDir').value;S.cfg.provisionFactor=Math.max(1,+$('#provN').value||1.5);save('cfg');logAudit('config.forecast','',JSON.stringify({m:S.cfg.forecastMetric,d:S.cfg.forecastDirection,n:S.cfg.provisionFactor}));S.analytics=null;toast('Forecast settings saved — recomputed');render();}
+function saveClassThresholds(){const CL=['Core','Trading','Internet','WAN','Storage','Backup','Voice','Replication','Management','Customer'];const out={};
+  for(const c of CL){const o={};['warn','high','crit'].forEach(bd=>{const el=$('#ct_'+c+'_'+bd);if(el&&el.value.trim()!==''){const n=parseFloat(el.value);if(!isNaN(n))o[bd]=clamp(n/100,0,2);}});if(Object.keys(o).length)out[c]=o;}
+  S.cfg.classThresholds=out;save('cfg');logAudit('config.classbands','',JSON.stringify(out));S.analytics=null;toast('Class bands saved — verdicts recomputed');render();}
 function saveCompliance(){
   S.cfg.institution=$('#regInst').value.trim();
   S.cfg.regThreshold=clamp((+$('#regThr').value||70)/100,0.1,1);
@@ -2505,7 +2553,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.genRegReport=genRegReport;window.saveCompliance=saveCompliance;window.setMarketHours=setMarketHours;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.genRegReport=genRegReport;window.saveCompliance=saveCompliance;window.setMarketHours=setMarketHours;window.saveForecastCfg=saveForecastCfg;window.saveClassThresholds=saveClassThresholds;window.exportTableCSV=exportTableCSV;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
