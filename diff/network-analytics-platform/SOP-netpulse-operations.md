@@ -75,10 +75,13 @@ Track how often specific links cross the upgrade threshold over a chosen window.
 | --- | --- |
 | **Utilization threshold (%)** | The busy level that counts toward an upgrade (e.g., 80%). |
 | **Sustained for (days)** | How many distinct days must cross the threshold before an upgrade is recommended (e.g., 5). |
+| **Look-back window (days)** | The trailing window (ending at each link's latest sample) over which the distinct days are counted; `0` = the entire loaded history. Default **90**. Keep this finite so an old breach cannot latch the "Upgrade Recommended" verdict forever, and so the verdict stays consistent with the windowed Upgrade Watch dashboard. |
 | **Count business-hours only** | If on, only business-hours samples count (recommended for business links). |
 | **Action** | *Recommend* (verdict + report) or *Auto-flag for upgrade*. |
 
 When satisfied, the link gets the **"Link Upgrade Recommended"** verdict. A live "Current rule" line summarizes the setting. **Save upgrade policy** to apply. Per-link overrides are possible via Link Manager thresholds.
+
+> **Time zone.** Data timestamps are treated as wall-clock in the configured zone (**Admin → Compliance → Time zone**, default `Asia/Kolkata`/IST — naive exports carry no offset). Parsing, business-hour classification, heat-maps, anomaly baselines and every rendered time all sit on that one clock, so the report cover, the breach-detail rows and the "market hours" flags stay in agreement regardless of which machine opens the file.
 
 ### 2.4 Forecast & provisioning
 - **Forecast metric** — fit the capacity trend to **p95** (sustained busy, default), **p99** (near-peak), or **max** (peak). Peak-sizing shops pick p99/max.

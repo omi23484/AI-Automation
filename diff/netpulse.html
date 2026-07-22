@@ -289,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v25</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v26</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -368,7 +368,7 @@ const DEFAULT_CFG={
   thresholdsOff:null, // optional separate bands for non-business hours (null = same as business)
   // Link-upgrade policy — editable: recommend/auto-flag upgrade when utilization
   // crosses utilPct on `days` distinct days (optionally business-hours only).
-  upgradeRule:{utilPct:80, days:5, businessHoursOnly:true, mode:'recommend'},
+  upgradeRule:{utilPct:80, days:5, businessHoursOnly:true, lookbackDays:90, mode:'recommend'},
   // Compliance / regulatory (SEBI CSCRF & BCP-DR capacity, RBI IT/Cyber, CERT-In logging).
   // The threshold is configurable — set it to the value in your current applicable circular.
   regThreshold:0.70, regRetentionDays:180, tz:'Asia/Kolkata',
@@ -469,6 +469,11 @@ function headerUnit(h){ // detect explicit unit inside a header string
   if(/%|percent|util/.test(String(h).toLowerCase()))return null;
   return info;
 }
+// → bits/sec. When a capacity carries no unit, magnitude decides the scale, tuned for the
+// DC/trading domain: ≥1e6 is already bps; 1000–1e6 is Mbps; a bare 1–1000 is read as Gbps
+// (so 1/10/40/100 → 1/10/40/100 Gbps). A source that expresses capacity as a bare "100"
+// meaning 100 Mbps would therefore over-scale ×1000 — validateStaged flags that case (most
+// links reading <0.5% utilized), and a per-link Speed override or an explicit unit fixes it.
 function parseSpeed(raw){
   if(raw==null||raw==='')return null;
   if(typeof raw==='number'){ if(raw>=1e6)return raw; if(raw>=1000)return raw*1e6; if(raw>=1)return raw*1e9; return raw; }
@@ -747,6 +752,10 @@ function validateStaged(parsed,built){
     let gaps=0;for(const d of deltas)if(d>med*2.5)gaps++;
     if(gaps)findings.warn.push(`<b>${gaps}</b> polling gap(s) detected (missing intervals beyond ~2.5× the ${intervalNote} cadence).`);}
   if(built.issues.corrupt)findings.warn.push(`<b>${built.issues.corrupt}</b> physically impossible value(s) (rate above link capacity / utilization &gt;120% / negative) — excluded from analytics, charts and reports. These are usually poller counter-wrap artifacts; if a whole link is affected, its bandwidth column is wrong — fix the mapping or set a Speed override later in Link Manager.`);
+  // Capacity sanity — the >120% flag catches an under-scaled capacity, but an OVER-scaled
+  // one (e.g. a Mbps capacity read as Gbps) makes utilization ~1000× too small and slips
+  // through silently. If nearly every link looks idle, surface it so the mapping is checked.
+  {const wu=s.filter(x=>x.util!=null&&x.speed);if(wu.length>=50){const mu=percentile(wu.map(x=>x.util),0.5);if(mu<0.005)findings.warn.push(`Almost all traffic reads as &lt;0.5% of capacity (median ${pct1(mu)}). The interface-bandwidth column may be <b>over-scaled</b> (e.g. a Mbps capacity interpreted as Gbps). Verify the bandwidth mapping/unit above, or set a Speed override in Link Manager.`);}}
   if(built.issues.utilRecalc)findings.info.push(`<b>${built.issues.utilRecalc}</b> row(s): supplied utilization disagreed with rate/speed — recomputed from normalized rates.`);
   if(built.issues.cellUnit)findings.info.push(`<b>${built.issues.cellUnit}</b> value(s) carried a per-cell unit (e.g. “1.5 Gbps”) — normalized to bps.`);
   if(built.scaleGuessNote)findings.info.push(esc(built.scaleGuessNote));
@@ -900,7 +909,12 @@ function computeAnalytics(){
     const bhDays=new Set(s.filter(x=>x.util>=t.high&&isBH(x.ts)).map(x=>new Date(x.ts).toDateString())).size;
     // Configurable link-upgrade policy (util > X% [in business hours] on Y distinct days)
     const ur=Object.assign({},S.cfg.upgradeRule,ov.upgrade||{});
-    const upgradeDays=new Set(s.filter(x=>x.util!=null&&x.util>=ur.utilPct/100&&(!ur.businessHoursOnly||isBH(x.ts))).map(x=>new Date(x.ts).toDateString())).size;
+    // Evaluate the policy over a trailing window (default 90d) ending at the link's latest
+    // sample — NOT the whole loaded history — so an old breach cannot latch the verdict
+    // forever and this stays consistent with the windowed Upgrade Watch view.
+    const upLook=(ur.lookbackDays||0)>0?ur.lookbackDays*86400000:Infinity;
+    const upWinStart=s.at(-1).ts-upLook;
+    const upgradeDays=new Set(s.filter(x=>x.ts>=upWinStart&&x.util!=null&&x.util>=ur.utilPct/100&&(!ur.businessHoursOnly||isBH(x.ts))).map(x=>new Date(x.ts).toDateString())).size;
     const upgradeNeeded=upgradeDays>=ur.days;
     // baseline dow×hour
     const base={};for(const x of s){if(x.util==null)continue;const k=new Date(x.ts).getDay()+'-'+new Date(x.ts).getHours();(base[k]=base[k]||[]).push(x.util);}
@@ -918,7 +932,18 @@ function computeAnalytics(){
       if(b&&b.n>=5&&b.sd>0.001){const z=(x.util-b.m)/b.sd;const jump=x.util-b.m;
         if(z>3.2&&jump>=0.08&&x.util>0.15)anomalies.push({ts:x.ts,type:'Traffic spike',z,util:x.util,exp:b.m,jump});}}
     // weekend traffic on business link
-    if(['Core','Trading','Internet','Customer'].includes(cls)){const we=s.filter(x=>[0,6].includes(new Date(x.ts).getDay())&&x.util>0.2);const wd=s.filter(x=>![0,6].includes(new Date(x.ts).getDay()));if(we.length>3&&mean(we.map(x=>x.util))>0.15&&mean(wd.map(x=>x.util))>0){const r=mean(we.map(x=>x.util));if(r>0.2)anomalies.push({ts:we[0].ts,type:'Weekend traffic on business link',util:r,exp:0.03});}}
+    // Weekend traffic on a link that should idle on weekends — flagged only when the
+    // weekend median is BOTH operationally significant (>20%) AND a large fraction of the
+    // weekday median (i.e. the weekend genuinely resembles a working day), so a link that
+    // is legitimately busy 7 days a week does not trip a permanent false positive.
+    if(['Core','Trading','Internet','Customer'].includes(cls)){
+      const we=s.filter(x=>[0,6].includes(new Date(x.ts).getDay())&&x.util!=null);
+      const wd=s.filter(x=>![0,6].includes(new Date(x.ts).getDay())&&x.util!=null);
+      if(we.length>5&&wd.length>5){
+        const wem=percentile(we.map(x=>x.util),0.5),wdm=percentile(wd.map(x=>x.util),0.5);
+        if(wem>0.2&&wem>=wdm*0.6){const at=we.find(x=>x.util>=wem)||we[0];anomalies.push({ts:at.ts,type:'Weekend traffic on business link',util:wem,exp:wdm});}
+      }
+    }
     // rx/tx imbalance
     const withDir=s.filter(x=>x.tx>0&&x.rx>0);if(withDir.length>10){const ratios=withDir.map(x=>Math.max(x.tx,x.rx)/Math.min(x.tx,x.rx));const mr=percentile(ratios,0.5);if(mr>6)anomalies.push({ts:withDir[0].ts,type:'RX/TX imbalance',ratio:mr});}
     // daily p95 series + forecast
@@ -930,13 +955,18 @@ function computeAnalytics(){
       const txD=dseries(x=>speedTx&&x.tx!=null?x.tx/speedTx:null),rxD=dseries(x=>speedRx&&x.rx!=null?x.rx/speedRx:null);
       const fTx=txD.length?forecastFrom(txD,percentile(txD.map(d=>d.p95),0.95),cls):null;
       const fRx=rxD.length?forecastFrom(rxD,percentile(rxD.map(d=>d.p95),0.95),cls):null;
-      const sc=f=>f&&f.t90!=null&&f.t90>=0?f.t90:1e9;
-      const txBind=sc(fTx)<=sc(fRx)&&fTx||!fRx;
-      forecast=(txBind?fTx:fRx)||fTx||fRx||forecastFrom(dseries(x=>x.util),p95,cls);
-      daily=(txBind?txD:rxD).length?(txBind?txD:rxD):dseries(x=>x.util);
-      forecast.dir=txBind?'TX':'RX';forecast.otherDir=txBind?'RX':'TX';
-      forecast.otherCur=(txBind?fRx:fTx)?.current;forecast.otherT90=(txBind?fRx:fTx)?.t90;
-      fnote=`${forecast.dir}-bound${fm!=='p95'?' · '+fm:''}`;
+      if(fTx||fRx){
+        // the binding direction is the one that saturates first (smallest days-to-90%)
+        const sc=f=>f&&f.t90!=null&&f.t90>=0?f.t90:1e9;
+        const txBind=!!(fTx&&(!fRx||sc(fTx)<=sc(fRx)));
+        forecast=txBind?fTx:fRx;
+        daily=(txBind?txD:rxD).length?(txBind?txD:rxD):dseries(x=>x.util);
+        forecast.dir=txBind?'TX':'RX';forecast.otherDir=txBind?'RX':'TX';
+        const other=txBind?fRx:fTx;forecast.otherCur=other?.current;forecast.otherT90=other?.t90;
+        fnote=`${forecast.dir}-bound${fm!=='p95'?' · '+fm:''}`;
+      }else{ // neither direction had usable per-direction data — fall back to combined, unlabeled
+        daily=dseries(x=>x.util);forecast=forecastFrom(daily,p95,cls);
+      }
     }else{daily=dseries(x=>x.util);forecast=forecastFrom(daily,p95,cls);}
     if(fnote)forecast.modelNote=(forecast.modelNote?forecast.modelNote+' · ':'')+fnote;
     // risk
@@ -1150,7 +1180,7 @@ function chartSVG(cfg,animate){
     const d0=new Date(x0);d0.setHours(0,0,0,0);
     for(let td=+d0;td<=x1;td+=DAY){
       if(!bhc.days.includes(new Date(td).getDay()))continue;
-      const bs=td+bhc.startHr*36e5,be=td+bhc.endHr*36e5;
+      const bs=td+(bhc.startHr*60+(bhc.startMin||0))*60000,be=td+(bhc.endHr*60+(bhc.endMin||0))*60000;
       if(be<x0||bs>x1)continue;
       bhRects+=`<rect x="${X(Math.max(bs,x0)).toFixed(1)}" y="${pad.t}" width="${Math.max(1,X(Math.min(be,x1))-X(Math.max(bs,x0))).toFixed(1)}" height="${h-pad.t-pad.b}" fill="rgba(56,189,248,.08)"/>`;
     }
@@ -1572,7 +1602,7 @@ function view_intf(){
           <div class="kpi"><div class="l">Upgrade window</div><div class="v mono" style="font-size:18px">${f.window?f.window[0]+'–'+f.window[1]+'d':'—'}</div><div class="t flat">conf ${(f.conf*100).toFixed(0)}%</div></div>
         </div>
         ${(()=>{const N=S.cfg.provisionFactor||1.5;const peak=(r.pkP95!=null?Math.max(r.pkP95,r.mx):r.mx);const peakBps=r.speed?peak*r.speed:null;const recBps=peakBps?peakBps*N:null;const meets=r.speed&&recBps!=null?r.speed>=recBps:null;
-          return `<div class="ai" style="margin-top:12px"><div class="h">◆ Provisioning target</div><p>Policy: installed capacity ≥ <b>${N}× peak</b> (peak‑utilization ceiling ${(100/N).toFixed(0)}%). Peak here is <b>${pct1(peak)}</b>${peakBps?` (~${fmtBps(peakBps)})`:''}, so recommended capacity is <b>${recBps?fmtBps(recBps):'—'}</b>. Current capacity ${r.speed?fmtBps(r.speed):'?'} — ${meets==null?'unknown':meets?'<b style="color:var(--normal)">meets the target</b>':'<b style="color:var(--critical)">below target; upgrade to the next tier</b>'}.</p></div>`;})()}
+          return `<div class="ai" style="margin-top:12px"><div class="h">◆ Provisioning target</div><p>Policy: installed capacity ≥ <b>${N}× peak</b> (peak‑utilization ceiling ${(100/N).toFixed(0)}%). Peak here is <b>${pct1(peak)}</b>${peakBps?` (~${fmtBps(peakBps)})`:''}, so the <b>minimum capacity</b> that satisfies the policy is <b>${recBps?fmtBps(recBps):'—'}</b>. Current capacity ${r.speed?fmtBps(r.speed):'?'} — ${meets==null?'unknown':meets?`<b style="color:var(--normal)">already meets the target</b> (using ${(peak*N*100).toFixed(0)}% of the ${(100/N).toFixed(0)}% ceiling)`:'<b style="color:var(--critical)">below target; upgrade to the next tier</b>'}.</p></div>`;})()}
       </div>
     </div>
     <div>
@@ -1905,10 +1935,11 @@ function view_admin(){
     </div>
   </div>
   <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Link upgrade policy</h2><span class="sub">when to recommend upgrading a link</span></div>
-    <div class="small" style="margin-bottom:12px">Recommend a link upgrade when utilization crosses the threshold on the given number of days. Editable; applies fleet-wide (per-link overrides available in Link Manager).</div>
-    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px">
+    <div class="small" style="margin-bottom:12px">Recommend a link upgrade when utilization crosses the threshold on the given number of distinct days, evaluated over a trailing look-back window (so an old breach doesn't latch the verdict forever). Editable; applies fleet-wide (per-link overrides available in Link Manager).</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px">
       <label class="fld"><span>Utilization threshold (%)</span><input type="number" id="upPct" value="${S.cfg.upgradeRule.utilPct}"></label>
       <label class="fld"><span>Sustained for (days)</span><input type="number" id="upDays" value="${S.cfg.upgradeRule.days}"></label>
+      <label class="fld"><span>Look-back window (days, 0 = all)</span><input type="number" id="upLook" value="${S.cfg.upgradeRule.lookbackDays!=null?S.cfg.upgradeRule.lookbackDays:90}"></label>
     </div>
     <label class="fld" style="display:flex;align-items:center;gap:8px;margin-top:4px"><input type="checkbox" id="upBH" ${S.cfg.upgradeRule.businessHoursOnly?'checked':''} style="width:auto"> <span style="margin:0">Count business-hours only</span></label>
     <label class="fld"><span>Action</span><select id="upMode"><option value="recommend" ${S.cfg.upgradeRule.mode==='recommend'?'selected':''}>Recommend (verdict + report)</option><option value="auto" ${S.cfg.upgradeRule.mode==='auto'?'selected':''}>Auto-flag for upgrade</option></select></label>
@@ -2093,7 +2124,12 @@ function regReportData(scope){
   return {list,rows,T,dataStart,dataEnd,totalSamples,breaching,augCount,
     covDays:Math.max(1,Math.round(days(dataStart,dataEnd)))};
 }
-function fmtIST(ts){try{return new Date(ts).toLocaleString('en-IN',{timeZone:S.cfg.tz,dateStyle:'medium',timeStyle:'short'})+' IST';}catch(e){return new Date(ts).toLocaleString();}}
+function tzLabel(){const tz=S.cfg.tz||'Asia/Kolkata';const KN={'Asia/Kolkata':'IST'};if(KN[tz])return KN[tz];try{const p=new Intl.DateTimeFormat('en-US',{timeZone:tz,timeZoneName:'short'}).formatToParts(Date.now()).find(x=>x.type==='timeZoneName');return p?p.value:tz;}catch(e){return tz;}}
+// Data timestamps are wall-clock in the configured zone (naive exports carry no offset).
+// Parsing, bucketing (isBH / heatmaps / anomalies) and every rendered time all sit on the
+// SAME clock, so the report cover, the breach-detail rows and the market-hours flags never
+// disagree across browsers. fmtIST just labels that wall-clock with the configured zone.
+function fmtIST(ts){const d=new Date(ts),p2=n=>String(n).padStart(2,'0');const mon=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];return `${d.getDate()} ${mon} ${d.getFullYear()}, ${p2(d.getHours())}:${p2(d.getMinutes())} ${tzLabel()}`;}
 function genRegReport(scope,fmt){
   if(!S.samples.length){toast('No data yet');return;}
   const D=regReportData(scope);const c=S.cfg;const bh=c.businessHours;
@@ -2189,9 +2225,12 @@ const fmtTsPlain=ts=>{const d=new Date(ts),p2=n=>String(n).padStart(2,'0');retur
 function csvCell(v){v=String(v==null?'':v).replace(/\s+/g,' ').trim();return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
 function exportTableCSV(sel,name){
   const tbl=typeof sel==='string'?document.querySelector(sel):sel;if(!tbl){toast('No table to export');return;}
+  // Keep every column so header and data rows stay aligned; strip only interactive/info
+  // chrome from the cell text (an action-button cell becomes an empty field, not a
+  // dropped one — dropping it would shift every following column against the header).
   const rows=[...tbl.querySelectorAll('tr')].map(tr=>[...tr.querySelectorAll('th,td')]
-    .filter(c=>!c.querySelector('button')&&!c.classList.contains('noexport'))
-    .map(c=>{if(c.getAttribute('data-csv'))return csvCell(c.getAttribute('data-csv'));const cl=c.cloneNode(true);cl.querySelectorAll('.info').forEach(x=>x.remove());return csvCell(cl.textContent);}).join(','));
+    .filter(c=>!c.classList.contains('noexport'))
+    .map(c=>{if(c.getAttribute('data-csv'))return csvCell(c.getAttribute('data-csv'));const cl=c.cloneNode(true);cl.querySelectorAll('.info,button').forEach(x=>x.remove());return csvCell(cl.textContent);}).join(','));
   dl(new Blob([rows.join('\n')],{type:'text/csv'}),name||'netpulse_table.csv');
   logAudit('table.csv',name||'');toast('CSV downloaded');
 }
@@ -2324,7 +2363,7 @@ function saveCompliance(){
 function setMarketHours(){
   if($('#regInst')){S.cfg.institution=$('#regInst').value.trim();S.cfg.regThreshold=clamp((+$('#regThr').value||70)/100,0.1,1);S.cfg.reportPreparedBy=$('#regPrep').value.trim();S.cfg.reportReviewedBy=$('#regRev').value.trim();S.cfg.reportApprovedBy=$('#regApp').value.trim();S.cfg.regRetentionDays=Math.max(1,+$('#regRet').value|0)||180;}
   S.cfg.businessHours={startHr:9,startMin:15,endHr:15,endMin:30,days:[1,2,3,4,5]};save('cfg');logAudit('config.markethours','','09:15-15:30');S.analytics=null;toast('Market hours set to 09:15–15:30 (Mon–Fri)');render();}
-function saveUpgrade(){S.cfg.upgradeRule={utilPct:clamp(+$('#upPct').value,1,100),days:Math.max(1,+$('#upDays').value|0),businessHoursOnly:$('#upBH').checked,mode:$('#upMode').value};save('cfg');logAudit('config.upgrade','',JSON.stringify(S.cfg.upgradeRule));S.analytics=null;toast('Upgrade policy saved — verdicts recomputed');render();}
+function saveUpgrade(){S.cfg.upgradeRule={utilPct:clamp(+$('#upPct').value,1,100),days:Math.max(1,+$('#upDays').value|0),lookbackDays:Math.max(0,+$('#upLook').value|0),businessHoursOnly:$('#upBH').checked,mode:$('#upMode').value};save('cfg');logAudit('config.upgrade','',JSON.stringify(S.cfg.upgradeRule));S.analytics=null;toast('Upgrade policy saved — verdicts recomputed');render();}
 function remap(field,idx){const r=S.staged.parsed.resolved;r.map[field]=idx===''?null:+idx;r.conf[field]=1;(r.manual=r.manual||{})[field]=true;reStage();}
 function reStage(){const st=S.staged;const resolved=st.parsed.resolved;const pf=st.group[0];
   pf.parsed.resolved=resolved;pf.built=buildSamples(pf.parsed.rows,resolved,pf.parsed.name,'staged');
