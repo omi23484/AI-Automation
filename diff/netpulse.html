@@ -289,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v26</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v27</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -374,7 +374,7 @@ const DEFAULT_CFG={
   regThreshold:0.70, regRetentionDays:180, tz:'Asia/Kolkata',
   institution:'', reportPreparedBy:'', reportReviewedBy:'', reportApprovedBy:''
 };
-const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},rca:{},watch:[],watchWin:90,
+const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},rca:{},watch:[],watchWin:'all',
   role:'Admin', view:'exec', scope:{}, analytics:null, staged:null, aiMode:'tech'};
 
 async function loadAll(){
@@ -400,7 +400,7 @@ async function loadAll(){
   S.ifinfo=(await IDB.get('ifinfo'))||{};
   S.rca=(await IDB.get('rca'))||{};
   S.watch=(await IDB.get('watch'))||[];
-  try{S.watchWin=+(localStorage.getItem('np-watchwin'))||90;}catch(e){}
+  try{const w=localStorage.getItem('np-watchwin');S.watchWin=(w==null||w==='all')?'all':(+w||'all');}catch(e){S.watchWin='all';}
   try{S.aiMode=localStorage.getItem('np-aimode')||'tech';}catch(e){}
   const cfg=await IDB.get('cfg'); if(cfg)S.cfg=Object.assign(structuredClone(DEFAULT_CFG),cfg);
 }
@@ -1812,7 +1812,7 @@ function view_maintenance(){
       <button class="btn" onclick="addMaint()">Add window</button>
     </div></div>`;
 }
-const WATCH_WINS=[30,60,90,120,180];
+const WATCH_WINS=['all',30,60,90,120,180]; // 'all' = entire loaded history (default)
 function upgradeHits(r,winStart,winEnd){
   const ur=r.upgradeRule;const thr=ur.utilPct/100;
   let hits=0,last=null,peak=0;const days=new Set();
@@ -1824,7 +1824,7 @@ function upgradeHits(r,winStart,winEnd){
   }
   return {hits,days:days.size,last,peak,thr:ur.utilPct,bhOnly:ur.businessHoursOnly,reqDays:ur.days,met:days.size>=ur.days};
 }
-function setWatchWin(n){S.watchWin=+n;try{localStorage.setItem('np-watchwin',n)}catch(e){}render();}
+function setWatchWin(n){S.watchWin=(n==='all'||n==null||+n===0)?'all':+n;try{localStorage.setItem('np-watchwin',S.watchWin)}catch(e){}render();}
 function watchAdd(id){if(id&&!S.watch.includes(id)){S.watch.push(id);IDB.put('watch',S.watch);logAudit('watch.add',id);render();}}
 function watchAddAll(){const a=A();S.watch=a.ifs.map(r=>r.ifid);IDB.put('watch',S.watch);logAudit('watch.addall','',S.watch.length+' links');render();}
 function watchRemove(id){S.watch=S.watch.filter(x=>x!==id);IDB.put('watch',S.watch);logAudit('watch.remove',id);render();}
@@ -1832,7 +1832,10 @@ function watchClear(){S.watch=[];IDB.put('watch',S.watch);logAudit('watch.clear'
 function view_upgrade(){
   if(!S.samples.length)return needData();
   const a=A();const ur=S.cfg.upgradeRule;
-  const dataEnd=amax(a.ifs.map(r=>r.end));const win=S.watchWin||90;const winStart=dataEnd-win*86400000;
+  const dataStart=amin(a.ifs.map(r=>r.start)),dataEnd=amax(a.ifs.map(r=>r.end));
+  const win=S.watchWin==null?'all':S.watchWin;                         // default: entire history
+  const winStart=win==='all'?dataStart:dataEnd-win*86400000;
+  const winLabel=win==='all'?`all data (${Math.max(1,Math.round(days(dataStart,dataEnd)))} days)`:`the last ${win} days`;
   const tracked=a.ifs.filter(r=>S.watch.includes(r.ifid));
   const rows=tracked.map(r=>({r,h:upgradeHits(r,winStart,winEnd_(dataEnd))})).sort((x,y)=>y.h.hits-x.h.hits);
   const totalHits=rows.reduce((s,x)=>s+x.h.hits,0);
@@ -1840,12 +1843,12 @@ function view_upgrade(){
   const avail=a.ifs.filter(r=>!S.watch.includes(r.ifid)).sort((x,y)=>x.dev.localeCompare(y.dev)||x.intf.localeCompare(y.intf));
   return crumb([["Upgrade Watch"]])+`
   <div class="verdict ${metCount?'high':'normal'}" style="margin-bottom:16px"><span class="lvl pill ${metCount?'high':'normal'}">Upgrade Watch</span>
-    <h3>${tracked.length} link(s) watched · ${totalHits.toLocaleString()} threshold hit(s) in the last ${win} days · ${metCount} meeting the upgrade trigger</h3>
-    <div class="reason">Counting every time a link crossed <b>${ur.utilPct}%</b>${ur.businessHoursOnly?' during business hours':''} (trigger = ${ur.days} distinct day(s)). Window ends ${fmtDate(dataEnd)} (latest data). Edit the policy in Admin → Link upgrade policy.</div>
+    <h3>${tracked.length} link(s) watched · ${totalHits.toLocaleString()} threshold hit(s) over ${winLabel} · ${metCount} meeting the upgrade trigger</h3>
+    <div class="reason">Counting every time a link crossed <b>${ur.utilPct}%</b>${ur.businessHoursOnly?' during business hours':''} (trigger = ${ur.days} distinct day(s)). ${win==='all'?`Covers all loaded data (${fmtDate(dataStart)} – ${fmtDate(dataEnd)}).`:`Window ends ${fmtDate(dataEnd)} (latest data).`} Edit the policy in Admin → Link upgrade policy.</div>
   </div>
   <div class="panel pad" style="margin-bottom:16px"><div class="flex" style="gap:10px;flex-wrap:wrap">
     <span class="small" style="font-weight:700">Window</span>
-    <span class="tabs" style="margin:0">${WATCH_WINS.map(n=>`<button class="${win===n?'active':''}" onclick="setWatchWin(${n})">${n}d</button>`).join('')}</span>
+    <span class="tabs" style="margin:0">${WATCH_WINS.map(n=>`<button class="${win===n?'active':''}" onclick="setWatchWin('${n}')">${n==='all'?'All':n+'d'}</button>`).join('')}</span>
     <span class="spacer"></span>
     <select id="watchAddSel" style="min-width:280px" ${avail.length?'':'disabled'}><option value="">＋ Add a link to watch…</option>${avail.map(r=>`<option value="${esc(r.ifid)}">${esc(r.dev)} ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''}</option>`).join('')}</select>
     <button class="btn sm" onclick="watchAdd($('#watchAddSel').value)" ${avail.length?'':'disabled'}>Add</button>
@@ -1855,11 +1858,11 @@ function view_upgrade(){
   ${tracked.length?`
   <div class="grid g4" style="margin-bottom:16px">
     ${kpi('Links watched',tracked.length,'flat','tracked','normal')}
-    ${kpi('Threshold hits',totalHits,totalHits?'up':'flat','in last '+win+'d',totalHits?'high':'normal')}
+    ${kpi('Threshold hits',totalHits,totalHits?'up':'flat',win==='all'?'all data':'in last '+win+'d',totalHits?'high':'normal')}
     ${kpi('Meeting trigger',metCount,metCount?'up':'flat','≥'+ur.days+' days',metCount?'critical':'normal')}
     ${kpi('Policy',ur.utilPct+'%','flat',ur.businessHoursOnly?'business hrs':'all hours','warning')}
   </div>
-  <div class="panel pad"><div class="sec-title"><h2>Threshold hits per link — last ${win} days</h2><span class="sub">${ur.utilPct}%${ur.businessHoursOnly?' · business hours':''} · trigger ${ur.days}d &nbsp; ${csvBtn('#main table','upgrade_watch.csv')}</span></div>
+  <div class="panel pad"><div class="sec-title"><h2>Threshold hits per link — ${win==='all'?'all data':'last '+win+' days'}</h2><span class="sub">${ur.utilPct}%${ur.businessHoursOnly?' · business hours':''} · trigger ${ur.days}d &nbsp; ${csvBtn('#main table','upgrade_watch.csv')}</span></div>
   <div style="overflow-x:auto"><table style="min-width:900px"><thead><tr><th>Link</th><th>Class</th><th>Impact</th><th>Capacity</th><th>Hits (window)</th><th>Days hit</th><th>Peak</th><th>Last hit</th><th>Trigger</th><th></th></tr></thead><tbody>
   ${rows.map(({r,h})=>{const mx=amax(rows.map(x=>x.h.hits))||1;const bw=(h.hits/mx*100).toFixed(0);
     return `<tr><td style="cursor:pointer" data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><b>${esc(r.dev)}</b> ${esc(r.intf)}${r.linkname?`<div class="mini">${esc(r.linkname)}</div>`:''}</td>
@@ -2068,10 +2071,18 @@ function genUpgradePolicyXlsx(scope){
   const a=A();const list=scope==='all'?a.ifs:a.ifs.filter(r=>r.ifid===scope);
   if(!list.length){toast('Link not found');return;}
   const p2=n=>String(n).padStart(2,'0');
-  const fmtTs=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;};
+  const fmtTs=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())} ${tzLabel()}`;};
+  const cStart=amin(list.map(r=>r.start)),cEnd=amax(list.map(r=>r.end));
+  const covDays=Math.max(1,Math.round(days(cStart,cEnd)));
+  // The report is the complete evidence log over ALL loaded history, so the summary
+  // counts (days hit, total hits, trigger met) are computed over exactly the same set of
+  // rows as the Policy Hits detail — the two sheets always agree. (The on-screen verdict
+  // instead uses the rolling look-back window from Admin → Link upgrade policy.)
   const summary=[
     ['NetPulse — Link Upgrade Policy Report'],
-    [`Generated: ${new Date().toLocaleString()}`,'',`Scope: ${scope==='all'?'all links':list[0].dev+' '+list[0].intf}`],
+    [`Generated: ${fmtIST(Date.now())}`,'',`Scope: ${scope==='all'?'all links':list[0].dev+' '+list[0].intf}`],
+    [`Coverage: ${fmtIST(cStart)}  to  ${fmtIST(cEnd)}  (${covDays} days, entire loaded history)`],
+    ['Counts below cover the full loaded history; the live "Upgrade Recommended" verdict uses the rolling '+(S.cfg.upgradeRule.lookbackDays?S.cfg.upgradeRule.lookbackDays+'-day':'full-history')+' look-back window.'],
     [],
     ['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)','Policy threshold %','Policy days','Business hours only','Days threshold hit','Total hits','Upgrade trigger met','Busy p95 %','Verdict']];
   const hits=[['Device','Interface','Site','Timestamp','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Business hours','Policy threshold %']];
@@ -2079,8 +2090,10 @@ function genUpgradePolicyXlsx(scope){
   for(const r of list){
     const ur=r.upgradeRule;const thr=ur.utilPct/100;
     const rhits=r.samples.filter(x=>x.util!=null&&x.util>=thr&&(!ur.businessHoursOnly||isBH(x.ts)));
+    const daysHit=new Set(rhits.map(x=>new Date(x.ts).toDateString())).size; // over the SAME rows as the hits sheet
+    const met=daysHit>=ur.days;
     totalHits+=rhits.length;
-    summary.push([r.dev,r.intf,r.linkname||'',r.site,r.cls,r.impact,r.speed?+(r.speed/1e6).toFixed(0):'',ur.utilPct,ur.days,ur.businessHoursOnly?'Yes':'No',r.upgradeDays,rhits.length,r.upgradeNeeded?'YES':'no',+(r.p95*100).toFixed(1),r.verdict.title]);
+    summary.push([r.dev,r.intf,r.linkname||'',r.site,r.cls,r.impact,r.speed?+(r.speed/1e6).toFixed(0):'',ur.utilPct,ur.days,ur.businessHoursOnly?'Yes':'No',daysHit,rhits.length,met?'YES':'no',+(r.p95*100).toFixed(1),r.verdict.title]);
     for(const x of rhits){
       if(hits.length>MAXH){truncated=true;break;}
       hits.push([r.dev,r.intf,r.site,fmtTs(x.ts),+((x.util*100).toFixed(2)),x.tx!=null?+((x.tx/1e6).toFixed(1)):'',x.rx!=null?+((x.rx/1e6).toFixed(1)):'',r.speed?+((r.speed/1e6).toFixed(0)):'',isBH(x.ts)?'Yes':'No',ur.utilPct]);
