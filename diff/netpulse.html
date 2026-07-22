@@ -272,7 +272,7 @@ svg.donut{animation:popIn .55s cubic-bezier(.22,.61,.36,1) both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v8</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v9</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -336,7 +336,10 @@ const DEFAULT_CFG={
   classThresholds:{Trading:{warn:0.45,high:0.60,crit:0.80},Backup:{warn:0.75,high:0.88,crit:0.96}},
   businessHours:{startHr:9,endHr:17,days:[1,2,3,4,5]},
   riskWeights:{peak:0.9,avg:0.7,trend:0.8,growth:0.7,violations:1.0,anomaly:0.6,impact:1.2},
-  planHorizonDays:90, upgradeLeadDays:42
+  planHorizonDays:90, upgradeLeadDays:42,
+  // Link-upgrade policy — editable: recommend/auto-flag upgrade when utilization
+  // crosses utilPct on `days` distinct days (optionally business-hours only).
+  upgradeRule:{utilPct:80, days:5, businessHoursOnly:true, mode:'recommend'}
 };
 const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},
   role:'Admin', view:'exec', scope:{}, analytics:null, staged:null};
@@ -713,25 +716,59 @@ function validateStaged(parsed,built){
   built.checksum=chk;built.coverage=[tmin,tmax];built.intervalNote=intervalNote;built.overlap=overlap;
   return findings;
 }
+function coverageOf(samples){
+  const ts=samples.map(x=>x.ts).filter(v=>v!=null);if(!ts.length)return {cov:[0,0],checksum:'0',intervalNote:''};
+  ts.sort((a,b)=>a-b);const deltas=[];for(let i=1;i<ts.length;i++)deltas.push(ts[i]-ts[i-1]);
+  const med=deltas.length?percentile(deltas,0.5):0;
+  return {cov:[ts[0],ts.at(-1)],checksum:samples.length+'|'+ts[0]+'|'+ts.at(-1),intervalNote:med?`~${Math.round(med/60000)} min`:''};
+}
 function commitStaged(){
   const st=S.staged;if(!st)return;
-  const batchId='b'+Date.now();
   const existKeys=new Set(S.samples.map(x=>x.ifid+'@'+x.ts));
-  let added=0;
-  for(const x of st.built.samples){const k=x.ifid+'@'+x.ts;if(existKeys.has(k))continue;x.batch=batchId;
-    // maintenance tagging
-    if(S.maintenance.some(m=>m.start<=x.ts&&m.end>=x.ts&&(m.scope==='all'||m.target===x.ifid||m.target===x.dev)))x.maint=1;
-    S.samples.push(x);existKeys.add(k);added++;}
-  if(st.built.info)for(const k in st.built.info)S.ifinfo[k]=Object.assign(S.ifinfo[k]||{},st.built.info[k]);
-  save('ifinfo');
-  S.batches.unshift({id:batchId,file:st.parsed.name,ts:Date.now(),who:S.role,rows:st.parsed.rowCount,added,
-    coverage:st.built.coverage,checksum:st.built.checksum,src:'xlsx',intervalNote:st.built.intervalNote,
-    entities:new Set(st.built.samples.map(x=>x.ifid)).size,map:st.parsed.resolved.map,headers:st.parsed.headers});
-  save('samples');save('batches');
-  logAudit('upload.commit',st.parsed.name,`${added} samples added`);
-  S.staged=null;S.analytics=null;
-  toast(`✅ Committed “${esc(st.parsed.name)}” — ${added.toLocaleString()} new samples`);
-  go('uploads');
+  let totalAdded=0;const map=st.parsed.resolved.map;
+  for(const pf of st.group){
+    const batchId='b'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
+    let added=0;
+    for(const x of pf.built.samples){const k=x.ifid+'@'+x.ts;if(existKeys.has(k))continue;x.batch=batchId;
+      if(S.maintenance.some(m=>m.start<=x.ts&&m.end>=x.ts&&(m.scope==='all'||m.target===x.ifid||m.target===x.dev)))x.maint=1;
+      S.samples.push(x);existKeys.add(k);added++;}
+    if(pf.built.info)for(const k in pf.built.info)S.ifinfo[k]=Object.assign(S.ifinfo[k]||{},pf.built.info[k]);
+    const cv=coverageOf(pf.built.samples);
+    S.batches.unshift({id:batchId,file:pf.parsed.name,ts:Date.now(),who:S.role,rows:pf.parsed.rowCount,added,
+      coverage:cv.cov,checksum:cv.checksum,src:'xlsx',intervalNote:cv.intervalNote,
+      entities:new Set(pf.built.samples.map(x=>x.ifid)).size,map,headers:pf.parsed.headers});
+    totalAdded+=added;
+  }
+  save('ifinfo');save('samples');save('batches');
+  logAudit('upload.commit',st.parsed.name,`${totalAdded} samples across ${st.group.length} file(s)`);
+  S.analytics=null;
+  toast(`✅ Committed ${st.group.length} file(s) — ${totalAdded.toLocaleString()} new samples`);
+  if(S.stagedGroups&&S.stagedGroups.length)stageNextGroup();
+  else{S.staged=null;go('uploads');}
+}
+function cancelStaged(){S.staged=null;S.stagedGroups=null;render();}
+// Aggregate a group of same-layout files into one validation view (map asked once).
+function buildGroupView(group,resolved){
+  const allSamples=group.flatMap(pf=>pf.built.samples);
+  const info={};for(const pf of group)if(pf.built.info)for(const k in pf.built.info)info[k]=Object.assign(info[k]||{},pf.built.info[k]);
+  const issues={corrupt:0,noTs:0,noSpeed:0,utilRecalc:0,cellUnit:0};
+  for(const pf of group)for(const k in issues)issues[k]+=pf.built.issues[k]||0;
+  const extremes=allSamples.filter(x=>x.util!=null).sort((a,b)=>(b.util||0)-(a.util||0)).slice(0,5);
+  const note=group.map(pf=>pf.built.scaleGuessNote).find(Boolean)||null;
+  const built={samples:allSamples,info,issues,extremes,scaleGuessNote:note};
+  const parsed={name:group.length>1?`${group.length} files (identical layout)`:group[0].parsed.name,
+    headers:group[0].parsed.headers,resolved,rowCount:group.reduce((a,pf)=>a+pf.parsed.rowCount,0)};
+  const findings=validateStaged(parsed,built);
+  return {parsed,built,findings,group,fileNames:group.map(pf=>pf.parsed.name)};
+}
+function stageGroup(group){
+  const resolved=group[0].parsed.resolved;
+  for(const pf of group){pf.parsed.resolved=resolved;pf.built=buildSamples(pf.parsed.rows,resolved,pf.parsed.name,'staged');}
+  S.staged=buildGroupView(group,resolved);render();
+}
+function stageNextGroup(){
+  if(!S.stagedGroups||!S.stagedGroups.length){S.staged=null;render();return;}
+  stageGroup(S.stagedGroups.shift());
 }
 
 /* ============================ ANALYTICS ENGINE ============================= */
@@ -789,6 +826,10 @@ function computeAnalytics(){
     // business-hour breaches
     const t=tRes;const breachesBH=s.filter(x=>x.util>=t.crit&&isBH(x.ts)).length;
     const bhDays=new Set(s.filter(x=>x.util>=t.high&&isBH(x.ts)).map(x=>new Date(x.ts).toDateString())).size;
+    // Configurable link-upgrade policy (util > X% [in business hours] on Y distinct days)
+    const ur=Object.assign({},S.cfg.upgradeRule,ov.upgrade||{});
+    const upgradeDays=new Set(s.filter(x=>x.util!=null&&x.util>=ur.utilPct/100&&(!ur.businessHoursOnly||isBH(x.ts))).map(x=>new Date(x.ts).toDateString())).size;
+    const upgradeNeeded=upgradeDays>=ur.days;
     // baseline dow×hour
     const base={};for(const x of s){if(x.util==null)continue;const k=new Date(x.ts).getDay()+'-'+new Date(x.ts).getHours();(base[k]=base[k]||[]).push(x.util);}
     const baseStat={};for(const k in base)baseStat[k]={m:mean(base[k]),sd:std(base[k]),n:base[k].length};
@@ -808,7 +849,7 @@ function computeAnalytics(){
     // risk
     const growth=forecast.growthMoM;
     const risk=riskScore({p95,avg,pk:pkP95,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
-    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,th:tRes,ip:info.ip,linkname:info.linkname,badCount,samples:s,count:s.length,
+    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,th:tRes,ip:info.ip,linkname:info.linkname,badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
       start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,pkP95,pkMax,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
     rec.verdict=verdictFor(rec);
     rec.ai=aiSummary(rec);
@@ -913,6 +954,9 @@ function verdictFor(r){
   let level='normal',title='Healthy',reason='Utilization within normal bounds across the observed period.',action='No action required.';
   if(r.badCount>0&&r.badCount>=r.count*0.3){level='warning';title='Data Quality Issue';reason=`<b>${r.badCount}</b> of ${r.count+r.badCount} samples are physically impossible (rate above link capacity) — likely counter-wrap artifacts or a wrong bandwidth column.`;action='Verify the bandwidth mapping or set a Speed override in Link Manager; artifacts are excluded from analytics.';}
   else if(r.count<8){level='warning';title='Insufficient Data';reason='Not enough history for confident analysis.';action='Upload more polling history.';}
+  else if(r.upgradeNeeded){const ur=r.upgradeRule;level='critical';title='Link Upgrade Recommended';
+    reason=`Utilization crossed <b>${ur.utilPct}%</b>${ur.businessHoursOnly?' during business hours':''} on <b>${r.upgradeDays}</b> day(s) — meeting the ${ur.days}-day upgrade trigger. p95 ${pct1(r.p95)}${growing?`, +${(f.growthMoM*100).toFixed(0)}% MoM`:''}.`;
+    action=`${ur.mode==='auto'?'Auto-flagged for upgrade':'Upgrade recommended'}${f.window?` — plan within the ${f.window[0]}–${f.window[1]} day window`:''}. Tune the trigger in Admin → Upgrade policy.`;}
   else if(r.bhDays>=5&&(critFrac>0.02||highFrac>0.1)){level='critical';title='Recurring Business-Hour Congestion'+(growing?' — Capacity Planning Required':'');
     reason=`Utilization reached the High/Critical band on <b>${r.bhDays}</b> business day(s); p95 ${pct1(r.p95)}${growing?`, up ${(f.growthMoM*100).toFixed(0)}% MoM`:''}.`;
     action=planSoon?`Plan a capacity upgrade within the ${f.window?f.window[0]+'–'+f.window[1]:'~60'} day window.`:'Confirm organic growth vs incident; schedule capacity review.';}
@@ -1377,9 +1421,11 @@ function view_uploads(){
   const st=S.staged;
   let stagedHtml='';
   if(st){const fnd=st.findings;const canCommit=fnd.block.length===0;
+    const nQueued=(S.stagedGroups||[]).length;
     stagedHtml=`<div class="panel pad" style="margin-bottom:16px;border-color:var(--stroke2)">
-      <div class="sec-title"><h2>Validation Console — “${esc(st.parsed.name)}”</h2><span class="sub">${st.built.samples.length.toLocaleString()} rows · cadence ${st.built.intervalNote||'?'} · covers ${fmtDay(st.built.coverage[0])}–${fmtDay(st.built.coverage[1])}</span></div>
-      <div class="sec-title" style="margin-top:6px"><h2 style="font-size:13px">Column mapping — auto-proposed, fully editable</h2><span class="sub">change any dropdown if a guess is wrong; nothing is hardcoded</span></div>
+      <div class="sec-title"><h2>Validation Console — “${esc(st.parsed.name)}”</h2><span class="sub">${st.built.samples.length.toLocaleString()} rows · cadence ${st.built.intervalNote||'?'} · covers ${fmtDay(st.built.coverage[0])}–${fmtDay(st.built.coverage[1])}${nQueued?` · ${nQueued} more layout(s) queued`:''}</span></div>
+      ${st.group.length>1?`<div class="small" style="margin:2px 0 8px">${st.group.length} files, one shared layout — mapping below applies to all: ${st.fileNames.map(n=>`<span class="chip">${esc(n)}</span>`).join(' ')}</div>`:''}
+      <div class="sec-title" style="margin-top:6px"><h2 style="font-size:13px">Column mapping — auto-proposed, fully editable</h2><span class="sub">${st.group.length>1?'applies to all '+st.group.length+' files · ':''}change any dropdown if a guess is wrong; nothing is hardcoded</span></div>
       <div style="margin-bottom:14px">${Object.keys(FIELD_LABELS).map(f=>{
         const mi=st.parsed.resolved.map[f];const c=st.parsed.resolved.conf[f]||0;const req=REQUIRED_FIELDS.includes(f);
         const unit=mi!=null&&st.parsed.resolved.headers.find(h=>h.i===mi)?.unit?' <span class="chip">unit detected</span>':'';
@@ -1393,7 +1439,7 @@ function view_uploads(){
       <table><thead><tr><th>Time</th><th>Interface</th><th>Transmit</th><th>Received</th><th>Capacity</th><th>Util</th><th></th></tr></thead><tbody>
       ${st.built.extremes.map(x=>`<tr style="cursor:default"><td class="small">${fmtDate(x.ts)}</td><td class="small"><b>${esc(x.dev)}</b> ${esc(x.intf)}</td><td class="mono">${x.tx!=null?fmtBps(x.tx):'–'}</td><td class="mono">${x.rx!=null?fmtBps(x.rx):'–'}</td><td class="mono">${x.speed?fmtBps(x.speed):'–'}</td><td class="mono" style="${x.util>1.2?'color:var(--critical);font-weight:700':''}">${pct1(x.util)}</td><td class="mini">${x.bad?'flagged artifact':''}</td></tr>`).join('')}
       </tbody></table>`:''}
-      <div class="flex" style="margin-top:14px"><button class="btn" ${canCommit?'':'disabled'} onclick="commitStaged()">✓ Commit ${st.built.samples.length-st.built.overlap} new samples</button><button class="btn ghost" onclick="S.staged=null;render()">Cancel</button>${canCommit?'':'<span class="small" style="color:#fca5a5">Resolve blocking issues to commit.</span>'}</div>
+      <div class="flex" style="margin-top:14px"><button class="btn" ${canCommit?'':'disabled'} onclick="commitStaged()">✓ Commit ${st.group.length>1?st.group.length+' files · ':''}${(st.built.samples.length-(st.built.overlap||0)).toLocaleString()} new samples${nQueued?' & continue':''}</button><button class="btn ghost" onclick="cancelStaged()">Cancel${nQueued?' all':''}</button>${canCommit?'':'<span class="small" style="color:#fca5a5">Resolve blocking issues to commit.</span>'}</div>
     </div>`;
   }
   return crumb([['Uploads']])+`
@@ -1449,6 +1495,17 @@ function view_admin(){
       <label class="fld"><span>Upgrade lead time (days)</span><input type="number" id="leadD" value="${S.cfg.upgradeLeadDays}"></label>
       <button class="btn" onclick="savePlanning()">Save</button>
     </div>
+  </div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Link upgrade policy</h2><span class="sub">when to recommend upgrading a link</span></div>
+    <div class="small" style="margin-bottom:12px">Recommend a link upgrade when utilization crosses the threshold on the given number of days. Editable; applies fleet-wide (per-link overrides available in Link Manager).</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px">
+      <label class="fld"><span>Utilization threshold (%)</span><input type="number" id="upPct" value="${S.cfg.upgradeRule.utilPct}"></label>
+      <label class="fld"><span>Sustained for (days)</span><input type="number" id="upDays" value="${S.cfg.upgradeRule.days}"></label>
+    </div>
+    <label class="fld" style="display:flex;align-items:center;gap:8px;margin-top:4px"><input type="checkbox" id="upBH" ${S.cfg.upgradeRule.businessHoursOnly?'checked':''} style="width:auto"> <span style="margin:0">Count business-hours only</span></label>
+    <label class="fld"><span>Action</span><select id="upMode"><option value="recommend" ${S.cfg.upgradeRule.mode==='recommend'?'selected':''}>Recommend (verdict + report)</option><option value="auto" ${S.cfg.upgradeRule.mode==='auto'?'selected':''}>Auto-flag for upgrade</option></select></label>
+    <div class="small" style="margin:6px 0 12px;color:var(--muted)">Current rule: <b>util &gt; ${S.cfg.upgradeRule.utilPct}%${S.cfg.upgradeRule.businessHoursOnly?' in business hours':''} for ${S.cfg.upgradeRule.days} day(s) → ${S.cfg.upgradeRule.mode==='auto'?'auto-flag':'recommend'} upgrade</b></div>
+    <button class="btn" onclick="saveUpgrade()">Save upgrade policy</button>
   </div>
   <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Class-specific policies</h2><span class="sub">stricter/looser bands per interface class</span></div>
   <table><thead><tr><th>Class</th><th>Warn</th><th>High</th><th>Critical</th><th>Default impact</th></tr></thead><tbody>
@@ -1520,8 +1577,11 @@ function addMaint(){const scope=$('#mScope').value;const s=$('#mStart').value,e=
 function delMaint(i){S.maintenance.splice(i,1);save('maintenance');logAudit('maintenance.delete','');S.analytics=null;render();}
 function saveThresholds(){S.cfg.thresholds={warn:+$('#thWarn').value/100,high:+$('#thHigh').value/100,crit:+$('#thCrit').value/100};save('cfg');logAudit('config.thresholds','',JSON.stringify(S.cfg.thresholds));S.analytics=null;toast('Thresholds saved — verdicts recomputed');render();}
 function savePlanning(){S.cfg.businessHours.startHr=+$('#bhStart').value;S.cfg.businessHours.endHr=+$('#bhEnd').value;S.cfg.planHorizonDays=+$('#planH').value;S.cfg.upgradeLeadDays=+$('#leadD').value;save('cfg');logAudit('config.planning');S.analytics=null;toast('Saved');render();}
+function saveUpgrade(){S.cfg.upgradeRule={utilPct:clamp(+$('#upPct').value,1,100),days:Math.max(1,+$('#upDays').value|0),businessHoursOnly:$('#upBH').checked,mode:$('#upMode').value};save('cfg');logAudit('config.upgrade','',JSON.stringify(S.cfg.upgradeRule));S.analytics=null;toast('Upgrade policy saved — verdicts recomputed');render();}
 function remap(field,idx){const r=S.staged.parsed.resolved;r.map[field]=idx===''?null:+idx;r.conf[field]=1;(r.manual=r.manual||{})[field]=true;reStage();}
-function reStage(){const st=S.staged;st.built=buildSamples(st.parsed.rows,st.parsed.resolved,st.parsed.name,'staged');st.findings=validateStaged(st.parsed,st.built);render();}
+function reStage(){const st=S.staged;const resolved=st.parsed.resolved;
+  for(const pf of st.group){pf.parsed.resolved=resolved;pf.built=buildSamples(pf.parsed.rows,resolved,pf.parsed.name,'staged');}
+  S.staged=buildGroupView(st.group,resolved);render();}
 function removeBatch(id){
   const b=S.batches.find(x=>x.id===id);if(!b)return;
   if(!confirm(`Delete batch “${b.file}” and its ${b.added} samples? Use this to undo an upload committed with a wrong mapping.`))return;
@@ -1533,6 +1593,21 @@ function removeBatch(id){
 function resetAll(){if(!confirm('Delete all uploaded data, batches, config and audit? This cannot be undone.'))return;S.samples=[];S.batches=[];S.maintenance=[];S.comments={};S.analytics=null;save('samples');save('batches');save('maintenance');save('comments');logAudit('data.reset','all');toast('All data cleared');go('uploads');}
 
 async function handleFiles(files){
+  files=Array.from(files);
+  const list=[];
+  for(const f of files){
+    try{const parsed=await ingestFile(f);const built=buildSamples(parsed.rows,parsed.resolved,parsed.name,'staged');list.push({parsed,built});}
+    catch(e){toast('❌ '+esc(f.name)+': '+esc(e.message));console.error(e);}
+  }
+  if(!list.length)return;
+  // Group files by identical header layout — each group is mapped only once.
+  const groups={};
+  for(const pf of list){const sig=pf.parsed.headers.map(h=>norm(h)).join('¦');(groups[sig]=groups[sig]||[]).push(pf);}
+  S.stagedGroups=Object.values(groups);
+  if(S.stagedGroups.length>1)toast(`${list.length} files → ${S.stagedGroups.length} distinct layouts; each mapped once`);
+  stageNextGroup();
+}
+async function handleFilesOLD(files){
   for(const f of files){
     try{const parsed=await ingestFile(f);const built=buildSamples(parsed.rows,parsed.resolved,parsed.name,'staged');const findings=validateStaged(parsed,built);S.staged={parsed,built,findings};render();}
     catch(e){toast('❌ '+esc(f.name)+': '+esc(e.message));console.error(e);}
@@ -1603,7 +1678,7 @@ function render(){
 function wireDynamic(){
   const dz=$('#dz');
   if(dz){const inp=$('#fileInput');window.fileInput=inp;
-    inp.onchange=e=>handleFiles(e.target.files);
+    inp.onchange=e=>{const fs=[...e.target.files];e.target.value='';handleFiles(fs);};
     ['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('drag');}));
     ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('drag');}));
     dz.addEventListener('drop',e=>handleFiles(e.dataTransfer.files));
@@ -1642,7 +1717,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
