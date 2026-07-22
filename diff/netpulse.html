@@ -272,7 +272,7 @@ svg.donut{animation:popIn .55s cubic-bezier(.22,.61,.36,1) both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v12</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v13</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -350,8 +350,8 @@ const DEFAULT_CFG={
   // crosses utilPct on `days` distinct days (optionally business-hours only).
   upgradeRule:{utilPct:80, days:5, businessHoursOnly:true, mode:'recommend'}
 };
-const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},
-  role:'Admin', view:'exec', scope:{}, analytics:null, staged:null};
+const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},rca:{},
+  role:'Admin', view:'exec', scope:{}, analytics:null, staged:null, aiMode:'tech'};
 
 async function loadAll(){
   await IDB.open();
@@ -374,6 +374,8 @@ async function loadAll(){
   S.comments=(await IDB.get('comments'))||{};
   S.ifmeta=(await IDB.get('ifmeta'))||{};
   S.ifinfo=(await IDB.get('ifinfo'))||{};
+  S.rca=(await IDB.get('rca'))||{};
+  try{S.aiMode=localStorage.getItem('np-aimode')||'tech';}catch(e){}
   const cfg=await IDB.get('cfg'); if(cfg)S.cfg=Object.assign(structuredClone(DEFAULT_CFG),cfg);
 }
 const save=(k)=>IDB.put(k,S[k==='cfg'?'cfg':k]);
@@ -1025,6 +1027,25 @@ function aiSummary(r){
   s.push(`Forecast confidence ${(f.conf*100).toFixed(0)}%${f.modelNote?` (${f.modelNote})`:''}.`);
   return s.join(' ');
 }
+// Plain-English summary for management / non-technical readers — no jargon, no p95/MoM.
+function aiSummarySimple(r){
+  const f=r.forecast;const busy=Math.round(r.p95*100);
+  const where=`the ${esc(r.site)} ${r.cls.toLowerCase()} link ${esc(r.dev)} ${esc(r.intf)}`;
+  let health;
+  if(r.verdict.level==='critical')health=`is running very busy`;
+  else if(r.verdict.level==='high')health=`is getting busy`;
+  else if(r.verdict.level==='warning')health=`is mostly fine but worth watching`;
+  else if(r.p95<0.05)health=`is barely used`;
+  else health=`is healthy`;
+  const parts=[`In plain terms, ${where} ${health}. At its busiest it uses about ${busy}% of the line's capacity.`];
+  if(f.t90!=null&&f.t90>0&&f.t90<365){
+    const months=Math.max(1,Math.round(f.t90/30));
+    parts.push(`Traffic is climbing, and at this pace the link would run low on spare room in roughly ${f.t90<45?Math.round(f.t90)+' days':months+(months===1?' month':' months')}. It would be wise to plan an upgrade before then.`);
+  }else if(f.t90===0){parts.push(`It is already close to full — this needs attention now.`);}
+  else{parts.push(`It is not filling up, so no upgrade is needed in the near future.`);}
+  if(r.impact==='Critical')parts.push(`This is a business-critical link, so any problem here has high impact.`);
+  return parts.join(' ');
+}
 function A(){return S.analytics||computeAnalytics();}
 
 /* ================================ CHARTS ================================== */
@@ -1303,7 +1324,7 @@ function view_intf(){
     <h3>${esc(r.dev)} · ${esc(r.intf)} — ${esc(r.verdict.title)}</h3>
     <div class="reason">${r.verdict.reason}</div>
     <div class="act">▸ ${r.verdict.action} <span class="conf">· confidence ${(r.verdict.confidence*100).toFixed(0)}% · ${r.verdict.comparison}</span></div>
-    <div style="margin-top:10px" class="flex"><button class="btn sm ghost" onclick="askRCA('${r.ifid}')">🔍 Explain (RCA)</button><button class="btn sm ghost" onclick="genReport('intf','${r.ifid}')">▦ Add to report</button></div>
+    <div style="margin-top:10px" class="flex"><button class="btn sm ghost" onclick="askRCA('${r.ifid}')">🔍 Explain (RCA)</button><button class="btn sm ghost" onclick="genReport('intf','${r.ifid}')">▦ Add to report</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','html')">⤓ Export HTML</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','pdf')">🖨 Export PDF</button></div>
   </div>
   <div class="grid g-main">
     <div>
@@ -1332,7 +1353,7 @@ function view_intf(){
       </div>
     </div>
     <div>
-      <div class="ai" style="margin-bottom:16px"><div class="h">◆ AI summary</div><p>${r.ai}</p></div>
+      <div class="ai" style="margin-bottom:16px"><div class="h">◆ AI summary <span class="spacer"></span><span class="tabs" style="margin:0"><button class="${S.aiMode!=='simple'?'active':''}" onclick="setAiMode('tech')">Technical</button><button class="${S.aiMode==='simple'?'active':''}" onclick="setAiMode('simple')">Simple</button></span></div><p>${S.aiMode==='simple'?aiSummarySimple(r):r.ai}</p></div>
       <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Link settings</h2><span class="sub">override auto-classification</span></div>
         <label class="fld"><span>Class / role tag</span><select id="metaCls">${['Core','Trading','Internet','WAN','Storage','Backup','Voice','Replication','Management','Customer'].map(c=>`<option ${r.cls===c?'selected':''}>${c}</option>`).join('')}</select></label>
         <label class="fld"><span>Business impact</span><select id="metaImp">${['Critical','High','Medium','Low'].map(c=>`<option ${r.impact===c?'selected':''}>${c}</option>`).join('')}</select></label>
@@ -1594,20 +1615,85 @@ function exportReport(title){const el=$('#rpt');if(!el)return;const blob=new Blo
 function dl(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;a.click();URL.revokeObjectURL(u);}
 function exportAll(){dl(new Blob([JSON.stringify({batches:S.batches,samples:S.samples,cfg:S.cfg,audit:S.audit},null,0)],{type:'application/json'}),'netpulse_export.json');logAudit('data.export','all');}
 
-function askRCA(id){const a=A();const r=a.ifs.find(x=>x.ifid===id);const f=r.forecast;const firstBreach=r.samples.find(x=>x.util>=th(r.cls).crit);
-  const rel=a.byDev[r.dev].filter(x=>x.ifid!==id).sort((x,y)=>y.risk.score-x.risk.score).slice(0,3);
-  const msg=`
-  <div class="ai" style="text-align:left"><div class="h">🔍 RCA — ${esc(r.dev)} ${esc(r.intf)}</div>
-  <p><b>When did it start?</b> ${firstBreach?fmtDate(firstBreach.ts):'No hard breach; elevated trend'}<br>
-  <b>Recurring?</b> ${r.bhDays>=3?`Yes — high/critical on ${r.bhDays} business days`:'Not strongly recurring'}<br>
-  <b>Business hours?</b> ${r.breachesBH>0?`Yes — ${r.breachesBH} business-hour breaches`:'Mostly off-hours'}<br>
-  <b>Growth trend?</b> ${(f.growthMoM*100).toFixed(0)}% MoM, ${f.slopePerDay>0?'rising':'flat/declining'}<br>
-  <b>Related interfaces?</b> ${rel.map(x=>esc(x.intf)).join(', ')||'none correlated'}<br>
-  <b>Maintenance correlation?</b> ${S.maintenance.some(m=>m.target===r.ifid||m.target===r.dev)?'Overlaps a maintenance window':'None'}<br>
-  <b>Likely cause?</b> ${rcaCause(r)}<br>
-  <b>Recommended next steps?</b> ${r.verdict.action}</p></div>`;
-  toast('RCA generated — see interface');logAudit('rca.generate',r.ifid);
-  const banner=$('.verdict');if(banner)banner.insertAdjacentHTML('afterend',`<div style="margin-bottom:16px">${msg}</div>`);
+function rcaAnswers(r){
+  const f=r.forecast;const firstBreach=r.samples.find(x=>x.util>=(r.th||th(r.cls)).crit);
+  const rel=(S.analytics.byDev[r.dev]||[]).filter(x=>x.ifid!==r.ifid).sort((x,y)=>y.risk.score-x.risk.score).slice(0,3);
+  return {
+    'When did it start?':firstBreach?fmtDate(firstBreach.ts):'No hard breach; elevated trend',
+    'Recurring?':r.bhDays>=3?`Yes — high/critical on ${r.bhDays} business days`:'Not strongly recurring',
+    'Business hours?':r.breachesBH>0?`Yes — ${r.breachesBH} business-hour breaches`:'Mostly off-hours',
+    'Growth trend?':`${(f.growthMoM*100).toFixed(0)}% per month, ${f.slopePerDay>0?'rising':'flat/declining'}`,
+    'Related interfaces?':rel.map(x=>esc(x.intf)).join(', ')||'none correlated',
+    'Maintenance correlation?':S.maintenance.some(m=>m.target===r.ifid||m.target===r.dev)?'Overlaps a maintenance window':'None'
+  };
+}
+function askRCA(id){
+  const r=A().ifs.find(x=>x.ifid===id);if(!r)return;
+  const ov=S.rca[id]||{};
+  const cause=ov.cause!=null?ov.cause:rcaCause(r);
+  const steps=ov.steps!=null?ov.steps:r.verdict.action;
+  const qa=rcaAnswers(r);
+  const html=`<div class="ai" id="rcaBox" style="text-align:left;margin-bottom:16px"><div class="h">🔍 RCA — ${esc(r.dev)} ${esc(r.intf)} <span class="spacer"></span>${ov.cause!=null||ov.steps!=null?'<span class="chip">edited</span>':''}</div>
+  <p>${Object.entries(qa).map(([q,ansr])=>`<b>${q}</b> ${ansr}`).join('<br>')}</p>
+  <label class="fld"><span>Likely cause (editable)</span><textarea id="rcaCause" rows="2" style="width:100%">${esc(cause)}</textarea></label>
+  <label class="fld"><span>Recommended next steps (editable)</span><textarea id="rcaSteps" rows="3" style="width:100%">${esc(steps)}</textarea></label>
+  <div class="flex"><button class="btn sm" onclick="saveRCA('${id}')">Save RCA</button>${ov.cause!=null||ov.steps!=null?`<button class="btn sm ghost" onclick="resetRCA('${id}')">Reset to auto</button>`:''}<span class="mini">saved with the link; included in exports & reports</span></div></div>`;
+  const box=$('#rcaBox');if(box){box.outerHTML=html;}
+  else{const banner=$('.verdict');if(banner)banner.insertAdjacentHTML('afterend',html);}
+  logAudit('rca.generate',r.ifid);
+}
+function saveRCA(id){S.rca[id]={cause:$('#rcaCause').value.trim(),steps:$('#rcaSteps').value.trim()};IDB.put('rca',S.rca);logAudit('rca.edit',id);toast('RCA saved for this link');askRCA(id);}
+function resetRCA(id){delete S.rca[id];IDB.put('rca',S.rca);logAudit('rca.reset',id);toast('RCA reverted to automatic');askRCA(id);}
+function setAiMode(m){S.aiMode=m;try{localStorage.setItem('np-aimode',m)}catch(e){}render();}
+// Self-contained, printable per-link report (NOC view) — light theme, no external refs.
+function linkReportHTML(r){
+  const f=r.forecast,ov=S.rca[r.ifid]||{};
+  const cause=ov.cause!=null?ov.cause:rcaCause(r);
+  const steps=ov.steps!=null?ov.steps:r.verdict.action;
+  const qa=rcaAnswers(r);
+  const col={normal:'#0d9488',warning:'#b45309',high:'#c2410c',critical:'#e11d48'}[r.verdict.level]||'#334155';
+  const tt=v=>v!=null&&v>0&&v<3650?Math.round(v)+' days':(v!=null&&v<=0?'now':'—');
+  // small inline trend chart (daily p95)
+  let chart='';if(r.daily.length>1){const w=560,h=120,pad=24;const ys=r.daily.map(d=>d.p95);const y1=Math.max(0.01,amax(ys)*1.15);
+    const X=i=>pad+i/(r.daily.length-1)*(w-pad*2),Y=v=>h-pad-(v/y1)*(h-pad*2);
+    const line=r.daily.map((d,i)=>(i?'L':'M')+X(i).toFixed(1)+' '+Y(d.p95).toFixed(1)).join(' ');
+    chart=`<svg width="${w}" height="${h}" style="max-width:100%"><rect width="${w}" height="${h}" fill="#f7f9fc"/><path d="${line}" fill="none" stroke="#0284c7" stroke-width="2"/><text x="${pad}" y="14" font-size="10" fill="#64748b">Daily busy-period utilization</text><text x="${pad-4}" y="${Y(y1)+4}" font-size="9" fill="#94a3b8" text-anchor="end">${(y1*100).toFixed(0)}%</text></svg>`;}
+  const kv=(k,v)=>`<tr><td style="color:#64748b;padding:4px 14px 4px 0;white-space:nowrap">${k}</td><td style="font-weight:600">${v}</td></tr>`;
+  const bar=(k,v)=>`<div style="display:flex;align-items:center;gap:8px;margin:3px 0"><span style="width:90px;color:#64748b;font-size:12px">${k}</span><span style="flex:1;height:7px;background:#e5eaf1;border-radius:4px;overflow:hidden"><i style="display:block;height:100%;width:${Math.min(100,v*100).toFixed(0)}%;background:linear-gradient(90deg,#0284c7,#e11d48)"></i></span></div>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>NetPulse — ${esc(r.dev)} ${esc(r.intf)}</title>
+  <style>@page{margin:16mm} body{font:13px/1.55 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#152238;max-width:820px;margin:0 auto;padding:24px}
+  h1{font-size:19px;margin:0 0 2px} h2{font-size:14px;margin:20px 0 8px;border-bottom:1px solid #e5eaf1;padding-bottom:4px}
+  .muted{color:#64748b} .chip{display:inline-block;background:#eef2f8;color:#44546e;border-radius:6px;padding:1px 8px;font-size:11px;font-weight:700;margin-right:4px}
+  .banner{border-left:5px solid ${col};background:#f7f9fc;border-radius:8px;padding:12px 16px;margin:12px 0}
+  .lvl{color:${col};font-weight:800;text-transform:uppercase;font-size:11px;letter-spacing:1px}
+  table{border-collapse:collapse} .box{background:#f7f9fc;border:1px solid #e5eaf1;border-radius:8px;padding:12px 14px;margin:6px 0}
+  @media print{.noprint{display:none}}</style></head><body>
+  <div style="display:flex;align-items:baseline;gap:10px"><h1>${esc(r.dev)} · ${esc(r.intf)}</h1><span class="muted">NetPulse Link Report</span></div>
+  <div class="muted" style="font-size:12px;margin-bottom:6px">${r.linkname?esc(r.linkname)+' · ':''}${r.ip?esc(r.ip)+' · ':''}${esc(r.site)} · generated ${new Date().toLocaleString()}</div>
+  <div>${(r.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}<span class="chip">${r.cls}</span><span class="chip">${r.impact} impact</span><span class="chip">speed ${r.speed?fmtBps(r.speed):'?'}</span></div>
+  <div class="banner"><div class="lvl">${r.verdict.level} — ${esc(r.verdict.title)}</div>
+    <div style="margin:6px 0">${r.verdict.reason.replace(/<[^>]+>/g,'')}</div>
+    <div><b>Recommended:</b> ${esc(steps)} <span class="muted">· confidence ${(r.verdict.confidence*100).toFixed(0)}%</span></div></div>
+  <h2>In plain terms</h2><div class="box">${aiSummarySimple(r).replace(/<[^>]+>/g,'')}</div>
+  <h2>Technical summary</h2><div>${r.ai}</div>
+  <h2>Key metrics</h2>${chart}
+  <table>${kv('Busy-period utilization (p95)',pct1(r.p95)+(r.speed?' ('+fmtBps(r.p95*r.speed)+')':''))}${kv('Average utilization',pct1(r.avg))}${kv('Peak utilization',pct1(r.pkP95!=null?r.pkP95:r.mx))}${kv('Time in Normal/Warning/High/Critical',`${(r.dist.normal*100).toFixed(0)}% / ${(r.dist.warning*100).toFixed(0)}% / ${(r.dist.high*100).toFixed(0)}% / ${(r.dist.critical*100).toFixed(0)}%`)}${kv('Business-day breaches',r.bhDays)}</table>
+  <h2>Capacity forecast</h2><table>${kv('Current busy-period',pct1(f.current))}${kv('Time to 80% / 90% / 95%',`${tt(f.t80)} / ${tt(f.t90)} / ${tt(f.t95)}`)}${kv('Recommended upgrade window',f.window?f.window[0]+'–'+f.window[1]+' days':'—')}${kv('Growth',(f.growthMoM*100).toFixed(0)+'% per month')}${kv('Confidence',(f.conf*100).toFixed(0)+'% ('+(f.modelNote||'trend')+')')}</table>
+  <h2>Root-cause analysis</h2>
+  <table>${Object.entries(qa).map(([q,ansr])=>kv(q,String(ansr).replace(/<[^>]+>/g,''))).join('')}</table>
+  <div class="box" style="margin-top:8px"><b>Likely cause:</b> ${esc(cause)}<br><b>Recommended next steps:</b> ${esc(steps)}</div>
+  <h2>Risk factors — ${r.risk.score}/100</h2>${Object.entries(r.risk.factors).map(([k,v])=>bar(k,v)).join('')}
+  <div class="muted" style="font-size:10px;margin-top:8px">× ${r.risk.impactMul} business-impact multiplier (${r.impact})</div>
+  <div class="muted" style="font-size:10px;margin-top:24px;border-top:1px solid #e5eaf1;padding-top:8px">Generated by NetPulse · ${r.count.toLocaleString()} samples over ${Math.round(days(r.start,r.end))||1} days · maintenance windows excluded</div>
+  </body></html>`;
+}
+function exportLink(id,fmt){
+  const r=A().ifs.find(x=>x.ifid===id);if(!r)return;
+  const html=linkReportHTML(r);const base=(r.dev+'_'+r.intf).replace(/\W+/g,'_');
+  logAudit('link.export',id,fmt.toUpperCase());
+  if(fmt==='html'){dl(new Blob([html],{type:'text/html'}),base+'_netpulse.html');toast('HTML report downloaded');}
+  else{const w=window.open('','_blank');if(!w){toast('Allow pop-ups to export PDF');return;}w.document.write(html);w.document.close();
+    w.onload=()=>{setTimeout(()=>{w.focus();w.print();},250);};toast('Opening print dialog — choose “Save as PDF”');}
 }
 function rcaCause(r){const f=r.forecast;if(f.growthMoM>0.1&&r.bhDays>=3)return'Organic business-hour demand growth';if(r.anomalies.some(a=>a.type.includes('Weekend')))return'Newly scheduled off-hours job (backup/replication) or misclassification';if(r.anomalies.some(a=>a.type.includes('imbalance')))return'Asymmetric routing / unidirectional flow';if(r.mx>0.9)return'Localized burst / elephant flow';return'Elevated utilization consistent with steady load';}
 
@@ -1766,7 +1852,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
