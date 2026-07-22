@@ -38,6 +38,7 @@ picture, or jump to the document that matches your role.
 | 19 | [Scalability & Performance Strategy](./19-scalability-and-performance.md) | Architecture, SRE |
 | 20 | [Integrations & Future Roadmap](./20-integrations-and-roadmap.md) | Architecture, Product |
 | 21 | [Operational Modules (Classification, Business Impact, Baselines, Maintenance, Timeline, Knowledge Base)](./21-operational-modules.md) | Product, NOC, Backend |
+| — | [**SOP — NetPulse Operations** (every knob & how to use it)](./SOP-netpulse-operations.md) | NOC, Architects, Admins |
 
 ---
 
