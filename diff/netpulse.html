@@ -222,6 +222,10 @@ label.fld>span{display:block;color:var(--muted);font-size:11.5px;font-weight:600
 .ai .h{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--accent);margin-bottom:7px}
 .ai p{margin:0;font-size:13px;color:var(--ai-txt);line-height:1.6}
 .dist-legend{display:flex;flex-direction:column;gap:8px;font-size:12.5px}
+.info{display:inline-flex;align-items:center;justify-content:center;width:13px;height:13px;border-radius:50%;font-size:9px;font-weight:700;font-style:normal;color:var(--muted);border:1px solid var(--stroke2);margin-left:5px;cursor:help;vertical-align:middle;text-transform:none;letter-spacing:0;line-height:1;flex:none}
+.info:hover{color:var(--accent);border-color:var(--accent)}
+th .info{opacity:.65}
+#gtip{position:fixed;z-index:300;max-width:290px;background:var(--panel);border:1px solid var(--stroke2);border-radius:9px;padding:9px 12px;font-size:12px;line-height:1.5;color:var(--txt);box-shadow:var(--shadow);backdrop-filter:blur(14px);pointer-events:none;display:none;font-weight:400;text-transform:none;letter-spacing:normal;white-space:normal}
 .dist-legend .row{display:flex;align-items:center;gap:9px}
 .dist-legend .row i{width:11px;height:11px;border-radius:3px}
 .dist-legend .row b{margin-left:auto;font-variant-numeric:tabular-nums}
@@ -285,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v20</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v21</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -2195,13 +2199,102 @@ function animateCounters(){
     (function tick(t){const p=clamp((t-t0)/dur);el.textContent=Math.round(target*(1-Math.pow(1-p,3)))+sfx;if(p<1)requestAnimationFrame(tick);})(t0);
   });
 }
+/* ---- Inline glossary: plain-English explanations shown on hover as an ⓘ icon
+   next to table headers, KPI labels, section titles and distribution bands.
+   Ordered specific→general; first keyword contained in the label text wins. ---- */
+const GLOSSARY=[
+  ['busy (p95)',"95th‑percentile utilization for this window — the level the link stays at or below 95% of the time (its sustained busy level, ignoring the top ~5% of momentary spikes)."],
+  ['current busy',"The link's present busy‑period utilization (p95), i.e. its sustained busy level right now."],
+  ['busy-period',"The link's sustained busy level (95th‑percentile utilization), not its average or its brief peaks."],
+  ['p95',"95th‑percentile utilization: the level the link stays at or below 95% of the time. Used instead of the peak so one brief spike doesn't distort sizing."],
+  ['mom',"Month‑over‑month: change in busy‑period utilization versus the previous month."],
+  ['slope/mo',"How fast utilization is trending, as change per month."],
+  ['time→80',"Estimated days until busy‑period utilization reaches 80% of capacity at the current trend."],
+  ['time→90',"Estimated days until busy‑period utilization reaches 90% of capacity at the current trend."],
+  ['time→95',"Estimated days until busy‑period utilization reaches 95% of capacity at the current trend."],
+  ['days to 80',"Estimated days until the busy‑period utilization reaches 80% of capacity, at the current growth trend."],
+  ['days to 90',"Estimated days until the busy‑period utilization reaches 90% of capacity, at the current growth trend."],
+  ['days to 95',"Estimated days until the busy‑period utilization reaches 95% of capacity, at the current growth trend."],
+  ['upgrade window',"Recommended window to complete an upgrade: from (time‑to‑90% minus your procurement lead time) up to when it reaches 90%."],
+  ['forecast breach',"Links forecast to reach 90% utilization within 90 days."],
+  ['capacity forecast',"Projects the daily busy‑period (p95) trend forward to estimate when the link runs out of headroom. Always uses full history."],
+  ['confidence',"How much to trust the forecast/verdict (0–100%). Higher = more history, better fit, lower volatility."],
+  ['conf',"How much to trust the forecast (0–100%). Higher = more history, better fit, lower volatility."],
+  ['hits (window)',"Number of polls where utilization crossed the upgrade threshold within the selected time window."],
+  ['threshold hits per link',"How many times each watched link crossed the upgrade threshold in the selected window."],
+  ['threshold hits',"Total times the watched links crossed the upgrade threshold in the window."],
+  ['days hit',"Distinct days the link crossed the threshold, versus the number your policy requires to trigger an upgrade."],
+  ['last hit',"The most recent time this link crossed the upgrade threshold."],
+  ['meeting trigger',"How many watched links met the upgrade policy (crossed the threshold on at least the required number of days)."],
+  ['links watched',"Links you've added to this watchlist."],
+  ['trigger',"Whether the link met your upgrade policy: crossed the threshold on at least the required number of distinct days."],
+  ['off-hrs',"Optional separate limits for nights & weekends, so e.g. a backup link can run hot off‑hours without alarming."],
+  ['off-hours',"Nights and weekends — anything outside the business‑hours window defined in Admin."],
+  ['business hours vs',"Side‑by‑side busy/average/peak for working hours versus nights & weekends, each judged against its own limits."],
+  ['business hours',"The working window set in Admin (default Mon–Fri 9:00–17:00). Utilization here is highlighted and can use separate limits."],
+  ['infrastructure risk',"Overall 0–100 risk across all sites, weighted by business impact."],
+  ['critical links',"Links currently in a critical state, ranked by business impact."],
+  ['risk factors',"The individual signals that make up the 0–100 risk score."],
+  ['risk',"0–100 score combining peak/average utilization, trend, growth, policy violations, anomalies and business impact. Higher = attend sooner."],
+  ['verdict',"NetPulse's plain‑English judgment of the link's health (Healthy, Monitor, Capacity Planning Required, Critical Congestion, …)."],
+  ['state distribution',"Share of time the link spent in each band (Normal/Warning/High/Critical) — more meaningful than a single peak."],
+  ['utilization rhythm',"Average utilization by day‑of‑week and hour, so you can see when the link is busy. Business hours are outlined."],
+  ['attention queue',"Links needing attention, ranked by business impact then risk."],
+  ['fleet health',"Count of links in each health state across everything monitored."],
+  ['growing',"Links whose traffic is increasing fastest (month‑over‑month)."],
+  ['growth',"How fast traffic is increasing, per month."],
+  ['violations',"How often the link breached its thresholds during business hours."],
+  ['anomal',"Behavior that's unusual for THIS link versus its own history at the same day‑and‑hour — not simply 'high'."],
+  ['transmit',"Outbound (TX) traffic on the link."],
+  ['received',"Inbound (RX) traffic on the link."],
+  ['capacity',"The link's bandwidth (line rate). Utilization is measured against this."],
+  ['speed',"The link's bandwidth (line rate). Utilization is measured against this."],
+  ['impact',"Business impact / criticality. Drives ranking and the risk multiplier — a Critical link outranks a busier Low one."],
+  ['class',"Role tag for the link (Core, Trading, Internet, WAN, Backup, …). Sets default thresholds and expectations."],
+  ['warn',"Warning threshold — utilization at or above this counts as 'warm' (Warning band)."],
+  ['high',"High band — utilization at or above the High threshold but below Critical."],
+  ['crit',"Critical threshold — utilization at or above this is treated as congested."],
+  ['normal',"Normal band — utilization below the Warning threshold."],
+  ['warning',"Warning band — utilization between the Warning and High thresholds."],
+  ['critical',"Critical band — the link is congested (at or above the Critical threshold)."],
+  ['average',"Mean utilization across the samples (vs p95, which reflects busy periods)."],
+  ['peak',"Highest utilization seen (from the Peak columns when present) — catches short bursts the average hides."],
+  ['policy',"Your link‑upgrade rule: recommend an upgrade when utilization crosses X% for Y days. Set it in Admin → Link upgrade policy."],
+  ['utilization',"How full the link is: traffic ÷ capacity, taken as the worse of transmit and receive."],
+  ['traffic & utilization',"Transmit and Received rates over time. Business hours are shaded; anomalies are marked; hover for exact values."],
+  ['interface',"A single physical port on a device — the unit everything is analysed at."],
+  ['device',"The router/switch the interface belongs to."],
+  ['link',"A monitored interface (device + interface), optionally with a friendly circuit name."],
+  ['cadence',"How often the source polled the interface (the typical gap between samples)."],
+  ['coverage',"The time span the uploaded data covers."]
+];
+function tipFor(txt){const t=(txt||'').toLowerCase().replace(/\s+/g,' ').trim();for(const [k,v] of GLOSSARY)if(t.includes(k))return v;return null;}
+function annotateInfo(){
+  $$('#main th, #main .kpi .l, #main .sec-title h2, #main .dist-legend .row > span').forEach(el=>{
+    if(el.querySelector('.info')||el.dataset.noinfo!=null)return;
+    const tip=tipFor(el.textContent);
+    if(tip){const s=document.createElement('span');s.className='info';s.textContent='i';s.setAttribute('data-tip',tip);el.appendChild(s);}
+  });
+}
+let GTIP;
+document.addEventListener('mouseover',e=>{
+  const t=e.target.closest&&e.target.closest('[data-tip]');if(!t)return;
+  if(!GTIP){GTIP=document.createElement('div');GTIP.id='gtip';document.body.appendChild(GTIP);}
+  GTIP.textContent=t.getAttribute('data-tip');GTIP.style.display='block';
+  const r=t.getBoundingClientRect();
+  let left=Math.min(window.innerWidth-GTIP.offsetWidth-8,Math.max(8,r.left));
+  let top=r.bottom+8;
+  if(top+GTIP.offsetHeight>window.innerHeight-8)top=r.top-GTIP.offsetHeight-8;
+  GTIP.style.left=left+'px';GTIP.style.top=Math.max(8,top)+'px';
+});
+document.addEventListener('mouseout',e=>{if(GTIP&&e.target.closest&&e.target.closest('[data-tip]'))GTIP.style.display='none';});
 function render(){
   renderNav();
   for(const k in CHARTS)delete CHARTS[k];
   const main=$('#main');const fn=VIEWS[S.view]||view_exec;
   try{main.innerHTML=fn();}catch(e){main.innerHTML=`<div class="empty"><div class="big">⚠</div><h2>Render error</h2><p class="small">${esc(e.message)}</p></div>`;console.error(e);}
   main.classList.remove('swap');void main.offsetWidth;main.classList.add('swap');
-  staggerReveal();animateCounters();
+  staggerReveal();animateCounters();annotateInfo();
   wireDynamic();
 }
 function wireDynamic(){
