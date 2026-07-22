@@ -63,6 +63,13 @@ These bands drive the state distribution ("smart pie"), heatmap colors, verdicts
 | **Planning horizon (days)** | How far ahead a forecast breach counts as "capacity planning required". |
 | **Upgrade lead time (days)** | Procurement/change lead time; the recommended upgrade **window** is `time-to-90% − lead time`. Set it to how long an upgrade really takes you. |
 
+### Upgrade Watch dashboard  *(Analyze → Upgrade Watch)*
+Track how often specific links cross the upgrade threshold over a chosen window.
+- **Window**: 30 / 60 / 90 / 120 / 180 days (remembered across sessions). The window ends at the most recent data point.
+- **Add links**: pick a device+interface from the dropdown and **Add**, or **Add all** to watch everything; **✕** to stop watching one, **Clear** for all. Your watchlist is saved.
+- **Per-link columns**: hits in the window (with a bar), days-hit vs the required trigger days, peak utilization, last hit time, and whether the trigger is **MET**. Rows are sorted by hit count. Click a row to open the interface. "Export all watched to Excel" produces the Policy Hits .xlsx (§8) for the watched set.
+- Uses the threshold/days/business-hours setting from **Admin → Link upgrade policy** (below).
+
 ### 2.3 Link upgrade policy  *(the "recommend upgrade" rule)*
 | Knob | Meaning |
 | --- | --- |

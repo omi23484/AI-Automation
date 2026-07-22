@@ -285,7 +285,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v19</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v20</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -365,7 +365,7 @@ const DEFAULT_CFG={
   // crosses utilPct on `days` distinct days (optionally business-hours only).
   upgradeRule:{utilPct:80, days:5, businessHoursOnly:true, mode:'recommend'}
 };
-const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},rca:{},
+const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},rca:{},watch:[],watchWin:90,
   role:'Admin', view:'exec', scope:{}, analytics:null, staged:null, aiMode:'tech'};
 
 async function loadAll(){
@@ -390,6 +390,8 @@ async function loadAll(){
   S.ifmeta=(await IDB.get('ifmeta'))||{};
   S.ifinfo=(await IDB.get('ifinfo'))||{};
   S.rca=(await IDB.get('rca'))||{};
+  S.watch=(await IDB.get('watch'))||[];
+  try{S.watchWin=+(localStorage.getItem('np-watchwin'))||90;}catch(e){}
   try{S.aiMode=localStorage.getItem('np-aimode')||'tech';}catch(e){}
   const cfg=await IDB.get('cfg'); if(cfg)S.cfg=Object.assign(structuredClone(DEFAULT_CFG),cfg);
 }
@@ -1257,7 +1259,7 @@ function riskBar(score){const c=score>=75?'critical':score>=50?'high':score>=30?
 /* ================================ VIEWS =================================== */
 const NAV=[
   ['Overview',[['exec','◆','Executive'],['noc','▤','NOC'],['twin','⬡','Digital Twin']]],
-  ['Analyze',[['capacity','▲','Capacity Planning'],['trends','↗','Trend Analysis'],['anomalies','⚠','Anomalies'],['historical','↺','Historical']]],
+  ['Analyze',[['capacity','▲','Capacity Planning'],['upgrade','⤒','Upgrade Watch'],['trends','↗','Trend Analysis'],['anomalies','⚠','Anomalies'],['historical','↺','Historical']]],
   ['Operate',[['links','⛓','Link Manager'],['uploads','⭱','Uploads'],['maintenance','⚙','Maintenance'],['reports','▦','Reports'],['audit','◷','Audit Log'],['admin','⚑','Admin']]]
 ];
 function renderNav(){
@@ -1755,6 +1757,68 @@ function view_maintenance(){
       <button class="btn" onclick="addMaint()">Add window</button>
     </div></div>`;
 }
+const WATCH_WINS=[30,60,90,120,180];
+function upgradeHits(r,winStart,winEnd){
+  const ur=r.upgradeRule;const thr=ur.utilPct/100;
+  let hits=0,last=null,peak=0;const days=new Set();
+  for(const x of r.samples){
+    if(x.ts<winStart||x.ts>winEnd)continue;
+    if(x.util==null||x.util<thr)continue;
+    if(ur.businessHoursOnly&&!isBH(x.ts))continue;
+    hits++;days.add(new Date(x.ts).toDateString());last=x.ts;if(x.util>peak)peak=x.util;
+  }
+  return {hits,days:days.size,last,peak,thr:ur.utilPct,bhOnly:ur.businessHoursOnly,reqDays:ur.days,met:days.size>=ur.days};
+}
+function setWatchWin(n){S.watchWin=+n;try{localStorage.setItem('np-watchwin',n)}catch(e){}render();}
+function watchAdd(id){if(id&&!S.watch.includes(id)){S.watch.push(id);IDB.put('watch',S.watch);logAudit('watch.add',id);render();}}
+function watchAddAll(){const a=A();S.watch=a.ifs.map(r=>r.ifid);IDB.put('watch',S.watch);logAudit('watch.addall','',S.watch.length+' links');render();}
+function watchRemove(id){S.watch=S.watch.filter(x=>x!==id);IDB.put('watch',S.watch);logAudit('watch.remove',id);render();}
+function watchClear(){S.watch=[];IDB.put('watch',S.watch);logAudit('watch.clear');render();}
+function view_upgrade(){
+  if(!S.samples.length)return needData();
+  const a=A();const ur=S.cfg.upgradeRule;
+  const dataEnd=amax(a.ifs.map(r=>r.end));const win=S.watchWin||90;const winStart=dataEnd-win*86400000;
+  const tracked=a.ifs.filter(r=>S.watch.includes(r.ifid));
+  const rows=tracked.map(r=>({r,h:upgradeHits(r,winStart,winEnd_(dataEnd))})).sort((x,y)=>y.h.hits-x.h.hits);
+  const totalHits=rows.reduce((s,x)=>s+x.h.hits,0);
+  const metCount=rows.filter(x=>x.h.met).length;
+  const avail=a.ifs.filter(r=>!S.watch.includes(r.ifid)).sort((x,y)=>x.dev.localeCompare(y.dev)||x.intf.localeCompare(y.intf));
+  return crumb([["Upgrade Watch"]])+`
+  <div class="verdict ${metCount?'high':'normal'}" style="margin-bottom:16px"><span class="lvl pill ${metCount?'high':'normal'}">Upgrade Watch</span>
+    <h3>${tracked.length} link(s) watched · ${totalHits.toLocaleString()} threshold hit(s) in the last ${win} days · ${metCount} meeting the upgrade trigger</h3>
+    <div class="reason">Counting every time a link crossed <b>${ur.utilPct}%</b>${ur.businessHoursOnly?' during business hours':''} (trigger = ${ur.days} distinct day(s)). Window ends ${fmtDate(dataEnd)} (latest data). Edit the policy in Admin → Link upgrade policy.</div>
+  </div>
+  <div class="panel pad" style="margin-bottom:16px"><div class="flex" style="gap:10px;flex-wrap:wrap">
+    <span class="small" style="font-weight:700">Window</span>
+    <span class="tabs" style="margin:0">${WATCH_WINS.map(n=>`<button class="${win===n?'active':''}" onclick="setWatchWin(${n})">${n}d</button>`).join('')}</span>
+    <span class="spacer"></span>
+    <select id="watchAddSel" style="min-width:280px" ${avail.length?'':'disabled'}><option value="">＋ Add a link to watch…</option>${avail.map(r=>`<option value="${esc(r.ifid)}">${esc(r.dev)} ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''}</option>`).join('')}</select>
+    <button class="btn sm" onclick="watchAdd($('#watchAddSel').value)" ${avail.length?'':'disabled'}>Add</button>
+    <button class="btn sm ghost" onclick="watchAddAll()">Add all</button>
+    ${tracked.length?`<button class="btn sm ghost" onclick="watchClear()">Clear</button>`:''}
+  </div></div>
+  ${tracked.length?`
+  <div class="grid g4" style="margin-bottom:16px">
+    ${kpi('Links watched',tracked.length,'flat','tracked','normal')}
+    ${kpi('Threshold hits',totalHits,totalHits?'up':'flat','in last '+win+'d',totalHits?'high':'normal')}
+    ${kpi('Meeting trigger',metCount,metCount?'up':'flat','≥'+ur.days+' days',metCount?'critical':'normal')}
+    ${kpi('Policy',ur.utilPct+'%','flat',ur.businessHoursOnly?'business hrs':'all hours','warning')}
+  </div>
+  <div class="panel pad"><div class="sec-title"><h2>Threshold hits per link — last ${win} days</h2><span class="sub">${ur.utilPct}%${ur.businessHoursOnly?' · business hours':''} · trigger ${ur.days}d</span></div>
+  <div style="overflow-x:auto"><table style="min-width:900px"><thead><tr><th>Link</th><th>Class</th><th>Impact</th><th>Capacity</th><th>Hits (window)</th><th>Days hit</th><th>Peak</th><th>Last hit</th><th>Trigger</th><th></th></tr></thead><tbody>
+  ${rows.map(({r,h})=>{const mx=amax(rows.map(x=>x.h.hits))||1;const bw=(h.hits/mx*100).toFixed(0);
+    return `<tr><td style="cursor:pointer" data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><b>${esc(r.dev)}</b> ${esc(r.intf)}${r.linkname?`<div class="mini">${esc(r.linkname)}</div>`:''}</td>
+    <td><span class="chip">${r.cls}</span></td><td><span class="chip impact-${r.impact}">${r.impact}</span></td><td class="mono small">${r.speed?fmtBps(r.speed):'?'}</td>
+    <td><div class="flex" style="gap:8px"><b class="mono" style="min-width:44px">${h.hits.toLocaleString()}</b><span class="track" style="flex:1;min-width:60px;height:6px;border-radius:4px;background:rgba(120,150,200,.15);overflow:hidden"><i style="display:block;height:100%;width:${bw}%;background:${h.met?stateColor('critical'):stateColor('warning')}"></i></span></div></td>
+    <td class="mono">${h.days}/${h.reqDays}</td><td class="mono">${pct1(h.peak)}</td><td class="small">${h.last?fmtDate(h.last):'—'}</td>
+    <td>${h.met?'<span class="pill critical">MET</span>':'<span class="pill normal">no</span>'}</td>
+    <td><button class="btn sm ghost" title="Stop watching" onclick="watchRemove('${esc(r.ifid)}')">✕</button></td></tr>`;}).join('')}
+  </tbody></table></div>
+  <div class="flex" style="margin-top:12px"><button class="btn sm ghost" onclick="genUpgradePolicyXlsx('all')">📊 Export all watched to Excel</button></div>
+  </div>`
+  :`<div class="empty"><div class="big">⤒</div><h2>No links being watched yet</h2><p class="small">Add device+interface links above to track how often they cross the ${ur.utilPct}% upgrade threshold, over your chosen window.</p><div class="flex" style="justify-content:center;margin-top:12px"><button class="btn" onclick="watchAddAll()">Track all links</button></div></div>`}`;
+}
+function winEnd_(dataEnd){return dataEnd;}
 function view_reports(){
   const reports=[['exec','Executive Summary'],['capacity','Weekly Capacity Report'],['trend','Monthly Trend Report'],['busy','Top Busy Links'],['critical','Top Critical Links'],['idle','Idle Links'],['impact','Business Impact Report']];
   const links=S.samples.length?[...A().ifs].sort((x,y)=>x.dev.localeCompare(y.dev)||x.intf.localeCompare(y.intf)):[];
@@ -2113,7 +2177,7 @@ function genDemo(){
 }
 
 /* ------------------------------- router ----------------------------------- */
-const VIEWS={exec:view_exec,noc:view_noc,twin:view_twin,intf:view_intf,links:view_links,site:view_twin_site_redirect,capacity:view_capacity,trends:view_trends,anomalies:view_anomalies,historical:view_historical,uploads:view_uploads,maintenance:view_maintenance,reports:view_reports,audit:view_audit,admin:view_admin};
+const VIEWS={exec:view_exec,noc:view_noc,twin:view_twin,intf:view_intf,links:view_links,upgrade:view_upgrade,site:view_twin_site_redirect,capacity:view_capacity,trends:view_trends,anomalies:view_anomalies,historical:view_historical,uploads:view_uploads,maintenance:view_maintenance,reports:view_reports,audit:view_audit,admin:view_admin};
 function view_twin_site_redirect(){S.scope.twinSite=S.scope.id;S.view='twin';return view_twin();}
 function go(view,scope){S.view=view;if(scope)S.scope=scope;render();}
 function navTo(obj){if(obj.twin){S.scope.twinSite=obj.twin.site;S.scope.twinDev=obj.twin.dev||null;S.view='twin';}else{S.view=obj.view;if(obj.id!=null)S.scope.id=obj.id;if(obj.view==='twin'){S.scope.twinSite=null;S.scope.twinDev=null;}}render();}
@@ -2187,7 +2251,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
