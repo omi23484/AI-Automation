@@ -257,6 +257,9 @@ body::after{content:"";position:fixed;inset:-25%;z-index:-1;pointer-events:none;
 .chart path.drawdash{opacity:0;animation:fadeIn .55s .55s ease forwards}
 .chart path.areafill{opacity:0;animation:fadeArea .8s .28s ease forwards}
 svg.donut{animation:popIn .55s cubic-bezier(.22,.61,.36,1) both}
+@keyframes dotPulse{0%,100%{r:5.5}50%{r:7.5}}
+circle.evsel{animation:dotPulse 1.1s ease-in-out infinite}
+line.selline{animation:fadeIn .3s ease both}
 
 /* growing bars (width-agnostic via scaleX) */
 .riskbar .fill,.confbar>i,.track>i{transform-origin:left;animation:growBar .95s cubic-bezier(.22,.61,.36,1) both}
@@ -272,7 +275,7 @@ svg.donut{animation:popIn .55s cubic-bezier(.22,.61,.36,1) both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v14</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v15</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1111,9 +1114,24 @@ function chartSVG(cfg,animate){
     if(s.area)paths+=`<path class="${animate?'areafill':''}" ${animate?'':'opacity=".13"'} d="${line} L${X(d.at(-1)[0]).toFixed(1)} ${Y(0)} L${X(d[0][0]).toFixed(1)} ${Y(0)} Z" fill="${s.color}"/>`;
     paths+=`<path class="${animate?(s.dash?'drawdash':'draw'):''}" pathLength="1" d="${line}" fill="none" stroke="${s.color}" stroke-width="${s.wide?2.2:1.6}" stroke-linejoin="round" ${s.dash?'stroke-dasharray="4 4"':''}/>`;
   });
+  // Event markers (e.g. anomalies) — small dots in a strip near the top of the
+  // plot area; the currently "focused" one (cfg.selectedTs, set by a dropdown
+  // picker) is drawn larger with a full-height guide line so it visibly points
+  // back into the chart above it.
+  let selLine='',evs='';
+  if(cfg.selectedTs!=null&&cfg.selectedTs>=x0&&cfg.selectedTs<=x1){
+    const sx=X(cfg.selectedTs);
+    selLine=`<line class="selline" x1="${sx.toFixed(1)}" x2="${sx.toFixed(1)}" y1="${pad.t}" y2="${h-pad.b}" stroke="#f472b6" stroke-width="1.4" stroke-dasharray="4 3" opacity=".9"/>`;
+  }
+  if(opts.events)for(const e of opts.events){
+    if(e.ts<x0||e.ts>x1)continue;
+    const ex=X(e.ts),isSel=cfg.selectedTs!=null&&Math.abs(e.ts-cfg.selectedTs)<60000;
+    const ry=pad.t+8,rad=isSel?5.5:3;
+    evs+=`<circle class="${isSel?'evsel':''}" cx="${ex.toFixed(1)}" cy="${ry}" r="${rad}" fill="${e.color||'#fb923c'}" opacity="${isSel?1:0.8}" ${isSel?'stroke="var(--bg2)" stroke-width="1.6"':''}><title>${esc(e.label||'')}</title></circle>`;
+  }
   const span=x1-x0;const fmtX=span<36e5*30?fmtDate:fmtDay;
   const xlabs=[x0,(x0+x1)/2,x1].map(v=>`<text class="ax" x="${X(v)}" y="${h-8}" text-anchor="middle" font-size="9">${fmtX(v)}</text>`).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" ${animate?'':'data-nodraw="1"'}>${grid}${bands}${maint}${paths}${xlabs}<rect x="${pad.l}" y="${pad.t}" width="${w-pad.l-pad.r}" height="${h-pad.t-pad.b}" fill="transparent"/><g class="hg"></g></svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" ${animate?'':'data-nodraw="1"'}>${grid}${bands}${maint}${paths}${selLine}${evs}${xlabs}<rect x="${pad.l}" y="${pad.t}" width="${w-pad.l-pad.r}" height="${h-pad.t-pad.b}" fill="transparent"/><g class="hg"></g></svg>`;
 }
 function redrawChart(cfg){const el=document.querySelector(`.chart[data-chart="${cfg.id}"] svg`);if(el)el.outerHTML=chartSVG(cfg,false);}
 function chartAt(e){const el=e.target.closest&&e.target.closest('.chart[data-chart]');if(!el)return null;const cfg=CHARTS[el.dataset.chart];if(!cfg)return null;cfg.el=el;return cfg;}
@@ -1254,17 +1272,29 @@ function topNTable(title,list,mode){
   return `<div class="panel pad"><div class="sec-title"><h2>${title}</h2></div><table><thead><tr><th>#</th><th>Interface</th><th>Class</th><th>${mode==='growth'?'MoM':'p95'}</th><th>${mode==='growth'?'Fcst 90d':'Risk'}</th><th>Verdict</th></tr></thead><tbody>${list.map((r,i)=>`<tr data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><td class="rank">${i+1}</td><td><b>${esc(r.dev)}</b> ${esc(r.intf)}</td><td><span class="chip">${r.cls}</span></td><td class="mono">${mode==='growth'?(r.forecast.growthMoM>0?'+':'')+(r.forecast.growthMoM*100).toFixed(0)+'%':pct1(r.p95)}</td><td>${mode==='growth'?pct1(r.forecast.proj[90]):riskBar(r.risk.score)}</td><td><span class="pill ${r.verdict.level}">${r.verdict.title.split('—')[0].trim()}</span></td></tr>`).join('')||'<tr><td colspan=6 class="small">None</td></tr>'}</tbody></table></div>`;
 }
 
+const ANOM_COLOR={'Traffic spike':'#fb923c','Weekend traffic on business link':'#fbbf24','RX/TX imbalance':'#818cf8','Unusual traffic time':'#fb923c','Sudden traffic reduction':'#38bdf8','Long-duration congestion':'#f43f5e','Post-maintenance behavior change':'#a78bfa'};
 function view_noc(){
   if(!S.samples.length)return needData();
   const a=A();const impactRank={Critical:0,High:1,Medium:2,Low:3};
   const queue=[...a.ifs].filter(r=>r.verdict.level!=='normal').sort((x,y)=>(impactRank[x.impact]-impactRank[y.impact])||(y.risk.score-x.risk.score));
-  const allAnom=a.ifs.flatMap(r=>r.anomalies.map(an=>({...an,r}))).sort((x,y)=>y.ts-x.ts).slice(0,12);
+  const allAnom=a.ifs.flatMap(r=>r.anomalies.map(an=>({...an,r})))
+    .sort((x,y)=>(impactRank[x.r.impact]-impactRank[y.r.impact])||(y.ts-x.ts));
   const maintNow=S.maintenance.filter(m=>m.start<=Date.now()&&m.end>=Date.now());
+  // exposed for the dropdown handler (focusAnomaly) — plain data, no DOM refs
+  S.nocAnomalies=allAnom.map(an=>({ts:an.ts,ifid:an.r.ifid,dev:an.r.dev,intf:an.r.intf,type:an.type,util:an.util,exp:an.exp,z:an.z,jump:an.jump,ratio:an.ratio,impact:an.r.impact}));
+  const trend=infraTrend(a.ifs);
+  const events=S.nocAnomalies.map(an=>({ts:an.ts,color:ANOM_COLOR[an.type]||'#fb923c',label:`${an.dev} ${an.intf} — ${an.type} (${fmtDate(an.ts)})`}));
+  const fleetChart=svgLineArea([{data:trend.map(d=>[d.d,d.p95]),color:'#38bdf8',area:true,wide:true,name:'Fleet p95 utilization'}],{h:170,bands:S.cfg.thresholds,events});
+  S.nocChartId='ch'+chartSeq; // svgLineArea just registered this chart under this id
   return crumb([['NOC']])+`
   <div class="verdict ${queue.some(r=>r.verdict.level==='critical')?'critical':'warning'}" style="margin-bottom:16px">
     <span class="lvl pill ${queue.some(r=>r.verdict.level==='critical')?'critical':'normal'}">NOC Status</span>
     <h3>${queue.length} item(s) need attention · ${queue.filter(r=>r.verdict.level==='critical').length} Critical</h3>
     <div class="reason">Ranked by business impact × risk. ${maintNow.length?`<b>${maintNow.length} maintenance window(s) active</b> — alerts suppressed for affected links.`:'No active maintenance.'}</div>
+  </div>
+  <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Fleet activity</h2><span class="sub">${events.length} anomaly marker(s) — pick one below to locate it here</span></div>
+    ${fleetChart}
+    <div class="legend">${[...new Set(S.nocAnomalies.map(a=>a.type))].map(t=>`<span><i style="background:${ANOM_COLOR[t]||'#fb923c'}"></i>${t}</span>`).join('')}</div>
   </div>
   <div class="grid g-main">
     <div>
@@ -1272,8 +1302,12 @@ function view_noc(){
       ${queue.slice(0,40).map(r=>nocCard(r)).join('')||'<div class="panel pad small">All monitored interfaces are healthy. 🎉</div>'}
     </div>
     <div>
-      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Live anomaly feed</h2></div>
-        ${allAnom.map(an=>`<div class="flex" style="margin-bottom:9px;cursor:pointer" data-nav='${JSON.stringify({view:'intf',id:an.r.ifid})}'><span class="tag" style="background:rgba(251,146,60,.15);color:#fdba74">⚠</span><div><div style="font-size:12.5px"><b>${esc(an.r.dev)}</b> ${esc(an.r.intf)}</div><div class="mini">${an.type} · ${fmtDate(an.ts)}</div></div></div>`).join('')||'<div class="mini">No anomalies detected.</div>'}
+      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Anomalies</h2><span class="sub">${allAnom.length}</span></div>
+        <select id="anomSel" onchange="focusAnomaly(this.value)" style="width:100%" ${allAnom.length?'':'disabled'}>
+          <option value="">${allAnom.length?'Select an anomaly…':'No anomalies detected'}</option>
+          ${S.nocAnomalies.map((an,i)=>`<option value="${i}">${fmtDate(an.ts)} · ${esc(an.dev)} ${esc(an.intf)} · ${an.type} (${an.impact})</option>`).join('')}
+        </select>
+        <div id="anomDetail" style="margin-top:10px"></div>
       </div>
       <div class="panel pad">
         <div class="sec-title"><h2>Fleet health</h2></div>
@@ -1281,6 +1315,29 @@ function view_noc(){
       </div>
     </div>
   </div>`;
+}
+function focusAnomaly(idx){
+  const detail=$('#anomDetail');
+  if(idx===''){if(detail)detail.innerHTML='';return;}
+  const an=S.nocAnomalies&&S.nocAnomalies[+idx];if(!an)return;
+  const cfg=CHARTS[S.nocChartId];
+  if(cfg){
+    if(an.ts<cfg.fx0||an.ts>cfg.fx1){/* out of fleet-trend range (shouldn't happen) */}
+    else{
+      cfg.selectedTs=an.ts;
+      if(an.ts<cfg.vx0||an.ts>cfg.vx1){cfg.vx0=cfg.fx0;cfg.vx1=cfg.fx1;} // bring into view if zoomed away
+      redrawChart(cfg);
+      const el=document.querySelector(`.chart[data-chart="${S.nocChartId}"]`);
+      if(el)el.scrollIntoView({behavior:'smooth',block:'center'});
+    }
+  }
+  let extra='';
+  if(an.z!=null)extra=`${an.z.toFixed(1)}σ above normal · reached ~${pct1(an.util)} vs a typical ~${pct1(an.exp)} at this hour/weekday`;
+  else if(an.ratio!=null)extra=`${an.ratio.toFixed(1)}× RX/TX imbalance`;
+  else if(an.util!=null)extra=`~${pct1(an.util)}`;
+  if(detail)detail.innerHTML=`<div class="ai" style="margin-top:0"><div class="h" style="color:${ANOM_COLOR[an.type]||'#fb923c'}">▲ ${esc(an.type)}</div>
+    <p><b>${esc(an.dev)} ${esc(an.intf)}</b> · ${esc(an.impact)} impact<br><span class="mini">${fmtDate(an.ts)}${extra?' · '+extra:''}</span></p>
+    <button class="btn sm ghost" onclick="go('intf',{id:'${an.ifid}'})">Open interface →</button></div>`;
 }
 function nocCard(r){
   return `<div class="verdict ${r.verdict.level}" style="margin-bottom:12px;cursor:pointer" data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'>
@@ -1859,7 +1916,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.focusAnomaly=focusAnomaly;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
