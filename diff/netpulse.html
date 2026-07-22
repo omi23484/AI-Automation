@@ -22,7 +22,9 @@
     radial-gradient(1000px 600px at -6% 12%, rgba(129,140,248,0.10), transparent 55%),
     linear-gradient(180deg,#0a0e17,#080b12);
 }
+:root{--anomtxt:#fdba74;--errtxt:#fca5a5;}
 :root.light{
+  --anomtxt:#b45309; --errtxt:#be123c;
   --bg:#eef2f8; --bg2:#ffffff; --panel:rgba(255,255,255,0.75); --panel2:rgba(21,58,111,0.06);
   --stroke:rgba(24,54,102,0.13); --stroke2:rgba(24,54,102,0.25);
   --txt:#152238; --muted:#44546e; --muted2:#7285a0;
@@ -118,6 +120,12 @@ button{font:inherit;cursor:pointer;color:var(--txt)}
 .chip.impact-High{background:rgba(251,146,60,.16);color:#fdba74}
 .chip.impact-Medium{background:rgba(251,191,36,.14);color:#fde68a}
 .chip.impact-Low{background:rgba(100,116,139,.18);color:#cbd5e1}
+:root.light .chip.impact-Critical{background:rgba(225,29,72,.12);color:#be123c}
+:root.light .chip.impact-High{background:rgba(194,65,12,.12);color:#c2410c}
+:root.light .chip.impact-Medium{background:rgba(180,83,9,.12);color:#92610a}
+:root.light .chip.impact-Low{background:rgba(71,85,105,.12);color:#475569}
+:root.light .up{color:#e11d48}
+:root.light .down{color:#047857}
 .conf{color:var(--muted);font-size:11.5px}
 
 /* Tables */
@@ -275,7 +283,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v15</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v16</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1102,6 +1110,18 @@ function chartSVG(cfg,animate){
   }
   let grid='';for(let i=0;i<=4;i++){const v=y1*i/4;grid+=`<line class="gl" x1="${pad.l}" x2="${w-pad.r}" y1="${Y(v)}" y2="${Y(v)}"/><text class="ax" x="${pad.l-6}" y="${Y(v)+3}" text-anchor="end" font-size="9">${(v*100).toFixed(0)}%</text>`;}
   let maint='';if(opts.maint)for(const m of opts.maint){if(m.end<x0||m.start>x1)continue;maint+=`<rect x="${X(Math.max(m.start,x0))}" y="${pad.t}" width="${Math.max(1,X(Math.min(m.end,x1))-X(Math.max(m.start,x0)))}" height="${h-pad.t-pad.b}" fill="rgba(129,140,248,.12)"/>`;}
+  // Business-hours highlighting: one soft band per business day in view, so the
+  // eye can immediately separate business-hour behavior from nights/weekends.
+  let bhRects='';
+  if(opts.bhShade){const bhc=S.cfg.businessHours,DAY=86400000;
+    const d0=new Date(x0);d0.setHours(0,0,0,0);
+    for(let td=+d0;td<=x1;td+=DAY){
+      if(!bhc.days.includes(new Date(td).getDay()))continue;
+      const bs=td+bhc.startHr*36e5,be=td+bhc.endHr*36e5;
+      if(be<x0||bs>x1)continue;
+      bhRects+=`<rect x="${X(Math.max(bs,x0)).toFixed(1)}" y="${pad.t}" width="${Math.max(1,X(Math.min(be,x1))-X(Math.max(bs,x0))).toFixed(1)}" height="${h-pad.t-pad.b}" fill="rgba(56,189,248,.08)"/>`;
+    }
+  }
   let paths='';
   series.forEach(s=>{
     let d=s.data.filter(p=>p[1]!=null);if(!d.length)return;
@@ -1131,7 +1151,7 @@ function chartSVG(cfg,animate){
   }
   const span=x1-x0;const fmtX=span<36e5*30?fmtDate:fmtDay;
   const xlabs=[x0,(x0+x1)/2,x1].map(v=>`<text class="ax" x="${X(v)}" y="${h-8}" text-anchor="middle" font-size="9">${fmtX(v)}</text>`).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" ${animate?'':'data-nodraw="1"'}>${grid}${bands}${maint}${paths}${selLine}${evs}${xlabs}<rect x="${pad.l}" y="${pad.t}" width="${w-pad.l-pad.r}" height="${h-pad.t-pad.b}" fill="transparent"/><g class="hg"></g></svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" ${animate?'':'data-nodraw="1"'}>${grid}${bhRects}${bands}${maint}${paths}${selLine}${evs}${xlabs}<rect x="${pad.l}" y="${pad.t}" width="${w-pad.l-pad.r}" height="${h-pad.t-pad.b}" fill="transparent"/><g class="hg"></g></svg>`;
 }
 function redrawChart(cfg){const el=document.querySelector(`.chart[data-chart="${cfg.id}"] svg`);if(el)el.outerHTML=chartSVG(cfg,false);}
 function chartAt(e){const el=e.target.closest&&e.target.closest('.chart[data-chart]');if(!el)return null;const cfg=CHARTS[el.dataset.chart];if(!cfg)return null;cfg.el=el;return cfg;}
@@ -1190,11 +1210,14 @@ function donut(dist){
   return `<svg class="donut" viewBox="0 0 140 140" width="140" height="140">${arcs}<text class="dt" x="70" y="66" text-anchor="middle" font-size="15" font-weight="700">${(dist.normal*100).toFixed(0)}%</text><text class="ax" x="70" y="82" text-anchor="middle" font-size="9">NORMAL</text></svg>`;
 }
 function heatmap(heat,t){
+  const bhc=S.cfg.businessHours;
   let cells='';
   for(let d=0;d<7;d++){cells+=`<div class="dl">${DOW[d]}</div>`;
-    for(let h=0;h<24;h++){const v=heat[d+'-'+h];const st=v==null?'nodata':stateOfT(v,t);const c=v==null?'rgba(120,150,200,.06)':stateColor(st);cells+=`<div class="cell" title="${DOW[d]} ${h}:00 — ${v==null?'no data':pct1(v)}" style="background:${c};opacity:${v==null?1:0.35+clamp(v,0,1)*0.65}"></div>`;}}
-  let hdr='<div></div>';for(let h=0;h<24;h+=1)hdr+=`<div class="hr">${h%6===0?h:''}</div>`;
-  return `<div class="heat">${hdr}${cells}</div>`;
+    for(let h=0;h<24;h++){const v=heat[d+'-'+h];const st=v==null?'nodata':stateOfT(v,t);const c=v==null?'rgba(120,150,200,.06)':stateColor(st);
+      const isB=bhc.days.includes(d)&&h>=bhc.startHr&&h<bhc.endHr;
+      cells+=`<div class="cell" title="${DOW[d]} ${h}:00${isB?' (business hours)':''} — ${v==null?'no data':pct1(v)}" style="background:${c};opacity:${v==null?1:0.35+clamp(v,0,1)*0.65}${isB?';box-shadow:inset 0 0 0 1px rgba(56,189,248,.45)':''}"></div>`;}}
+  let hdr='<div></div>';for(let h=0;h<24;h+=1){const isB=h>=bhc.startHr&&h<bhc.endHr;hdr+=`<div class="hr" style="${isB?'color:var(--accent);font-weight:700':''}">${(h%6===0||h===bhc.startHr||h===bhc.endHr)?h:''}</div>`;}
+  return `<div class="heat">${hdr}${cells}</div><div class="mini" style="margin-top:6px"><i style="display:inline-block;width:9px;height:9px;border:1px solid rgba(56,189,248,.7);border-radius:2px;vertical-align:-1px"></i> outlined cells = business hours (${bhc.startHr}:00–${bhc.endHr}:00)</div>`;
 }
 function calHeat(daily,t){
   if(!daily.length)return'<div class="mini">No data</div>';
@@ -1282,19 +1305,12 @@ function view_noc(){
   const maintNow=S.maintenance.filter(m=>m.start<=Date.now()&&m.end>=Date.now());
   // exposed for the dropdown handler (focusAnomaly) — plain data, no DOM refs
   S.nocAnomalies=allAnom.map(an=>({ts:an.ts,ifid:an.r.ifid,dev:an.r.dev,intf:an.r.intf,type:an.type,util:an.util,exp:an.exp,z:an.z,jump:an.jump,ratio:an.ratio,impact:an.r.impact}));
-  const trend=infraTrend(a.ifs);
-  const events=S.nocAnomalies.map(an=>({ts:an.ts,color:ANOM_COLOR[an.type]||'#fb923c',label:`${an.dev} ${an.intf} — ${an.type} (${fmtDate(an.ts)})`}));
-  const fleetChart=svgLineArea([{data:trend.map(d=>[d.d,d.p95]),color:'#38bdf8',area:true,wide:true,name:'Fleet p95 utilization'}],{h:170,bands:S.cfg.thresholds,events});
-  S.nocChartId='ch'+chartSeq; // svgLineArea just registered this chart under this id
+  S.nocChartId=null; // anomaly chart-pointing lives on the per-interface page
   return crumb([['NOC']])+`
   <div class="verdict ${queue.some(r=>r.verdict.level==='critical')?'critical':'warning'}" style="margin-bottom:16px">
     <span class="lvl pill ${queue.some(r=>r.verdict.level==='critical')?'critical':'normal'}">NOC Status</span>
     <h3>${queue.length} item(s) need attention · ${queue.filter(r=>r.verdict.level==='critical').length} Critical</h3>
     <div class="reason">Ranked by business impact × risk. ${maintNow.length?`<b>${maintNow.length} maintenance window(s) active</b> — alerts suppressed for affected links.`:'No active maintenance.'}</div>
-  </div>
-  <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Fleet activity</h2><span class="sub">${events.length} anomaly marker(s) — pick one below to locate it here</span></div>
-    ${fleetChart}
-    <div class="legend">${[...new Set(S.nocAnomalies.map(a=>a.type))].map(t=>`<span><i style="background:${ANOM_COLOR[t]||'#fb923c'}"></i>${t}</span>`).join('')}</div>
   </div>
   <div class="grid g-main">
     <div>
@@ -1335,7 +1351,7 @@ function focusAnomaly(idx){
   if(an.z!=null)extra=`${an.z.toFixed(1)}σ above normal · reached ~${pct1(an.util)} vs a typical ~${pct1(an.exp)} at this hour/weekday`;
   else if(an.ratio!=null)extra=`${an.ratio.toFixed(1)}× RX/TX imbalance`;
   else if(an.util!=null)extra=`~${pct1(an.util)}`;
-  if(detail)detail.innerHTML=`<div class="ai" style="margin-top:0"><div class="h" style="color:${ANOM_COLOR[an.type]||'#fb923c'}">▲ ${esc(an.type)}</div>
+  if(detail)detail.innerHTML=`<div class="ai" style="margin-top:0"><div class="h"><span style="color:${ANOM_COLOR[an.type]||'#fb923c'}">▲</span> ${esc(an.type)}</div>
     <p><b>${esc(an.dev)} ${esc(an.intf)}</b> · ${esc(an.impact)} impact<br><span class="mini">${fmtDate(an.ts)}${extra?' · '+extra:''}</span></p>
     <button class="btn sm ghost" onclick="go('intf',{id:'${an.ifid}'})">Open interface →</button></div>`;
 }
@@ -1368,6 +1384,59 @@ function twinDevice(d){
 }
 function led(r){return `<div class="led ${r.verdict.level==='critical'?'crit':''}" title="${esc(r.intf)} — ${r.verdict.title} (${pct1(r.p95)})" style="background:${stateColor(r.verdict.level)}" data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'></div>`;}
 
+// Business-hours vs off-hours split for one link (uses the link's own thresholds).
+function bhStats(r){
+  const t=r.th||th(r.cls);
+  const mk=list=>{const u=list.map(x=>x.util).filter(v=>v!=null);
+    const dist={normal:0,warning:0,high:0,critical:0};for(const v of u)dist[stateOfT(v,t)]++;
+    const n=u.length||1;for(const k in dist)dist[k]/=n;
+    return {n:u.length,avg:mean(u),p95:percentile(u,0.95),max:amax(u,0),dist};};
+  const bh=[],off=[];
+  for(const x of r.samples)(isBH(x.ts)?bh:off).push(x);
+  return {bh:mk(bh),off:mk(off)};
+}
+function bhCol(label,stx,r){
+  const bar=['normal','warning','high','critical'].map(k=>`<i style="display:block;height:100%;width:${(stx.dist[k]*100).toFixed(1)}%;background:${stateColor(k)}"></i>`).join('');
+  return `<div>
+    <div class="small" style="font-weight:700;margin-bottom:8px">${label} <span class="mini">· ${stx.n.toLocaleString()} samples</span></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
+      <div class="kpi" style="padding:10px 12px"><div class="l">Busy (p95)</div><div class="v mono" style="font-size:18px">${pct1(stx.p95)}</div><div class="t flat">${r.speed?fmtBps(stx.p95*r.speed):''}</div></div>
+      <div class="kpi" style="padding:10px 12px"><div class="l">Average</div><div class="v mono" style="font-size:18px">${pct1(stx.avg)}</div></div>
+      <div class="kpi" style="padding:10px 12px"><div class="l">Peak</div><div class="v mono" style="font-size:18px">${pct1(stx.max)}</div></div>
+    </div>
+    <div style="display:flex;height:9px;border-radius:5px;overflow:hidden;margin-top:9px;background:rgba(120,150,200,.12)">${bar}</div>
+    <div class="mini" style="margin-top:4px">${(stx.dist.normal*100).toFixed(0)}% normal · ${(stx.dist.warning*100).toFixed(0)}% warn · ${(stx.dist.high*100).toFixed(0)}% high · ${(stx.dist.critical*100).toFixed(0)}% critical</div>
+  </div>`;
+}
+function bhInsight(b,r){
+  if(!b.bh.n||!b.off.n)return 'Not enough data yet to compare business and off-hours behavior.';
+  const ratio=b.bh.p95/Math.max(b.off.p95,0.005);
+  const parts=[];
+  if(ratio>=1.3)parts.push(`This link is clearly business-driven — busy-period load is ${ratio.toFixed(1)}× higher during business hours (${pct1(b.bh.p95)} vs ${pct1(b.off.p95)} off-hours).`);
+  else if(ratio<=0.75)parts.push(`Off-hours traffic runs hotter than business hours (${pct1(b.off.p95)} vs ${pct1(b.bh.p95)}) — typical of backup/replication jobs; verify that is expected on a ${r.cls} link.`);
+  else parts.push(`Load is fairly even around the clock (${pct1(b.bh.p95)} business vs ${pct1(b.off.p95)} off-hours).`);
+  if(b.bh.dist.critical>0.02)parts.push(`It is critical ${pct1(b.bh.dist.critical)} of business time — users feel this directly.`);
+  else if(b.off.dist.critical>0.02)parts.push(`Critical periods happen almost only off-hours (${pct1(b.off.dist.critical)} of off-hours time), so user impact is limited.`);
+  if(r.bhDays)parts.push(`High/critical levels were hit on ${r.bhDays} business day(s) in this window.`);
+  return parts.join(' ');
+}
+function focusAnomalyIntf(idx){
+  const detail=$('#anomDetailIntf');
+  const cfg=CHARTS[S.intfChartId];
+  if(idx===''){if(detail)detail.innerHTML='';if(cfg){cfg.selectedTs=null;redrawChart(cfg);}return;}
+  const an=S.intfAnomalies&&S.intfAnomalies[+idx];if(!an)return;
+  if(cfg){cfg.selectedTs=an.ts;
+    if(an.ts<cfg.vx0||an.ts>cfg.vx1){cfg.vx0=cfg.fx0;cfg.vx1=cfg.fx1;} // bring into view if zoomed elsewhere
+    redrawChart(cfg);
+    const el=document.querySelector(`.chart[data-chart="${S.intfChartId}"]`);
+    if(el)el.scrollIntoView({behavior:'smooth',block:'center'});
+  }
+  let extra='';
+  if(an.z!=null)extra=`reached ~${pct1(an.util)} vs a typical ~${pct1(an.exp)} at this same hour/weekday · ${an.z.toFixed(1)}σ above normal`;
+  else if(an.ratio!=null)extra=`${an.ratio.toFixed(1)}× RX/TX imbalance`;
+  else if(an.util!=null)extra=`~${pct1(an.util)}`;
+  if(detail)detail.innerHTML=`<div class="ai" style="margin-top:0"><div class="h"><span style="color:${ANOM_COLOR[an.type]||'#fb923c'}">▲</span> ${esc(an.type)}</div><p class="mini" style="font-size:12px">${fmtDate(an.ts)}${extra?'<br>'+extra:''}<br>⬆ marked on the Traffic &amp; Utilization chart with a guide line.</p></div>`;
+}
 function view_intf(){
   const a=A();const r=a.ifs.find(x=>x.ifid===S.scope.id);
   if(!r)return needData();
@@ -1382,6 +1451,12 @@ function view_intf(){
   const lastD=r.daily.at(-1)?.d||Date.now();
   const proj=[0,30,60,90,180].map(dd=>[lastD+dd*86400000,clamp(f.current+f.slopePerDay*dd,0,2)]);
   const events=buildTimeline(r);
+  // anomalies as markers on the traffic chart; dropdown below points at them
+  S.intfAnomalies=r.anomalies.map(an=>({ts:an.ts,ifid:r.ifid,type:an.type,util:an.util,exp:an.exp,z:an.z,jump:an.jump,ratio:an.ratio}));
+  const anomEvents=S.intfAnomalies.map(an=>({ts:an.ts,color:ANOM_COLOR[an.type]||'#fb923c',label:`${an.type} (${fmtDate(an.ts)})`}));
+  const utilChart=svgLineArea([{data:txS,color:'#38bdf8',wide:true,name:'Transmit'},{data:rxS,color:'#818cf8',name:'Received'}].concat(puS.length?[{data:puS,color:'#f472b6',dash:true,name:'Peak'}]:[]),{h:230,bands:r.th,maint:S.maintenance,speed:r.speed,bhShade:true,events:anomEvents});
+  S.intfChartId='ch'+chartSeq; // id of the chart just registered above
+  const bhx=bhStats(r);const bhc=S.cfg.businessHours;
   return crumb([['NOC',{view:'noc'}],[r.dev,{view:'twin',twin:{site:r.site,dev:r.dev}}],[r.intf]])+`
   <div class="verdict ${r.verdict.level}" style="margin-bottom:16px">
     <div class="flex"><span class="lvl pill ${r.verdict.level}">${r.verdict.level}</span><span class="chip impact-${r.impact}">${r.impact} impact</span><span class="chip">${r.cls}</span>${(r.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}<span class="spacer"></span><span class="mono small">${r.ip?esc(r.ip)+' · ':''}speed ${r.speed?fmtBps(r.speed):'?'}</span>${riskBar(r.risk.score)}</div>
@@ -1394,8 +1469,16 @@ function view_intf(){
     <div>
       <div class="panel pad" style="margin-bottom:16px">
         <div class="sec-title"><h2>Traffic &amp; Utilization</h2><span class="sub">${bwSub}${S.maintenance.length?' · maintenance shaded':''}</span></div>
-        ${svgLineArea([{data:txS,color:'#38bdf8',wide:true,name:'Transmit'},{data:rxS,color:'#818cf8',name:'Received'}].concat(puS.length?[{data:puS,color:'#f472b6',dash:true,name:'Peak'}]:[]),{h:230,bands:r.th,maint:S.maintenance,speed:r.speed})}
-        <div class="legend"><span><i style="background:#38bdf8"></i>Transmit</span><span><i style="background:#818cf8"></i>Received</span>${puS.length?`<span><i style="background:#f472b6"></i>Peak</span>`:''}<span><i style="background:var(--warning)"></i>warn</span><span><i style="background:var(--critical)"></i>critical</span></div>
+        ${utilChart}
+        <div class="legend"><span><i style="background:#38bdf8"></i>Transmit</span><span><i style="background:#818cf8"></i>Received</span>${puS.length?`<span><i style="background:#f472b6"></i>Peak</span>`:''}<span><i style="background:rgba(56,189,248,.35)"></i>business hours</span>${anomEvents.length?`<span><i style="background:#fb923c;border-radius:50%"></i>anomaly</span>`:''}<span><i style="background:var(--warning)"></i>warn</span><span><i style="background:var(--critical)"></i>critical</span></div>
+      </div>
+      <div class="panel pad" style="margin-bottom:16px">
+        <div class="sec-title"><h2>Business hours vs off-hours</h2><span class="sub">business window ${bhc.startHr}:00–${bhc.endHr}:00, ${bhc.days.map(d=>DOW[d]).join(' ')}</span></div>
+        <div class="grid g2">
+          ${bhCol('☀ Business hours',bhx.bh,r)}
+          ${bhCol('☾ Off-hours & weekends',bhx.off,r)}
+        </div>
+        <div class="ai" style="margin-top:12px"><div class="h">◆ What this means</div><p>${bhInsight(bhx,r)}</p></div>
       </div>
       <div class="grid g2" style="margin-bottom:16px">
         <div class="panel pad"><div class="sec-title"><h2>Utilization rhythm</h2><span class="sub">day × hour</span></div>${heatmap(r.heat,r.th)}</div>
@@ -1437,8 +1520,12 @@ function view_intf(){
         ${Object.entries(r.risk.factors).map(([k,v])=>`<div class="flex" style="margin-bottom:7px"><span style="width:90px" class="small">${k}</span><span class="track" style="flex:1;height:6px;border-radius:4px;background:rgba(120,150,200,.15);overflow:hidden"><i style="display:block;height:100%;width:${clamp(v,0,1)*100}%;background:linear-gradient(90deg,#38bdf8,#f43f5e)"></i></span></div>`).join('')}
         <div class="mini" style="margin-top:8px">× ${r.risk.impactMul} business-impact multiplier (${r.impact})</div>
       </div>
-      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Anomalies</h2></div>
-        ${r.anomalies.length?r.anomalies.map(an=>`<div style="margin-bottom:9px"><b class="small" style="color:#fdba74">⚠ ${an.type}</b><div class="mini">${fmtDate(an.ts)}${an.util!=null?` · reached ~${pct1(an.util)}`:''}${an.exp!=null?` vs a typical ~${pct1(an.exp)} at this same hour/weekday`:''}${an.z?` · ${an.z.toFixed(1)}σ above normal for this slot`:''}</div></div>`).join(''):'<div class="mini">No anomalies vs baseline.</div>'}
+      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Anomalies</h2><span class="sub">${r.anomalies.length||'none'}</span></div>
+        <select id="anomSelIntf" onchange="focusAnomalyIntf(this.value)" style="width:100%" ${r.anomalies.length?'':'disabled'}>
+          <option value="">${r.anomalies.length?'Select an anomaly to locate it on the chart…':'No anomalies vs baseline'}</option>
+          ${S.intfAnomalies.map((an,i)=>`<option value="${i}">${fmtDate(an.ts)} · ${an.type}</option>`).join('')}
+        </select>
+        <div id="anomDetailIntf" style="margin-top:10px"></div>
       </div>
       <div class="panel pad"><div class="sec-title"><h2>Timeline</h2></div>
         <div class="tl">${events.map(e=>`<div class="ev ${e.k}"><div class="tm">${fmtDate(e.ts)}</div><div>${e.txt}</div></div>`).join('')||'<div class="mini">No events.</div>'}</div>
@@ -1499,7 +1586,7 @@ function view_anomalies(){
   const a=A();const all=a.ifs.flatMap(r=>r.anomalies.map(an=>({...an,r}))).sort((x,y)=>{const ir={Critical:0,High:1,Medium:2,Low:3};return ir[x.r.impact]-ir[y.r.impact]||y.ts-x.ts;});
   return crumb([['Anomalies']])+`<div class="sec-title"><h2>Anomaly feed</h2><span class="sub">${all.length} detected · baseline-relative, impact-ranked</span></div>
   <div class="panel pad"><table><thead><tr><th>Type</th><th>Interface</th><th>Class</th><th>Impact</th><th>When</th><th>Detail</th></tr></thead><tbody>
-  ${all.map(an=>`<tr data-nav='${JSON.stringify({view:'intf',id:an.r.ifid})}'><td><b style="color:#fdba74">⚠ ${an.type}</b></td><td><b>${esc(an.r.dev)}</b> ${esc(an.r.intf)}</td><td><span class="chip">${an.r.cls}</span></td><td><span class="chip impact-${an.r.impact}">${an.r.impact}</span></td><td class="small">${fmtDate(an.ts)}</td><td class="mono small">${an.z?`z=${an.z.toFixed(1)}, ~${pct1(an.util)} vs exp ${pct1(an.exp)}`:an.ratio?`${an.ratio.toFixed(1)}× imbalance`:an.util?`~${pct1(an.util)}`:''}</td></tr>`).join('')||'<tr><td colspan=6 class="small">No anomalies detected.</td></tr>'}
+  ${all.map(an=>`<tr data-nav='${JSON.stringify({view:'intf',id:an.r.ifid})}'><td><b style="color:var(--anomtxt)">⚠ ${an.type}</b></td><td><b>${esc(an.r.dev)}</b> ${esc(an.r.intf)}</td><td><span class="chip">${an.r.cls}</span></td><td><span class="chip impact-${an.r.impact}">${an.r.impact}</span></td><td class="small">${fmtDate(an.ts)}</td><td class="mono small">${an.z?`z=${an.z.toFixed(1)}, ~${pct1(an.util)} vs exp ${pct1(an.exp)}`:an.ratio?`${an.ratio.toFixed(1)}× imbalance`:an.util?`~${pct1(an.util)}`:''}</td></tr>`).join('')||'<tr><td colspan=6 class="small">No anomalies detected.</td></tr>'}
   </tbody></table></div>`;
 }
 function view_historical(){
@@ -1568,7 +1655,7 @@ function view_uploads(){
       <div style="margin-bottom:14px">${Object.keys(FIELD_LABELS).map(f=>{
         const mi=st.parsed.resolved.map[f];const c=st.parsed.resolved.conf[f]||0;const req=REQUIRED_FIELDS.includes(f);
         const unit=mi!=null&&st.parsed.resolved.headers.find(h=>h.i===mi)?.unit?' <span class="chip">unit detected</span>':'';
-        return `<div class="map-row"><b class="small" style="${req&&mi==null?'color:#fca5a5':''}">${FIELD_LABELS[f]}${req?' *':''}</b><span style="text-align:center">→</span><span><select onchange="remap('${f}',this.value)" style="width:100%"><option value="">— not in this file —</option>${st.parsed.headers.map((h,i)=>`<option value="${i}" ${mi===i?'selected':''}>${esc(h)}</option>`).join('')}</select>${unit}</span><span class="mini">${mi==null?'—':((st.parsed.resolved.manual||{})[f]?'manual':Math.round(c*100)+'%')}<div class="confbar"><i style="width:${mi==null?0:c*100}%"></i></div></span></div>`;
+        return `<div class="map-row"><b class="small" style="${req&&mi==null?'color:var(--errtxt)':''}">${FIELD_LABELS[f]}${req?' *':''}</b><span style="text-align:center">→</span><span><select onchange="remap('${f}',this.value)" style="width:100%"><option value="">— not in this file —</option>${st.parsed.headers.map((h,i)=>`<option value="${i}" ${mi===i?'selected':''}>${esc(h)}</option>`).join('')}</select>${unit}</span><span class="mini">${mi==null?'—':((st.parsed.resolved.manual||{})[f]?'manual':Math.round(c*100)+'%')}<div class="confbar"><i style="width:${mi==null?0:c*100}%"></i></div></span></div>`;
       }).join('')}</div>
       ${fnd.block.map(m=>`<div class="sev-block block"><b>⛔ Blocking</b> — ${m}</div>`).join('')}
       ${fnd.warn.map(m=>`<div class="sev-block warn"><b>⚠ Warning</b> — ${m}</div>`).join('')}
@@ -1578,7 +1665,7 @@ function view_uploads(){
       <table><thead><tr><th>Time</th><th>Interface</th><th>Transmit</th><th>Received</th><th>Capacity</th><th>Util</th><th></th></tr></thead><tbody>
       ${st.built.extremes.map(x=>`<tr style="cursor:default"><td class="small">${fmtDate(x.ts)}</td><td class="small"><b>${esc(x.dev)}</b> ${esc(x.intf)}</td><td class="mono">${x.tx!=null?fmtBps(x.tx):'–'}</td><td class="mono">${x.rx!=null?fmtBps(x.rx):'–'}</td><td class="mono">${x.speed?fmtBps(x.speed):'–'}</td><td class="mono" style="${x.util>1.2?'color:var(--critical);font-weight:700':''}">${pct1(x.util)}</td><td class="mini">${x.bad?'flagged artifact':''}</td></tr>`).join('')}
       </tbody></table>`:''}
-      <div class="flex" style="margin-top:14px"><button class="btn" ${canCommit?'':'disabled'} onclick="commitStaged()">✓ Commit${extra?` this + ${extra} more`:''} ${(st.built.samples.length-(st.built.overlap||0)).toLocaleString()}${extra?'+':''} samples</button><button class="btn ghost" onclick="cancelStaged()">Cancel${extra?' all':''}</button><span class="commitprog small" style="color:var(--accent)"></span>${canCommit?'':'<span class="small" style="color:#fca5a5">Resolve blocking issues to commit.</span>'}</div>
+      <div class="flex" style="margin-top:14px"><button class="btn" ${canCommit?'':'disabled'} onclick="commitStaged()">✓ Commit${extra?` this + ${extra} more`:''} ${(st.built.samples.length-(st.built.overlap||0)).toLocaleString()}${extra?'+':''} samples</button><button class="btn ghost" onclick="cancelStaged()">Cancel${extra?' all':''}</button><span class="commitprog small" style="color:var(--accent)"></span>${canCommit?'':'<span class="small" style="color:var(--errtxt)">Resolve blocking issues to commit.</span>'}</div>
     </div>`;
   }
   return crumb([['Uploads']])+`
@@ -1650,7 +1737,7 @@ function view_admin(){
   <table><thead><tr><th>Class</th><th>Warn</th><th>High</th><th>Critical</th><th>Default impact</th></tr></thead><tbody>
   ${['Core','Trading','Internet','WAN','Storage','Backup','Voice','Management','Customer'].map(c=>{const ct=th(c);const im=classify('',c).impact;return `<tr style="cursor:default"><td><span class="chip">${c}</span></td><td class="mono">${(ct.warn*100).toFixed(0)}%</td><td class="mono">${(ct.high*100).toFixed(0)}%</td><td class="mono">${(ct.crit*100).toFixed(0)}%</td><td><span class="chip impact-${im}">${im}</span></td></tr>`;}).join('')}
   </tbody></table></div>
-  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Data management</h2></div><div class="flex"><button class="btn ghost" onclick="exportAll()">⤓ Export all data (JSON)</button><button class="btn ghost" onclick="resetAll()" style="color:#fca5a5">Reset all data</button></div></div>`;
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Data management</h2></div><div class="flex"><button class="btn ghost" onclick="exportAll()">⤓ Export all data (JSON)</button><button class="btn ghost" onclick="resetAll()" style="color:var(--errtxt)">Reset all data</button></div></div>`;
 }
 
 /* ------------------------------ report gen -------------------------------- */
@@ -1916,7 +2003,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.focusAnomaly=focusAnomaly;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
