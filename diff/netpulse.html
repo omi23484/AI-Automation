@@ -283,7 +283,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v16</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v17</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -324,6 +324,7 @@ const pct1=v=>(v==null||isNaN(v))?'–':(v*100).toFixed(1)+'%';
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmtDate=t=>new Date(t).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
 const fmtDay=t=>new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric'});
+const dtLocal=ts=>{const d=new Date(ts);const p2=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}T${p2(d.getHours())}:${p2(d.getMinutes())}`;};
 const days=(a,b)=>(b-a)/86400000;
 const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 function toast(msg){const t=$('#toast');t.innerHTML=`<div class="toast">${msg}</div>`;setTimeout(()=>t.innerHTML='',3200);}
@@ -1441,22 +1442,39 @@ function view_intf(){
   const a=A();const r=a.ifs.find(x=>x.ifid===S.scope.id);
   if(!r)return needData();
   const f=r.forecast;
-  const txS=r.samples.filter(x=>x.tx!=null&&r.speed).map(x=>[x.ts,x.tx/r.speed]);
-  const rxS=r.samples.filter(x=>x.rx!=null&&r.speed).map(x=>[x.ts,x.rx/r.speed]);
-  const txs=r.samples.map(x=>x.tx).filter(v=>v!=null),rxs=r.samples.map(x=>x.rx).filter(v=>v!=null);
-  const pks=r.samples.map(x=>x.pu).filter(v=>v!=null);
-  const puS=r.samples.filter(x=>x.pu!=null).map(x=>[x.ts,x.pu]);
+  // ---- time & business-hours filter (From/To datetime + hours mode) ----
+  const flt=S.scope.tf||{};
+  const hasFlt=!!(flt.from||flt.to||(flt.hours&&flt.hours!=='all'));
+  const tf0=flt.from?new Date(flt.from).getTime():-Infinity;
+  const tf1=flt.to?new Date(flt.to).getTime():Infinity;
+  const inFlt=x=>x.ts>=tf0&&x.ts<=tf1&&(flt.hours==='bh'?isBH(x.ts):flt.hours==='off'?!isBH(x.ts):true);
+  const fsam=hasFlt?r.samples.filter(inFlt):r.samples;
+  const txS=fsam.filter(x=>x.tx!=null&&r.speed).map(x=>[x.ts,x.tx/r.speed]);
+  const rxS=fsam.filter(x=>x.rx!=null&&r.speed).map(x=>[x.ts,x.rx/r.speed]);
+  const txs=fsam.map(x=>x.tx).filter(v=>v!=null),rxs=fsam.map(x=>x.rx).filter(v=>v!=null);
+  const pks=fsam.map(x=>x.pu).filter(v=>v!=null);
+  const puS=fsam.filter(x=>x.pu!=null).map(x=>[x.ts,x.pu]);
+  // filtered distribution + rhythm heatmap (precomputed values when unfiltered)
+  let distV=r.dist,heatV=r.heat;
+  if(hasFlt){
+    distV={normal:0,warning:0,high:0,critical:0};const hb={};let nD=0;
+    for(const x of fsam){if(x.util==null)continue;distV[stateOfT(x.util,r.th)]++;nD++;
+      const k=new Date(x.ts).getDay()+'-'+new Date(x.ts).getHours();(hb[k]=hb[k]||[]).push(x.util);}
+    for(const k in distV)distV[k]/=(nD||1);
+    heatV={};for(const k in hb)heatV[k]=mean(hb[k]);
+  }
+  const rV=hasFlt?Object.assign({},r,{dist:distV,heat:heatV,samples:fsam}):r;
   const bwSub=(txs.length&&rxs.length)?`Transmit p95 ${fmtBps(percentile(txs,0.95))} · Received p95 ${fmtBps(percentile(rxs,0.95))}${pks.length?` · Peak ${pct1(amax(pks))}`:''}`:'Transmit / Received with threshold bands';
   // forecast chart series
   const lastD=r.daily.at(-1)?.d||Date.now();
   const proj=[0,30,60,90,180].map(dd=>[lastD+dd*86400000,clamp(f.current+f.slopePerDay*dd,0,2)]);
   const events=buildTimeline(r);
   // anomalies as markers on the traffic chart; dropdown below points at them
-  S.intfAnomalies=r.anomalies.map(an=>({ts:an.ts,ifid:r.ifid,type:an.type,util:an.util,exp:an.exp,z:an.z,jump:an.jump,ratio:an.ratio}));
+  S.intfAnomalies=r.anomalies.filter(an=>!hasFlt||inFlt(an)).map(an=>({ts:an.ts,ifid:r.ifid,type:an.type,util:an.util,exp:an.exp,z:an.z,jump:an.jump,ratio:an.ratio}));
   const anomEvents=S.intfAnomalies.map(an=>({ts:an.ts,color:ANOM_COLOR[an.type]||'#fb923c',label:`${an.type} (${fmtDate(an.ts)})`}));
   const utilChart=svgLineArea([{data:txS,color:'#38bdf8',wide:true,name:'Transmit'},{data:rxS,color:'#818cf8',name:'Received'}].concat(puS.length?[{data:puS,color:'#f472b6',dash:true,name:'Peak'}]:[]),{h:230,bands:r.th,maint:S.maintenance,speed:r.speed,bhShade:true,events:anomEvents});
   S.intfChartId='ch'+chartSeq; // id of the chart just registered above
-  const bhx=bhStats(r);const bhc=S.cfg.businessHours;
+  const bhx=bhStats(rV);const bhc=S.cfg.businessHours;
   return crumb([['NOC',{view:'noc'}],[r.dev,{view:'twin',twin:{site:r.site,dev:r.dev}}],[r.intf]])+`
   <div class="verdict ${r.verdict.level}" style="margin-bottom:16px">
     <div class="flex"><span class="lvl pill ${r.verdict.level}">${r.verdict.level}</span><span class="chip impact-${r.impact}">${r.impact} impact</span><span class="chip">${r.cls}</span>${(r.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}<span class="spacer"></span><span class="mono small">${r.ip?esc(r.ip)+' · ':''}speed ${r.speed?fmtBps(r.speed):'?'}</span>${riskBar(r.risk.score)}</div>
@@ -1465,6 +1483,14 @@ function view_intf(){
     <div class="act">▸ ${r.verdict.action} <span class="conf">· confidence ${(r.verdict.confidence*100).toFixed(0)}% · ${r.verdict.comparison}</span></div>
     <div style="margin-top:10px" class="flex"><button class="btn sm ghost" onclick="askRCA('${r.ifid}')">🔍 Explain (RCA)</button><button class="btn sm ghost" onclick="genReport('intf','${r.ifid}')">▦ Add to report</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','html')">⤓ Export HTML</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','pdf')">🖨 Export PDF</button></div>
   </div>
+  <div class="panel pad" style="margin-bottom:16px"><div class="flex" style="gap:14px;align-items:flex-end">
+    <span class="small" style="font-weight:700;padding-bottom:9px">⧩ Filter</span>
+    <label class="fld" style="margin:0"><span>From</span><input type="datetime-local" id="tfFrom" value="${flt.from||''}" min="${dtLocal(r.start)}" max="${dtLocal(r.end)}"></label>
+    <label class="fld" style="margin:0"><span>To</span><input type="datetime-local" id="tfTo" value="${flt.to||''}" min="${dtLocal(r.start)}" max="${dtLocal(r.end)}"></label>
+    <label class="fld" style="margin:0"><span>Hours</span><select id="tfHours"><option value="all" ${(!flt.hours||flt.hours==='all')?'selected':''}>All hours</option><option value="bh" ${flt.hours==='bh'?'selected':''}>Business hours only</option><option value="off" ${flt.hours==='off'?'selected':''}>Off-hours only</option></select></label>
+    <button class="btn sm" onclick="applyTimeFilter()" style="margin-bottom:1px">Apply</button>
+    ${hasFlt?`<button class="btn sm ghost" onclick="clearTimeFilter()" style="margin-bottom:1px">Reset</button><span class="chip" style="align-self:center">${fsam.length?`filtered · ${fsam.length.toLocaleString()} of ${r.samples.length.toLocaleString()} samples`:'⚠ no samples match this filter'}</span>`:`<span class="mini" style="padding-bottom:10px">data covers ${fmtDate(r.start)} – ${fmtDate(r.end)}</span>`}
+  </div></div>
   <div class="grid g-main">
     <div>
       <div class="panel pad" style="margin-bottom:16px">
@@ -1481,16 +1507,16 @@ function view_intf(){
         <div class="ai" style="margin-top:12px"><div class="h">◆ What this means</div><p>${bhInsight(bhx,r)}</p></div>
       </div>
       <div class="grid g2" style="margin-bottom:16px">
-        <div class="panel pad"><div class="sec-title"><h2>Utilization rhythm</h2><span class="sub">day × hour</span></div>${heatmap(r.heat,r.th)}</div>
+        <div class="panel pad"><div class="sec-title"><h2>Utilization rhythm</h2><span class="sub">day × hour</span></div>${heatmap(heatV,r.th)}</div>
         <div class="panel pad"><div class="sec-title"><h2>State distribution</h2><span class="sub">time-in-state</span></div>
-          <div class="flex" style="gap:20px">${donut(r.dist)}<div class="dist-legend">
-            ${['normal','warning','high','critical'].map(k=>`<div class="row"><i style="background:${stateColor(k)}"></i><span style="text-transform:capitalize">${k}</span><b>${(r.dist[k]*100).toFixed(0)}%</b></div>`).join('')}
+          <div class="flex" style="gap:20px">${donut(distV)}<div class="dist-legend">
+            ${['normal','warning','high','critical'].map(k=>`<div class="row"><i style="background:${stateColor(k)}"></i><span style="text-transform:capitalize">${k}</span><b>${(distV[k]*100).toFixed(0)}%</b></div>`).join('')}
           </div></div>
-          <div class="ai" style="margin-top:12px"><div class="h">◆ AI explanation</div><p>${distExplain(r)}</p></div>
+          <div class="ai" style="margin-top:12px"><div class="h">◆ AI explanation</div><p>${distExplain(rV)}</p></div>
         </div>
       </div>
       <div class="panel pad">
-        <div class="sec-title"><h2>Capacity forecast</h2><span class="sub">when this link runs out of headroom · ${f.modelNote||'trend model'}</span></div>
+        <div class="sec-title"><h2>Capacity forecast</h2><span class="sub">when this link runs out of headroom · ${f.modelNote||'trend model'}${hasFlt?' · always full history (unfiltered)':''}</span></div>
         ${svgLineArea([{data:r.daily.map(d=>[d.d,d.p95]),color:'#2dd4bf',wide:true,name:'Historical daily p95'},{data:proj,color:'#fb923c',dash:true,name:'Forecast'}],{h:200,bands:r.th,y1:Math.max(1,f.proj[180]*1.1),speed:r.speed})}
         <div class="legend"><span><i style="background:#2dd4bf"></i>historical p95</span><span><i style="background:#fb923c"></i>forecast</span></div>
         <div class="grid g4" style="margin-top:12px">
@@ -1594,7 +1620,7 @@ function view_historical(){
   const a=A();const r=a.ifs.find(x=>x.ifid===S.scope.id)||a.ifs.sort((x,y)=>y.risk.score-x.risk.score)[0];
   return crumb([['Historical']])+`<div class="sec-title"><h2>Historical Analysis</h2><span class="sub">compare an interface to its own baseline</span></div>
   <div class="panel pad" style="margin-bottom:14px"><label class="fld" style="max-width:420px"><span>Interface</span><select id="histSel" onchange="S.scope.id=this.value;render()">${a.ifs.map(x=>`<option value="${x.ifid}" ${x.ifid===r.ifid?'selected':''}>${esc(x.dev)} ${esc(x.intf)}</option>`).join('')}</select></label></div>
-  <div class="panel pad"><div class="sec-title"><h2>${esc(r.dev)} ${esc(r.intf)} — utilization rhythm</h2></div>${heatmap(r.heat,r.th)}
+  <div class="panel pad"><div class="sec-title"><h2>${esc(r.dev)} ${esc(r.intf)} — utilization rhythm</h2></div>${heatmap(heatV,r.th)}
   <div class="ai" style="margin-top:14px"><div class="h">◆ Deviation summary</div><p>Same-weekday baseline analysis: peak load ${peakWindow(r)}. Current p95 ${pct1(r.p95)} vs period average ${pct1(r.avg)}. ${r.forecast.growthMoM>0.05?`Running ${(r.forecast.growthMoM*100).toFixed(0)}% above the previous-month baseline.`:'In line with recent baseline.'}</p></div></div>`;
 }
 
@@ -1795,6 +1821,8 @@ function askRCA(id){
 }
 function saveRCA(id){S.rca[id]={cause:$('#rcaCause').value.trim(),steps:$('#rcaSteps').value.trim()};IDB.put('rca',S.rca);logAudit('rca.edit',id);toast('RCA saved for this link');askRCA(id);}
 function resetRCA(id){delete S.rca[id];IDB.put('rca',S.rca);logAudit('rca.reset',id);toast('RCA reverted to automatic');askRCA(id);}
+function applyTimeFilter(){S.scope.tf={from:$('#tfFrom').value||null,to:$('#tfTo').value||null,hours:$('#tfHours').value||'all'};logAudit('filter.apply',S.scope.id||'',JSON.stringify(S.scope.tf));render();}
+function clearTimeFilter(){delete S.scope.tf;render();}
 function setAiMode(m){S.aiMode=m;try{localStorage.setItem('np-aimode',m)}catch(e){}render();}
 // Self-contained, printable per-link report (NOC view) — light theme, no external refs.
 function linkReportHTML(r){
@@ -2003,7 +2031,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
