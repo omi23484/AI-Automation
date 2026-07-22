@@ -272,7 +272,7 @@ svg.donut{animation:popIn .55s cubic-bezier(.22,.61,.36,1) both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v9</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v10</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -322,12 +322,16 @@ function simRatio(a,b){if(!a||!b)return 0;const L=Math.max(a.length,b.length);re
 function percentile(arr,p){if(!arr.length)return 0;const a=[...arr].sort((x,y)=>x-y);const i=clamp(p,0,1)*(a.length-1);const lo=Math.floor(i),hi=Math.ceil(i);return a[lo]+(a[hi]-a[lo])*(i-lo);}
 function mean(a){return a.length?a.reduce((s,x)=>s+x,0)/a.length:0;}
 function std(a){if(a.length<2)return 0;const m=mean(a);return Math.sqrt(mean(a.map(x=>(x-m)**2)));}
+// Stack-safe min/max — Math.max(...arr) throws on large arrays (100k+ args).
+function amax(a,seed=-Infinity){let m=seed;for(let i=0;i<a.length;i++)if(a[i]>m)m=a[i];return m===-Infinity?0:m;}
+function amin(a,seed=Infinity){let m=seed;for(let i=0;i<a.length;i++)if(a[i]<m)m=a[i];return m===Infinity?0:m;}
 
 /* --------------------------- IndexedDB (kv store) ------------------------- */
 const IDB={db:null,
   open(){return new Promise((res,rej)=>{const r=indexedDB.open('netpulse',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>{IDB.db=r.result;res();};r.onerror=()=>rej(r.error);});},
   get(k){return new Promise(res=>{const t=IDB.db.transaction('kv').objectStore('kv').get(k);t.onsuccess=()=>res(t.result);t.onerror=()=>res(undefined);});},
-  put(k,v){return new Promise(res=>{const t=IDB.db.transaction('kv','readwrite').objectStore('kv').put(v,k);t.onsuccess=()=>res();t.onerror=()=>res();});}
+  put(k,v){return new Promise((res,rej)=>{const t=IDB.db.transaction('kv','readwrite').objectStore('kv').put(v,k);t.onsuccess=()=>res();t.onerror=()=>rej(t.error);});},
+  del(k){return new Promise(res=>{const t=IDB.db.transaction('kv','readwrite').objectStore('kv').delete(k);t.onsuccess=()=>res();t.onerror=()=>res();});}
 };
 
 /* --------------------------------- state ---------------------------------- */
@@ -346,8 +350,20 @@ const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],mainten
 
 async function loadAll(){
   await IDB.open();
-  S.samples=(await IDB.get('samples'))||[];
   S.batches=(await IDB.get('batches'))||[];
+  // Samples are stored per-batch (key spl:<batchId>) so a commit or a delete only
+  // writes/removes its own slice — never re-serializing the whole 6-month dataset.
+  const legacy=await IDB.get('samples');
+  if(legacy&&legacy.length){ // migrate old single-blob storage → per-batch keys
+    const byB={};for(const x of legacy){(byB[x.batch]=byB[x.batch]||[]).push(x);}
+    for(const bid in byB)await IDB.put('spl:'+bid,byB[bid]);
+    await IDB.del('samples');
+    S.samples=legacy;
+  }else{
+    let all=[];
+    for(const b of S.batches){const arr=await IDB.get('spl:'+b.id);if(arr&&arr.length)all=all.concat(arr);}
+    S.samples=all;
+  }
   S.audit=(await IDB.get('audit'))||[];
   S.maintenance=(await IDB.get('maintenance'))||[];
   S.comments=(await IDB.get('comments'))||{};
@@ -689,12 +705,13 @@ function validateStaged(parsed,built){
   for(const f in conf){if(conf[f]<0.62)findings.warn.push(`Low-confidence mapping: <b>${f}</b> → “${esc(parsed.headers[map[f]])}” (${Math.round(conf[f]*100)}%). Confirm in the mapping panel.`);}
   const s=built.samples;
   if(s.length===0)findings.block.push('No valid rows produced after parsing.');
-  // coverage / gaps
+  // coverage / gaps — single pass per interface, stack-safe (no spread over big arrays)
   const byIf={};for(const x of s){(byIf[x.ifid]=byIf[x.ifid]||[]).push(x.ts);}
-  let gapIf=0,intervalNote='';
-  const deltas=[];
-  for(const k in byIf){const t=byIf[k].sort((a,b)=>a-b);for(let i=1;i<t.length;i++)deltas.push(t[i]-t[i-1]);}
-  if(deltas.length){const med=percentile(deltas,0.5);intervalNote=`~${Math.round(med/60000)} min`;let gaps=0;for(const k in byIf){const t=byIf[k].sort((a,b)=>a-b);for(let i=1;i<t.length;i++)if(t[i]-t[i-1]>med*2.5)gaps++;}if(gaps)findings.warn.push(`<b>${gaps}</b> polling gap(s) detected (missing intervals beyond ~2.5× the ${intervalNote} cadence).`);}
+  let intervalNote='';const deltas=[];
+  for(const k in byIf){const t=byIf[k];t.sort((a,b)=>a-b);for(let i=1;i<t.length;i++)deltas.push(t[i]-t[i-1]);}
+  if(deltas.length){const med=percentile(deltas,0.5);intervalNote=`~${Math.round(med/60000)} min`;
+    let gaps=0;for(const d of deltas)if(d>med*2.5)gaps++;
+    if(gaps)findings.warn.push(`<b>${gaps}</b> polling gap(s) detected (missing intervals beyond ~2.5× the ${intervalNote} cadence).`);}
   if(built.issues.corrupt)findings.warn.push(`<b>${built.issues.corrupt}</b> physically impossible value(s) (rate above link capacity / utilization &gt;120% / negative) — excluded from analytics, charts and reports. These are usually poller counter-wrap artifacts; if a whole link is affected, its bandwidth column is wrong — fix the mapping or set a Speed override later in Link Manager.`);
   if(built.issues.utilRecalc)findings.info.push(`<b>${built.issues.utilRecalc}</b> row(s): supplied utilization disagreed with rate/speed — recomputed from normalized rates.`);
   if(built.issues.cellUnit)findings.info.push(`<b>${built.issues.cellUnit}</b> value(s) carried a per-cell unit (e.g. “1.5 Gbps”) — normalized to bps.`);
@@ -708,7 +725,7 @@ function validateStaged(parsed,built){
   let overlap=0;for(const x of S.samples){if(newKeys.has(x.ifid+'@'+x.ts)){overlap++;if(overlap>4999)break;}}
   if(overlap)findings.warn.push(`<b>${overlap.toLocaleString()}</b> sample(s) overlap existing data (same interface+timestamp). Overlaps are skipped on commit — history is never overwritten.`);
   // maintenance overlap
-  const tmin=Math.min(...s.map(x=>x.ts)),tmax=Math.max(...s.map(x=>x.ts));
+  let tmin=Infinity,tmax=-Infinity;for(const x of s){if(x.ts<tmin)tmin=x.ts;if(x.ts>tmax)tmax=x.ts;}
   if(S.maintenance.some(m=>m.start<tmax&&m.end>tmin))findings.info.push('Coverage intersects a maintenance window — affected samples will be tagged and excluded from alerts/SLA/trend.');
   // new entities
   const existIf=new Set(S.samples.map(x=>x.ifid));const newIf=new Set(s.map(x=>x.ifid).filter(i=>!existIf.has(i)));
@@ -722,24 +739,29 @@ function coverageOf(samples){
   const med=deltas.length?percentile(deltas,0.5):0;
   return {cov:[ts[0],ts.at(-1)],checksum:samples.length+'|'+ts[0]+'|'+ts.at(-1),intervalNote:med?`~${Math.round(med/60000)} min`:''};
 }
-function commitStaged(){
+async function commitStaged(){
   const st=S.staged;if(!st)return;
+  const big=st.built.samples.length>50000;
+  if(big)toast(`⏳ Committing ${st.built.samples.length.toLocaleString()} samples across ${st.group.length} file(s)…`);
+  await new Promise(r=>setTimeout(r,big?30:0)); // let the toast paint before the heavy loop
   const existKeys=new Set(S.samples.map(x=>x.ifid+'@'+x.ts));
   let totalAdded=0;const map=st.parsed.resolved.map;
   for(const pf of st.group){
     const batchId='b'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
-    let added=0;
+    const batchSamples=[];
     for(const x of pf.built.samples){const k=x.ifid+'@'+x.ts;if(existKeys.has(k))continue;x.batch=batchId;
       if(S.maintenance.some(m=>m.start<=x.ts&&m.end>=x.ts&&(m.scope==='all'||m.target===x.ifid||m.target===x.dev)))x.maint=1;
-      S.samples.push(x);existKeys.add(k);added++;}
+      existKeys.add(k);batchSamples.push(x);}
+    for(const x of batchSamples)S.samples.push(x);
+    await IDB.put('spl:'+batchId,batchSamples); // per-batch write — cost is this file, not the whole dataset
     if(pf.built.info)for(const k in pf.built.info)S.ifinfo[k]=Object.assign(S.ifinfo[k]||{},pf.built.info[k]);
-    const cv=coverageOf(pf.built.samples);
-    S.batches.unshift({id:batchId,file:pf.parsed.name,ts:Date.now(),who:S.role,rows:pf.parsed.rowCount,added,
+    const cv=coverageOf(batchSamples);
+    S.batches.unshift({id:batchId,file:pf.parsed.name,ts:Date.now(),who:S.role,rows:pf.parsed.rowCount,added:batchSamples.length,
       coverage:cv.cov,checksum:cv.checksum,src:'xlsx',intervalNote:cv.intervalNote,
-      entities:new Set(pf.built.samples.map(x=>x.ifid)).size,map,headers:pf.parsed.headers});
-    totalAdded+=added;
+      entities:new Set(batchSamples.map(x=>x.ifid)).size,map,headers:pf.parsed.headers});
+    totalAdded+=batchSamples.length;
   }
-  save('ifinfo');save('samples');save('batches');
+  save('ifinfo');save('batches');
   logAudit('upload.commit',st.parsed.name,`${totalAdded} samples across ${st.group.length} file(s)`);
   S.analytics=null;
   toast(`✅ Committed ${st.group.length} file(s) — ${totalAdded.toLocaleString()} new samples`);
@@ -816,10 +838,10 @@ function computeAnalytics(){
     const speedTx=s.map(x=>x.speedTx).filter(Boolean).pop()||speed;
     const speedRx=s.map(x=>x.speedRx).filter(Boolean).pop()||speed;
     const utils=s.map(x=>x.util).filter(v=>v!=null&&v>=0&&v<=3);
-    const p95=percentile(utils,0.95),p99=percentile(utils,0.99),avg=mean(utils),mx=Math.max(0,...utils);
+    const p95=percentile(utils,0.95),p99=percentile(utils,0.99),avg=mean(utils),mx=amax(utils,0);
     // peak-column analytics (microbursts the averages hide)
     const pus=s.map(x=>x.pu).filter(v=>v!=null&&v>=0&&v<=3);
-    const pkP95=pus.length?percentile(pus,0.95):null,pkMax=pus.length?Math.max(...pus):null;
+    const pkP95=pus.length?percentile(pus,0.95):null,pkMax=pus.length?amax(pus):null;
     // distribution (time-in-state)
     const dist={normal:0,warning:0,high:0,critical:0};for(const u of utils)dist[stateOfT(u,tRes)]++;
     const tot=utils.length||1;for(const k in dist)dist[k]/=tot;
@@ -992,12 +1014,24 @@ function A(){return S.analytics||computeAnalytics();}
    wheel zoom, drag pan, double-click reset. Charts register in CHARTS and are
    re-drawn against the current view window (vx0..vx1). */
 const CHARTS={};let chartSeq=0;
+// Min/max envelope downsample: keep the extreme point in each bucket so spikes
+// survive while the rendered point count stays bounded regardless of data size.
+function downsampleMM(d,maxPts){
+  if(d.length<=maxPts)return d;
+  const bucket=Math.ceil(d.length/(maxPts/2)),out=[];
+  for(let i=0;i<d.length;i+=bucket){
+    let mn=d[i],mx=d[i];const end=Math.min(i+bucket,d.length);
+    for(let j=i;j<end;j++){if(d[j][1]<mn[1])mn=d[j];if(d[j][1]>mx[1])mx=d[j];}
+    if(mn[0]<=mx[0]){out.push(mn);if(mx!==mn)out.push(mx);}else{out.push(mx);out.push(mn);}
+  }
+  return out;
+}
 function svgLineArea(series,opts={}){
   const all=series.flatMap(s=>s.data).filter(p=>p&&p[1]!=null);
   if(!all.length)return `<div class="empty">No data</div>`;
   const id='ch'+(++chartSeq);
   const xs=all.map(p=>p[0]);
-  const cfg={id,series,opts,fx0:Math.min(...xs),fx1:Math.max(...xs)};
+  const cfg={id,series,opts,fx0:amin(xs),fx1:amax(xs)};
   if(cfg.fx1===cfg.fx0)cfg.fx1=cfg.fx0+1;
   cfg.vx0=cfg.fx0;cfg.vx1=cfg.fx1;
   CHARTS[id]=cfg;
@@ -1008,7 +1042,7 @@ function chartSVG(cfg,animate){
   const w=opts.w||760,h=opts.h||220,pad={l:44,r:14,t:14,b:26};
   const x0=cfg.vx0,x1=cfg.vx1;
   const inView=series.flatMap(s=>s.data).filter(p=>p&&p[1]!=null&&p[0]>=x0&&p[0]<=x1);
-  const y1=opts.y1!=null?opts.y1:Math.max(0.01,Math.min((inView.length?Math.max(...inView.map(p=>p[1])):1)*1.15,2));
+  const y1=opts.y1!=null?opts.y1:Math.max(0.01,Math.min((inView.length?amax(inView.map(p=>p[1])):1)*1.15,2));
   Object.assign(cfg,{w,h,pad,y1});
   const X=v=>pad.l+(v-x0)/(x1-x0||1)*(w-pad.l-pad.r);
   const Y=v=>h-pad.b-(v/y1)*(h-pad.t-pad.b);
@@ -1026,6 +1060,7 @@ function chartSVG(cfg,animate){
     const iA=d.findIndex(p=>p[0]>=x0),iB=(()=>{for(let i=d.length-1;i>=0;i--)if(d[i][0]<=x1)return i;return -1;})();
     d=d.slice(Math.max(0,(iA<0?0:iA)-1),(iB<0?d.length:iB)+2);
     if(!d.length)return;
+    d=downsampleMM(d,1400); // bound rendered points so 40k+-sample series stay fast; spikes preserved
     const line=d.map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join(' ');
     if(s.area)paths+=`<path class="${animate?'areafill':''}" ${animate?'':'opacity=".13"'} d="${line} L${X(d.at(-1)[0]).toFixed(1)} ${Y(0)} L${X(d[0][0]).toFixed(1)} ${Y(0)} Z" fill="${s.color}"/>`;
     paths+=`<path class="${animate?(s.dash?'drawdash':'draw'):''}" pathLength="1" d="${line}" fill="none" stroke="${s.color}" stroke-width="${s.wide?2.2:1.6}" stroke-linejoin="round" ${s.dash?'stroke-dasharray="4 4"':''}/>`;
@@ -1052,8 +1087,9 @@ function chartHover(cfg,e){
   if(px<cfg.pad.l-4||px>cfg.w-cfg.pad.r+4){tip.style.display='none';if(hg)hg.innerHTML='';return;}
   const speed=cfg.opts.speed;let rows='',marks='',t=null;
   for(const s of cfg.series){
-    const d=s.data.filter(p=>p[1]!=null&&p[0]>=cfg.vx0&&p[0]<=cfg.vx1);if(!d.length)continue;
-    let best=d[0];for(const p of d)if(Math.abs(p[0]-dataX)<Math.abs(best[0]-dataX))best=p;
+    let best=null,bd=Infinity; // single pass, no per-move array allocation
+    for(const p of s.data){if(p[1]==null||p[0]<cfg.vx0||p[0]>cfg.vx1)continue;const dd=Math.abs(p[0]-dataX);if(dd<bd){bd=dd;best=p;}}
+    if(!best)continue;
     if(t==null||Math.abs(best[0]-dataX)<Math.abs(t-dataX))t=best[0];
     rows+=`<div class="trow"><i style="background:${s.color}"></i>${esc(s.name||'value')}<b>${pct1(best[1])}${speed?` · ${fmtBps(best[1]*speed)}`:''}</b></div>`;
     marks+=`<circle cx="${cfg.X(best[0]).toFixed(1)}" cy="${cfg.Y(best[1]).toFixed(1)}" r="3.4" fill="${s.color}" stroke="var(--bg2)" stroke-width="1.4"/>`;
@@ -1238,7 +1274,7 @@ function view_intf(){
   const txs=r.samples.map(x=>x.tx).filter(v=>v!=null),rxs=r.samples.map(x=>x.rx).filter(v=>v!=null);
   const pks=r.samples.map(x=>x.pu).filter(v=>v!=null);
   const puS=r.samples.filter(x=>x.pu!=null).map(x=>[x.ts,x.pu]);
-  const bwSub=(txs.length&&rxs.length)?`Transmit p95 ${fmtBps(percentile(txs,0.95))} · Received p95 ${fmtBps(percentile(rxs,0.95))}${pks.length?` · Peak ${pct1(Math.max(...pks))}`:''}`:'Transmit / Received with threshold bands';
+  const bwSub=(txs.length&&rxs.length)?`Transmit p95 ${fmtBps(percentile(txs,0.95))} · Received p95 ${fmtBps(percentile(rxs,0.95))}${pks.length?` · Peak ${pct1(amax(pks))}`:''}`:'Transmit / Received with threshold bands';
   // forecast chart series
   const lastD=r.daily.at(-1)?.d||Date.now();
   const proj=[0,30,60,90,180].map(dd=>[lastD+dd*86400000,clamp(f.current+f.slopePerDay*dd,0,2)]);
@@ -1587,19 +1623,23 @@ function removeBatch(id){
   if(!confirm(`Delete batch “${b.file}” and its ${b.added} samples? Use this to undo an upload committed with a wrong mapping.`))return;
   S.samples=S.samples.filter(x=>x.batch!==id);
   S.batches=S.batches.filter(x=>x.id!==id);
-  save('samples');save('batches');logAudit('upload.remove',b.file,`${b.added} samples deleted`);
+  IDB.del('spl:'+id);save('batches');logAudit('upload.remove',b.file,`${b.added} samples deleted`);
   S.analytics=null;render();toast('Batch removed — analytics recomputed');
 }
-function resetAll(){if(!confirm('Delete all uploaded data, batches, config and audit? This cannot be undone.'))return;S.samples=[];S.batches=[];S.maintenance=[];S.comments={};S.analytics=null;save('samples');save('batches');save('maintenance');save('comments');logAudit('data.reset','all');toast('All data cleared');go('uploads');}
+async function resetAll(){if(!confirm('Delete all uploaded data, batches, config and audit? This cannot be undone.'))return;
+  for(const b of S.batches)await IDB.del('spl:'+b.id);await IDB.del('samples');
+  S.samples=[];S.batches=[];S.maintenance=[];S.comments={};S.analytics=null;save('batches');save('maintenance');save('comments');logAudit('data.reset','all');toast('All data cleared');go('uploads');}
 
 async function handleFiles(files){
   files=Array.from(files);
   const list=[];
-  for(const f of files){
+  const progress=(i)=>{const dz=$('#dz');if(dz)dz.innerHTML=`<div style="font-size:34px;opacity:.6">⏳</div><h3 style="margin:8px 0">Parsing file ${i} of ${files.length}…</h3><p class="small">Large multi-file uploads are read one at a time in your browser. Please wait.</p>`;};
+  for(let i=0;i<files.length;i++){const f=files[i];
+    if(files.length>1){progress(i+1);await new Promise(r=>setTimeout(r,0));} // yield so the progress paints
     try{const parsed=await ingestFile(f);const built=buildSamples(parsed.rows,parsed.resolved,parsed.name,'staged');list.push({parsed,built});}
     catch(e){toast('❌ '+esc(f.name)+': '+esc(e.message));console.error(e);}
   }
-  if(!list.length)return;
+  if(!list.length){render();return;}
   // Group files by identical header layout — each group is mapped only once.
   const groups={};
   for(const pf of list){const sig=pf.parsed.headers.map(h=>norm(h)).join('¦');(groups[sig]=groups[sig]||[]).push(pf);}
@@ -1643,7 +1683,7 @@ function genDemo(){
   const batchId='b'+Date.now();built.samples.forEach(x=>x.batch=batchId);
   S.samples=S.samples.concat(built.samples);
   S.batches.unshift({id:batchId,file:'demo_polling_14d.xlsx',ts:Date.now(),who:S.role,rows:rows.length,added:built.samples.length,coverage:[start,now],checksum:'demo',src:'demo',intervalNote:'~60 min',entities:new Set(built.samples.map(x=>x.ifid)).size,map:resolved.map,headers});
-  save('samples');save('batches');logAudit('demo.generate','',built.samples.length+' samples');
+  IDB.put('spl:'+batchId,built.samples);save('batches');logAudit('demo.generate','',built.samples.length+' samples');
   S.analytics=null;toast('✨ Demo data generated — '+built.samples.length.toLocaleString()+' samples');go('exec');
 }
 
