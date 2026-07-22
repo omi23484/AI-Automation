@@ -289,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v22</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v23</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1658,7 +1658,7 @@ function view_historical(){
   const a=A();const r=a.ifs.find(x=>x.ifid===S.scope.id)||a.ifs.sort((x,y)=>y.risk.score-x.risk.score)[0];
   return crumb([['Historical']])+`<div class="sec-title"><h2>Historical Analysis</h2><span class="sub">compare an interface to its own baseline</span></div>
   <div class="panel pad" style="margin-bottom:14px"><label class="fld" style="max-width:420px"><span>Interface</span><select id="histSel" onchange="S.scope.id=this.value;render()">${a.ifs.map(x=>`<option value="${x.ifid}" ${x.ifid===r.ifid?'selected':''}>${esc(x.dev)} ${esc(x.intf)}</option>`).join('')}</select></label></div>
-  <div class="panel pad"><div class="sec-title"><h2>${esc(r.dev)} ${esc(r.intf)} — utilization rhythm</h2></div>${heatmap(heatV,r.th,r.thOff,r.speed)}
+  <div class="panel pad"><div class="sec-title"><h2>${esc(r.dev)} ${esc(r.intf)} — utilization rhythm</h2></div>${heatmap(r.heat,r.th,r.thOff,r.speed)}
   <div class="ai" style="margin-top:14px"><div class="h">◆ Deviation summary</div><p>Same-weekday baseline analysis: peak load ${peakWindow(r)}. Current p95 ${pct1(r.p95)} vs period average ${pct1(r.avg)}. ${r.forecast.growthMoM>0.05?`Running ${(r.forecast.growthMoM*100).toFixed(0)}% above the previous-month baseline.`:'In line with recent baseline.'}</p></div></div>`;
 }
 
