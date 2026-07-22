@@ -285,7 +285,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v18</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v19</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1504,7 +1504,7 @@ function view_intf(){
     <h3>${esc(r.dev)} · ${esc(r.intf)} — ${esc(r.verdict.title)}</h3>
     <div class="reason">${r.verdict.reason}</div>
     <div class="act">▸ ${r.verdict.action} <span class="conf">· confidence ${(r.verdict.confidence*100).toFixed(0)}% · ${r.verdict.comparison}</span></div>
-    <div style="margin-top:10px" class="flex"><button class="btn sm ghost" onclick="askRCA('${r.ifid}')">🔍 Explain (RCA)</button><button class="btn sm ghost" onclick="genReport('intf','${r.ifid}')">▦ Add to report</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','html')">⤓ Export HTML</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','pdf')">🖨 Export PDF</button></div>
+    <div style="margin-top:10px" class="flex"><button class="btn sm ghost" onclick="askRCA('${r.ifid}')">🔍 Explain (RCA)</button><button class="btn sm ghost" onclick="genReport('intf','${r.ifid}')">▦ Add to report</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','html')">⤓ Export HTML</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','pdf')">🖨 Export PDF</button><button class="btn sm ghost" onclick="genUpgradePolicyXlsx('${r.ifid}')">📊 Policy hits .xlsx</button></div>
   </div>
   <div class="panel pad" style="margin-bottom:16px"><div class="flex" style="gap:14px;align-items:flex-end">
     <span class="small" style="font-weight:700;padding-bottom:9px">⧩ Filter</span>
@@ -1757,7 +1757,20 @@ function view_maintenance(){
 }
 function view_reports(){
   const reports=[['exec','Executive Summary'],['capacity','Weekly Capacity Report'],['trend','Monthly Trend Report'],['busy','Top Busy Links'],['critical','Top Critical Links'],['idle','Idle Links'],['impact','Business Impact Report']];
+  const links=S.samples.length?[...A().ifs].sort((x,y)=>x.dev.localeCompare(y.dev)||x.intf.localeCompare(y.intf)):[];
+  const ur=S.cfg.upgradeRule;
   return crumb([['Reports']])+`<div class="sec-title"><h2>Business Reports</h2><span class="sub">generated · grounded · exportable</span></div>
+  <div class="panel pad" style="margin-bottom:16px">
+    <div class="sec-title"><h2>📊 Upgrade Policy Hits — Excel report</h2><span class="sub">customer-facing .xlsx: every timestamp the upgrade threshold was crossed, with the utilization at that moment</span></div>
+    <div class="flex" style="gap:12px">
+      <label class="fld" style="margin:0;min-width:300px"><span>Scope</span><select id="upXlsxScope" style="width:100%" ${links.length?'':'disabled'}>
+        <option value="all">All links</option>
+        ${links.map(r=>`<option value="${esc(r.ifid)}">${esc(r.dev)} ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''}</option>`).join('')}
+      </select></label>
+      <button class="btn" style="margin-top:16px" ${links.length?'':'disabled'} onclick="genUpgradePolicyXlsx($('#upXlsxScope').value)">⤓ Generate .xlsx</button>
+      <span class="mini" style="margin-top:16px">policy: util &gt; ${ur.utilPct}%${ur.businessHoursOnly?' in business hours':''} for ${ur.days} day(s) — edit in Admin → Link upgrade policy · two sheets: Summary + Policy Hits</span>
+    </div>
+  </div>
   <div class="grid g3">${reports.map(([k,l])=>`<div class="panel pad"><div class="sec-title"><h2 style="font-size:14px">${l}</h2></div><div class="flex"><button class="btn sm" onclick="genReport('${k}')">Generate</button></div></div>`).join('')}</div>
   <div id="reportOut" style="margin-top:16px"></div>`;
 }
@@ -1833,6 +1846,92 @@ function genReport(kind,id){
   else{go('reports');setTimeout(()=>{$('#reportOut').innerHTML=html;},50);}
 }
 function exportReport(title){const el=$('#rpt');if(!el)return;const blob=new Blob([`<!doctype html><meta charset=utf8><title>${title}</title><body style="background:#0a0e17;color:#e6edf7;font-family:sans-serif;padding:30px">${el.innerHTML}</body>`],{type:'text/html'});dl(blob,title.replace(/\W+/g,'_')+'.html');logAudit('report.export',title);}
+/* ---- Minimal XLSX writer: real .xlsx via stored (uncompressed) ZIP entries.
+   No libraries — CRC32 + OOXML worksheet XML with inline strings. ---- */
+const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
+function crc32(u8){let c=0xFFFFFFFF;for(let i=0;i<u8.length;i++)c=CRC_T[(c^u8[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
+function zipStore(files){ // [{name,text}] → Blob (ZIP, method 0)
+  const enc=new TextEncoder();const parts=[];const central=[];let off=0;
+  const d=new Date();const dosTime=(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1);
+  const dosDate=((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate();
+  for(const f of files){
+    const name=enc.encode(f.name),data=enc.encode(f.text),crc=crc32(data);
+    const lh=new DataView(new ArrayBuffer(30));
+    lh.setUint32(0,0x04034b50,true);lh.setUint16(4,20,true);
+    lh.setUint16(10,dosTime,true);lh.setUint16(12,dosDate,true);lh.setUint32(14,crc,true);
+    lh.setUint32(18,data.length,true);lh.setUint32(22,data.length,true);lh.setUint16(26,name.length,true);
+    parts.push(lh.buffer,name,data);
+    central.push({name,crc,size:data.length,off});
+    off+=30+name.length+data.length;
+  }
+  const cdParts=[];let cdSize=0;
+  for(const c of central){
+    const ch=new DataView(new ArrayBuffer(46));
+    ch.setUint32(0,0x02014b50,true);ch.setUint16(4,20,true);ch.setUint16(6,20,true);
+    ch.setUint16(12,dosTime,true);ch.setUint16(14,dosDate,true);ch.setUint32(16,c.crc,true);
+    ch.setUint32(20,c.size,true);ch.setUint32(24,c.size,true);ch.setUint16(28,c.name.length,true);
+    ch.setUint32(42,c.off,true);
+    cdParts.push(ch.buffer,c.name);cdSize+=46+c.name.length;
+  }
+  const eocd=new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0,0x06054b50,true);eocd.setUint16(8,central.length,true);eocd.setUint16(10,central.length,true);
+  eocd.setUint32(12,cdSize,true);eocd.setUint32(16,off,true);
+  return new Blob([...parts,...cdParts,eocd.buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+const xmlEsc=v=>String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function colL(i){let t='';i++;while(i>0){t=String.fromCharCode(64+((i-1)%26+1))+t;i=Math.floor((i-1)/26);}return t;}
+function sheetXML(rows){
+  let out='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
+  rows.forEach((row,ri)=>{out+=`<row r="${ri+1}">`;
+    row.forEach((v,ci)=>{if(v==null||v==='')return;const ref=colL(ci)+(ri+1);
+      if(typeof v==='number'&&isFinite(v))out+=`<c r="${ref}"><v>${v}</v></c>`;
+      else out+=`<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;});
+    out+='</row>';});
+  return out+'</sheetData></worksheet>';
+}
+function xlsxBlob(sheets){ // [{name,rows:[[...]]}] → .xlsx Blob
+  const files=[
+    {name:'[Content_Types].xml',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')+'</Types>'},
+    {name:'_rels/.rels',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'},
+    {name:'xl/workbook.xml',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'+sheets.map((sh,i)=>`<sheet name="${xmlEsc(sh.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')+'</sheets></workbook>'},
+    {name:'xl/_rels/workbook.xml.rels',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')+'</Relationships>'}
+  ];
+  sheets.forEach((sh,i)=>files.push({name:`xl/worksheets/sheet${i+1}.xml`,text:sheetXML(sh.rows)}));
+  return zipStore(files);
+}
+/* ---- Upgrade Policy Hits report (.xlsx): per link or all links, every timestamp
+   the upgrade threshold was crossed and the utilization at that moment. ---- */
+function genUpgradePolicyXlsx(scope){
+  if(!S.samples.length){toast('No data yet');return;}
+  const a=A();const list=scope==='all'?a.ifs:a.ifs.filter(r=>r.ifid===scope);
+  if(!list.length){toast('Link not found');return;}
+  const p2=n=>String(n).padStart(2,'0');
+  const fmtTs=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`;};
+  const summary=[
+    ['NetPulse — Link Upgrade Policy Report'],
+    [`Generated: ${new Date().toLocaleString()}`,'',`Scope: ${scope==='all'?'all links':list[0].dev+' '+list[0].intf}`],
+    [],
+    ['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)','Policy threshold %','Policy days','Business hours only','Days threshold hit','Total hits','Upgrade trigger met','Busy p95 %','Verdict']];
+  const hits=[['Device','Interface','Site','Timestamp','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Business hours','Policy threshold %']];
+  const MAXH=50000;let truncated=false,totalHits=0;
+  for(const r of list){
+    const ur=r.upgradeRule;const thr=ur.utilPct/100;
+    const rhits=r.samples.filter(x=>x.util!=null&&x.util>=thr&&(!ur.businessHoursOnly||isBH(x.ts)));
+    totalHits+=rhits.length;
+    summary.push([r.dev,r.intf,r.linkname||'',r.site,r.cls,r.impact,r.speed?+(r.speed/1e6).toFixed(0):'',ur.utilPct,ur.days,ur.businessHoursOnly?'Yes':'No',r.upgradeDays,rhits.length,r.upgradeNeeded?'YES':'no',+(r.p95*100).toFixed(1),r.verdict.title]);
+    for(const x of rhits){
+      if(hits.length>MAXH){truncated=true;break;}
+      hits.push([r.dev,r.intf,r.site,fmtTs(x.ts),+((x.util*100).toFixed(2)),x.tx!=null?+((x.tx/1e6).toFixed(1)):'',x.rx!=null?+((x.rx/1e6).toFixed(1)):'',r.speed?+((r.speed/1e6).toFixed(0)):'',isBH(x.ts)?'Yes':'No',ur.utilPct]);
+    }
+    if(truncated)break;
+  }
+  if(truncated)hits.push(['NOTE: hit list truncated at 50,000 rows — narrow the scope (single link or shorter window) for full detail']);
+  const blob=xlsxBlob([{name:'Summary',rows:summary},{name:'Policy Hits',rows:hits}]);
+  const fname=`NetPulse_Upgrade_Policy_${scope==='all'?'AllLinks':(list[0].dev+'_'+list[0].intf).replace(/\W+/g,'_')}_${new Date().toISOString().slice(0,10)}.xlsx`;
+  dl(blob,fname);
+  logAudit('report.export.xlsx',scope==='all'?'all links':scope,`${totalHits} policy hit rows`);
+  toast(`📊 Excel report downloaded — ${totalHits.toLocaleString()} policy hit(s)`);
+}
 function dl(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;a.click();URL.revokeObjectURL(u);}
 function exportAll(){dl(new Blob([JSON.stringify({batches:S.batches,samples:S.samples,cfg:S.cfg,audit:S.audit},null,0)],{type:'application/json'}),'netpulse_export.json');logAudit('data.export','all');}
 
@@ -2088,7 +2187,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>

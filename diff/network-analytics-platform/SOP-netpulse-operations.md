@@ -161,6 +161,7 @@ Samples inside a maintenance window are **tagged and excluded** from alerts, SLA
 ## 8. Reports & Audit
 
 - **Reports**: generate Executive Summary, Weekly Capacity, Monthly Trend, Top Busy/Growing/Critical/Idle Links, Business Impact. Preview, then **Export HTML** or **🖨 PDF**. Per-link reports export from the interface page (§4).
+- **Upgrade Policy Hits — Excel (.xlsx)**: a customer-facing spreadsheet listing every timestamp a link crossed the upgrade policy threshold and the exact utilization at that moment. Choose **Scope** = *All links* or a single link, click **Generate .xlsx**. Also available per link via the **📊 Policy hits .xlsx** button on the interface page. The file has two sheets: **Summary** (one row per link — capacity, policy settings, days-hit, total hits, whether the upgrade trigger was met, p95, verdict) and **Policy Hits** (one row per breach — Device, Interface, Site, Timestamp, Utilization %, Transmit/Received Mbps, Capacity, Business-hours flag, threshold). Utilization/bandwidth are stored as real numbers so the customer can sort and chart. The threshold/days/business-hours-only come from **Admin → Link upgrade policy**. (Very large all-links exports cap the hit list at 50,000 rows — narrow the scope for full detail.)
 - **Audit Log**: append-only record of every action (uploads, mapping/threshold/policy changes, per-link edits, RCA edits, exports, resets). Read-only. Use it as compliance evidence.
 
 ---
