@@ -1674,9 +1674,12 @@ const Traffic=(function(){
       maxUtilPct:null, avgUtilPct:null, peakToAvg:null, p95GapRx:null, p95GapTx:null,
       active:false, series:s
     };
+    m.overSpeed=0;
     if(speed&&speed>0){
       const utilArr=s.map(x=>Math.max(x.rx==null?0:x.rx,x.tx==null?0:x.tx)/speed*100);
       m.maxUtilPct=Stats.max(utilArr);m.avgUtilPct=Stats.avg(utilArr);
+      // physically impossible samples (rate > link speed) — data-quality flag, not real load
+      m.overSpeed=s.filter(x=>Math.max(x.rx==null?0:x.rx,x.tx==null?0:x.tx)>speed*1.02).length;
     }
     const peakBoth=Math.max(m.maxRx||0,m.maxTx||0);
     const avgBoth=Math.max(m.avgRx||0,m.avgTx||0);
@@ -1808,20 +1811,27 @@ const Multicast=(function(){
     const out=[];
     Store.S.groupIndex.forEach((members,g)=>{
       const switches=new Set(),blocks=new Set(),vlans=new Set(),feeds=new Set();
-      let ifaceObjs=[],totalTx=0,ifWithDisc=0;
+      let ifaceObjs=[],ifWithDisc=0;const perTx=[];
       members.forEach(m=>{
         const it=Store.S.ifaceIndex.get(Store.ikey(m.deviceKey,m.iface));
         if(!it)return;
         switches.add(m.deviceKey);if(it.block)blocks.add(m.deviceKey+"/"+it.block);
         if(it.vlan)vlans.add(it.vlan);if(it.feed)feeds.add(it.feed);
         ifaceObjs.push(it);
-        if(it.metrics)totalTx+=(it.metrics.maxTx||0);
+        // NOTE: interface TX is the port's TOTAL egress, not this group's stream. A
+        // multicast group is one stream replicated to many ports, so summing per-port
+        // TX overstates bandwidth (well-known NetFlow multicast pitfall). We report the
+        // BUSIEST carrying port (physically <= link speed) and a median, never the sum.
+        if(it.metrics&&it.metrics.maxTx!=null)perTx.push(it.metrics.maxTx);
         if(it.counters){const td=CounterEngine.windowDelta(it.counters.td,win.w0,win.w1,win.pred).delta;
           const rd=CounterEngine.windowDelta(it.counters.rd,win.w0,win.w1,win.pred).delta;
           if(td+rd>0)ifWithDisc++;}
       });
+      perTx.sort((a,b)=>a-b);
+      const busiestTx=perTx.length?perTx[perTx.length-1]:0;
+      const medianTx=perTx.length?perTx[Math.floor((perTx.length-1)/2)]:0;
       out.push({group:g,valid:Normalize.mcastGroup(g).valid,switches,blocks,vlans,feeds,
-        ifaces:ifaceObjs,ifaceCount:ifaceObjs.length,totalTx,ifWithDisc,
+        ifaces:ifaceObjs,ifaceCount:ifaceObjs.length,busiestTx,medianTx,ifWithDisc,
         affectedBlocks:blocks.size});
     });
     return out.sort((a,b)=>b.ifaceCount-a.ifaceCount);
@@ -3478,8 +3488,8 @@ UI.mcRenderTab=function(){
   if(!body)return;
   if(UI._mcTab==="groups"){
     const rows=groups.map(g=>({g,group:g.group,sw:g.switches.size,ifc:g.ifaceCount,blk:g.affectedBlocks,
-      vlans:[...g.vlans].join(","),feeds:[...g.feeds].join(","),tx:g.totalTx,disc:g.ifWithDisc,valid:g.valid}));
-    body.innerHTML="<div id='mcgTbl'></div>";
+      vlans:[...g.vlans].join(","),feeds:[...g.feeds].join(","),tx:g.busiestTx,disc:g.ifWithDisc,valid:g.valid}));
+    body.innerHTML="<div class='assump'><span class='i'>▲</span>Interface TX is the port's <b>total egress</b>, not this group's stream. A multicast group is one stream replicated to many ports, so summing per-port rates overstates bandwidth (~N×). We show the <b>busiest carrying port</b> (≤ link speed). True per-group rate needs per-(S,G) counters.</div><div id='mcgTbl'></div>";
     Table.make(document.getElementById("mcgTbl"),{exportName:"multicast-groups",pageSize:25,sort:"ifc",dir:-1,
       onRowClick:r=>UI.go("mcgroup",{group:r.group}),rows,columns:[
         {key:"group",label:"Group",render:r=>"<b>"+U.esc(r.group)+"</b>"+(r.valid?"":" <span class='mini' style='color:var(--warn)'>(non-mcast)</span>")},
@@ -3487,7 +3497,7 @@ UI.mcRenderTab=function(){
         {key:"blk",label:"Blocks",cls:"num"},
         {key:"vlans",label:"VLANs",render:r=>U.esc(r.vlans||"—")},
         {key:"feeds",label:"Feeds",cls:"txt",render:r=>U.esc(r.feeds||"—")},
-        {key:"tx",label:"Peak TX (facing IFs)",cls:"num",render:r=>U.mbps(r.tx)},
+        {key:"tx",label:"Busiest Carrying IF",cls:"num",render:r=>U.mbps(r.tx)},
         {key:"disc",label:"IFs w/ Disc",cls:"num",render:r=>r.disc?("<span style='color:var(--warn)'>"+r.disc+"</span>"):"0"}
       ]});
   } else if(UI._mcTab==="switch"){
@@ -3532,8 +3542,8 @@ UI.mcRenderTab=function(){
         {key:"disc",label:"Discard Δ",cls:"num",render:r=>r.disc?("<span style='color:var(--warn)'>"+U.n(r.disc)+"</span>"):"0"}
       ]});
   } else if(UI._mcTab==="traffic"){
-    const items=groups.slice(0,15).map(g=>({label:g.group,value:g.totalTx,color:"#22d3ee",onClick:()=>UI.go("mcgroup",{group:g.group})}));
-    body.innerHTML=UI.h.panel("Peak TX on multicast-facing interfaces by group "+UI.info("Sum of member-interface peak TX. This is traffic on ports carrying the group, not per-group traffic measurement."),"<canvas id='mcTxBar'></canvas>");
+    const items=groups.slice(0,15).map(g=>({label:g.group,value:g.busiestTx,color:"#22d3ee",onClick:()=>UI.go("mcgroup",{group:g.group})}));
+    body.innerHTML=UI.h.panel("Busiest carrying interface per group "+UI.info("Peak TX of the single busiest port carrying each group (≤ link speed). This is the port's total egress, not the group's own stream rate — per-group bandwidth requires per-(S,G) counters."),"<canvas id='mcTxBar'></canvas>");
     Chart.barH(document.getElementById("mcTxBar"),items,{labelW:110,fmt:U.mbps,height:Math.max(60,items.length*24+16)});
   } else if(UI._mcTab==="discard"){
     const rows=groups.filter(g=>g.ifWithDisc>0).map(g=>({g,group:g.group,sw:g.switches.size,ifc:g.ifaceCount,disc:g.ifWithDisc,blk:g.affectedBlocks}));
@@ -3557,18 +3567,20 @@ UI.renderMcGroup=function(group){
   let html=UI.h.crumbs([{label:"Multicast",act:"UI.go('multicast')"},{label:group}]);
   html+=UI.h.page("Multicast Group "+group,(g.valid?"":"⚠ not a valid IPv4 multicast · ")+g.ifaceCount+" interfaces on "+g.switches.size+" switches",
     "<button class='btn' onclick=\"UI.compareGroup('"+U.esc(group)+"')\">⇄ Compare interfaces</button>");
+  // pick the busiest carrying interface (physically real, <= link speed) as the headline
+  const busiestIf=g.ifaces.slice().sort((a,b)=>((b.metrics&&b.metrics.maxTx)||0)-((a.metrics&&a.metrics.maxTx)||0))[0];
   html+="<div class='kpi-grid'>"
-    +UI.h.kpi("Switches",g.switches.size,"")+UI.h.kpi("Interfaces",g.ifaceCount,"")
+    +UI.h.kpi("Switches",g.switches.size,"")+UI.h.kpi("Interfaces",g.ifaceCount,"fan-out")
     +UI.h.kpi("Blocks",g.affectedBlocks,"distinct switch/block")
-    +UI.h.kpi("Peak Agg. TX",U.gbps(agg.peakTx.v),agg.peakTx.t?("@ "+U.ts(agg.peakTx.t)):"","","Max over time buckets of summed TX across all interfaces carrying this group.")
-    +UI.h.kpi("Aggregate Discard Δ",U.n(agg.totalDisc),agg.portsWithDisc+" of "+g.ifaceCount+" IFs",agg.totalDisc?"warn":"ok")
-    +UI.h.kpi("IFs w/ Discards",g.ifWithDisc,"",g.ifWithDisc?"warn":"ok")
+    +UI.h.kpi("Busiest Carrying IF",U.mbps(g.busiestTx),busiestIf?(busiestIf.device.replace(/^.*-/,"")+" "+busiestIf.ifaceShort):"","","Peak TX of the single busiest port carrying this group (≤ link speed). This is the port's TOTAL egress, not this group's own stream — multicast replicates one stream to many ports, so summing per-port rates is invalid.")
+    +UI.h.kpi("Median Facing IF TX",U.mbps(g.medianTx),"rough stream proxy","","Median of per-port peak TX across carrying interfaces — a rough proxy for the replicated stream rate. True per-group rate needs per-(S,G) counters.")
+    +UI.h.kpi("IFs w/ Discards",g.ifWithDisc,"of "+g.ifaceCount,g.ifWithDisc?"warn":"ok")
     +"</div>";
-  // aggregate traffic + discard timeline across carrying interfaces
-  html+=UI.h.panel("Group Traffic &amp; Discards Across Carrying Interfaces "+UI.info("Summed RX/TX of every interface carrying this group per time bucket; markers = discard/error delta events on those interfaces."),
+  // busiest-interface timeline (real) + combined fan-out footprint (labeled) + discard markers
+  html+=UI.h.panel("Traffic &amp; Discards on Carrying Interfaces "+UI.info("Blue line = the busiest single carrying port (physically ≤ link speed). Cyan area = combined egress across ALL carrying ports (fan-out footprint — NOT one link's load, and overstated by multicast replication). Red markers = discard/error events."),
     "<div class='chart-box'><canvas id='mcgChart'></canvas></div>"
-    +"<div class='chart-legend'><span><span class='sw' style='background:#3d8bff'></span>Aggregate RX</span>"
-    +"<span><span class='sw' style='background:#22d3ee'></span>Aggregate TX</span>"
+    +"<div class='chart-legend'><span><span class='sw' style='background:#3d8bff'></span>Busiest carrying IF (≤ link speed)</span>"
+    +"<span><span class='sw' style='background:#22d3ee'></span>Combined egress across "+g.ifaceCount+" IFs (fan-out)</span>"
     +"<span><span class='sw' style='background:#f0503c'></span>Discard events</span></div>");
   // distribution by block
   const blkDist={};g.ifaces.forEach(it=>{if(it.block)blkDist[it.block]=(blkDist[it.block]||0)+1;});
@@ -3588,11 +3600,12 @@ UI.renderMcGroup=function(group){
     return {it,dev:it.device,iface:it.ifaceShort,block:it.block,tx:m.maxTx,disc:(w.rxDiscDelta||0)+(w.txDiscDelta||0)};});
   html+="<div>"+UI.h.panel("Carrying Interfaces","<div id='mcgMem'></div>")+"</div></div>";
   el.innerHTML=html;
-  // draw aggregate timeline
+  // draw: busiest interface (real, <= link speed) + combined footprint (labeled) + discard markers
   const markMap=new Map();agg.discEvents.forEach(e=>markMap.set(e.t,(markMap.get(e.t)||0)+e.delta));
-  Chart.timeSeries(document.getElementById("mcgChart"),
-    [{name:"Aggregate RX",color:"#3d8bff",axis:"l",points:agg.timeline.map(x=>[x.t,x.rx]),type:"line"},
-     {name:"Aggregate TX",color:"#22d3ee",axis:"l",points:agg.timeline.map(x=>[x.t,x.tx]),type:"area"}],
+  const series=[{name:"Combined egress (fan-out)",color:"#22d3ee",axis:"l",points:agg.timeline.map(x=>[x.t,x.tx]),type:"area"}];
+  if(busiestIf&&busiestIf.metrics&&busiestIf.metrics.series)
+    series.unshift({name:"Busiest IF ("+busiestIf.ifaceShort+")",color:"#3d8bff",axis:"l",width:2,points:busiestIf.metrics.series.map(s=>[s.t.getTime(),s.tx==null?0:s.tx]),type:"line"});
+  Chart.timeSeries(document.getElementById("mcgChart"),series,
     {height:230,lUnit:"mbps",markers:[...markMap.entries()].map(([t,v])=>({x:t,label:"Discard Δ",value:v,color:"#f0503c"})),x0:A.win.w0,x1:A.win.w1});
   Table.make(document.getElementById("mcgMem"),{controls:false,pageSize:20,sort:"disc",dir:-1,
     onRowClick:r=>UI.go("interface",{dev:r.it.deviceKey,iface:r.it.iface}),rows,columns:[
@@ -3840,6 +3853,9 @@ const Report=(function(){
     if(ms&&ms.utilOnly.length)items.push(ms.utilOnly.length+" interface(s) present in the utilization report have no discard samples.");
     const assumedSpeed=Store.allIfaces().filter(it=>it.speedAssumed).length;
     if(assumedSpeed)items.push(assumedSpeed+" interface(s) had no speed in the source data; the model's configured port speed was assumed for utilization %.");
+    const overSpeed=Store.allIfaces().filter(it=>it.metrics&&it.metrics.overSpeed>0).length;
+    if(overSpeed)items.push(overSpeed+" interface(s) have sample(s) reporting a rate ABOVE the link speed (utilization >100%), which is physically impossible — likely a polling/counter artifact or a misdetected interface speed. Treat those peaks as suspect.");
+    items.push("Multicast group bandwidth cannot be measured from per-interface counters: a group is one stream replicated to many ports, so summing per-port rates overstates it (~N×). The tool reports the busiest carrying port; true per-group rate needs per-(S,G) counters (e.g. 'show ip mroute <group> count' or streaming telemetry).");
     if(Store.S.demo)items.push("This dataset is SYNTHETIC DEMO DATA generated inside the tool — not real telemetry.");
     return items;
   }
