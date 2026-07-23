@@ -289,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v33</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v34</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -362,6 +362,10 @@ const DEFAULT_CFG={
   thresholds:{warn:0.60,high:0.75,crit:0.90},
   classThresholds:{Trading:{warn:0.45,high:0.60,crit:0.80},Backup:{warn:0.75,high:0.88,crit:0.96}},
   forecastMetric:'p95', forecastDirection:'combined', provisionFactor:1.5,
+  peakBasis:'p999',        // #3 percentile used as "peak" for sizing (p99 / p999 / max)
+  forecastHours:'all',     // #6 forecast basis: 'all' hours or 'bh' market-hours only
+  forecastCI:0.8,          // #1 confidence level for the days-to-threshold band
+  forecastMinDaySamples:3, // #5 drop days with fewer than this many samples from the trend
   businessHours:{startHr:9,startMin:0,endHr:17,endMin:0,days:[1,2,3,4,5]},
   riskWeights:{peak:0.9,avg:0.7,trend:0.8,growth:0.7,violations:1.0,anomaly:0.6,impact:1.2},
   planHorizonDays:90, upgradeLeadDays:42,
@@ -965,6 +969,10 @@ function computeAnalytics(){
     // peak-column analytics (microbursts the averages hide)
     const pus=s.map(x=>x.pu).filter(v=>v!=null&&v>=0&&v<=3);
     const pkP95=pus.length?percentile(pus,0.95):null,pkMax=pus.length?amax(pus):null;
+    // #3 "peak" used to SIZE capacity — a selectable high percentile (robust to a single glitch,
+    // yet closer to true peak load than p95). Prefer the peak-columns; fall back to utilization.
+    const pkB=S.cfg.peakBasis||'p999';const pkQ=pkB==='p99'?0.99:pkB==='max'?1:0.999;
+    const provisionPeak=pus.length?percentile(pus,pkQ):(utils.length?percentile(utils,pkQ):mx);
     // distribution (time-in-state)
     const dist={normal:0,warning:0,high:0,critical:0};let distN=0;
     for(const x of s){if(x.util==null||x.util<0||x.util>3)continue;dist[stateOfT(x.util,tForS(x))]++;distN++;}
@@ -1014,7 +1022,12 @@ function computeAnalytics(){
     // daily p95 series + forecast
     // daily series for forecasting — metric (p95/p99/max) and direction (combined / TX & RX split)
     const fm=S.cfg.forecastMetric||'p95';const pctl=fm==='p99'?0.99:fm==='max'?1:0.95;
-    const dseries=(valFn)=>{const bd={};for(const x of s){const v=valFn(x);if(v==null)continue;const d=new Date(x.ts);d.setHours(0,0,0,0);(bd[+d]=bd[+d]||[]).push(v);}return Object.keys(bd).map(Number).sort((a,b)=>a-b).map(d=>({d,p95:percentile(bd[d],pctl)}));};
+    const bhOnlyFc=(S.cfg.forecastHours==='bh');const minDay=S.cfg.forecastMinDaySamples||1;
+    // #5 drop thin days (few samples → noisy daily figure) unless that leaves too little history.
+    // #6 optionally restrict the basis to market hours only.
+    const dseries=(valFn)=>{const bd={};for(const x of s){if(bhOnlyFc&&!isBH(x.ts))continue;const v=valFn(x);if(v==null)continue;const d=new Date(x.ts);d.setHours(0,0,0,0);(bd[+d]=bd[+d]||[]).push(v);}
+      const arr=Object.keys(bd).map(Number).sort((a,b)=>a-b).map(d=>({d,p95:percentile(bd[d],pctl),n:bd[d].length}));
+      const filt=arr.filter(o=>o.n>=minDay);return filt.length>=5?filt:arr;};
     let daily,forecast,fnote=(fm!=='p95'?fm:'');
     if((S.cfg.forecastDirection||'combined')==='split'){
       const txD=dseries(x=>speedTx&&x.tx!=null?x.tx/speedTx:null),rxD=dseries(x=>speedRx&&x.rx!=null?x.rx/speedRx:null);
@@ -1038,7 +1051,7 @@ function computeAnalytics(){
     const growth=forecast.growthMoM;
     const risk=riskScore({p95,avg,pk:pkP95,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
     const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,th:tRes,thOff:hasOffBands?tOffRes:null,ip:info.ip,linkname:info.linkname,badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
-      start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,pkP95,pkMax,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
+      start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,pkP95,pkMax,provisionPeak,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
     rec.verdict=verdictFor(rec);
     rec.ai=aiSummary(rec);
     ifs.push(rec);
@@ -1062,27 +1075,34 @@ function computeAnalytics(){
    - Two candidate fits (full window vs recent window) selected by backtest error on
      held-out recent days; confidence reflects history span, backtest error and
      model agreement. Projections and slopes are clamped to plausible ranges. */
-function theilSen(pts){
+// #2 centered rolling median — removes the weekday/weekend sawtooth before trending.
+function rollingMedian(ys,w){const h=(w-1)>>1,out=[];for(let i=0;i<ys.length;i++){const a=Math.max(0,i-h),b=Math.min(ys.length,i+h+1);out.push(percentile(ys.slice(a,b),0.5));}return out;}
+// Theil–Sen with a slope confidence interval — slopeLo/slopeHi are the CI-percentiles of the
+// pairwise slopes (the textbook Theil–Sen interval), used to project a days-to-threshold range.
+function theilSen(pts,ci){
   const n=pts.length;if(n<2)return null;
   const step=Math.max(1,Math.floor(n/45)),slopes=[];
   for(let i=0;i<n;i+=step)for(let j=i+1;j<n;j+=step){const dx=pts[j].x-pts[i].x;if(dx>0)slopes.push((pts[j].y-pts[i].y)/dx);}
   if(!slopes.length)return null;
-  const slope=percentile(slopes,0.5);
-  return {slope,inter:percentile(pts.map(p=>p.y-slope*p.x),0.5)};
+  const slope=percentile(slopes,0.5),a=(1-(ci||0.8))/2;
+  return {slope,inter:percentile(pts.map(p=>p.y-slope*p.x),0.5),slopeLo:percentile(slopes,a),slopeHi:percentile(slopes,1-a)};
 }
 const maeOf=(fit,pts)=>pts.length?mean(pts.map(p=>Math.abs(p.y-(fit.slope*p.x+fit.inter)))):Infinity;
 function forecastFrom(daily,p95,cls){
-  const out={slopePerDay:0,current:p95,t80:null,t90:null,t95:null,growthMoM:0,conf:0.2,proj:{30:p95,60:p95,90:p95,180:p95},window:null,r2:0,modelNote:''};
+  const out={slopePerDay:0,current:p95,t80:null,t90:null,t95:null,t80Lo:null,t80Hi:null,t90Lo:null,t90Hi:null,t95Lo:null,t95Hi:null,growthMoM:0,conf:0.2,proj:{30:p95,60:p95,90:p95,180:p95},projLo:{},projHi:{},window:null,r2:0,ci:(S.cfg.forecastCI||0.8),modelNote:''};
   if(daily.length<5){out.modelNote='not enough history for a trend';return out;}
   const d0=daily[0].d;
   let pts=daily.map(p=>({x:(p.d-d0)/86400000,y:clamp(p.p95,0,1.5),dow:new Date(p.d).getDay()}));
+  // #2 deseasonalize the weekly cycle before fitting the trend
+  const sm=rollingMedian(pts.map(p=>p.y),7);pts=pts.map((p,i)=>({...p,y:sm[i]}));
   const wd=pts.filter(p=>p.dow>=1&&p.dow<=5),we=pts.filter(p=>p.dow===0||p.dow===6);
   if(wd.length>=5&&we.length>=2&&percentile(wd.map(p=>p.y),0.5)>percentile(we.map(p=>p.y),0.5)*1.35+0.02){
-    pts=wd;out.modelNote='busy-weekday model';
+    pts=wd;out.modelNote='busy-weekday';
   }
+  const ci=S.cfg.forecastCI||0.8;
   const rec=pts.slice(-Math.max(7,Math.floor(pts.length/2)));
   const cands=[{name:'full-window trend',pts},{name:'recent trend',pts:rec}]
-    .map(c=>({...c,fit:theilSen(c.pts)})).filter(c=>c.fit);
+    .map(c=>({...c,fit:theilSen(c.pts,ci)})).filter(c=>c.fit);
   if(!cands.length){out.modelNote+=' · no fit';return out;}
   let chosen=cands[0],relErr=0.35;
   if(pts.length>=8){
@@ -1090,29 +1110,30 @@ function forecastFrom(daily,p95,cls){
     const cut=pts[pts.length-k-1].x,test=pts.slice(-k);
     let best=Infinity;
     for(const c of cands){
-      const tf=theilSen(c.pts.filter(p=>p.x<=cut));
+      const tf=theilSen(c.pts.filter(p=>p.x<=cut),ci);
       if(!tf)continue;
       const err=maeOf(tf,test);
       if(err<best){best=err;chosen=c;}
     }
     if(best<Infinity)relErr=clamp(best/Math.max(0.05,mean(test.map(p=>p.y))),0,1);
   }
-  const slope=clamp(chosen.fit.slope,-0.04,0.04); // ±4%/day is the plausibility ceiling
+  const fit=chosen.fit;
+  const slope=clamp(fit.slope,-0.04,0.04); // ±4%/day plausibility ceiling
+  const sHi=clamp(fit.slopeHi,-0.04,0.04),sLo=clamp(fit.slopeLo,-0.04,0.04);
   const lastX=pts.at(-1).x;
-  const cur=clamp(slope*lastX+chosen.fit.inter,0,1.5);
-  out.slopePerDay=slope;out.current=cur;out.r2=clamp(1-relErr,0,1);
-  const tt=T=>cur>=T?0:(slope>1e-5?(T-cur)/slope:null);
-  out.t80=tt(0.80);out.t90=tt(0.90);out.t95=tt(0.95);
-  for(const dd of [30,60,90,180])out.proj[dd]=clamp(cur+slope*dd,0,1.2);
-  // Growth: robust (median) first-third vs last-third, scaled to a 30-day rate
-  const third=Math.max(1,Math.floor(pts.length/3));
-  const a=pts.slice(0,third),b=pts.slice(-third);
-  const ma=percentile(a.map(p=>p.y),0.5),mb=percentile(b.map(p=>p.y),0.5);
-  const spanC=Math.max(1,mean(b.map(p=>p.x))-mean(a.map(p=>p.x)));
-  out.growthMoM=clamp((mb-ma)/Math.max(ma,0.03)*(30/spanC),-3,3);
+  const cur=clamp(slope*lastX+fit.inter,0,1.5);
+  out.slopePerDay=slope;out.current=cur;out.r2=clamp(1-relErr,0,1);out.slopeLo=sLo;out.slopeHi=sHi;
+  // #1 days-to-threshold as a RANGE: faster slope (sHi) → reaches sooner (Lo days); slower → Hi days.
+  const ttFor=(T,sl)=>cur>=T?0:(sl>1e-5?(T-cur)/sl:null);
+  for(const T of [80,90,95]){const t=T/100;out['t'+T]=ttFor(t,slope);out['t'+T+'Lo']=ttFor(t,sHi);out['t'+T+'Hi']=ttFor(t,sLo);}
+  for(const dd of [30,60,90,180]){out.proj[dd]=clamp(cur+slope*dd,0,1.2);out.projLo[dd]=clamp(cur+sLo*dd,0,1.2);out.projHi[dd]=clamp(cur+sHi*dd,0,1.2);}
+  // #4 growth taken from the SAME fitted slope (relative monthly rate) — no separate estimate to disagree
+  out.growthMoM=clamp(slope*30/Math.max(cur,0.03),-3,3);
   const agree=cands.length===2&&Math.sign(cands[0].fit.slope)===Math.sign(cands[1].fit.slope);
-  out.conf=clamp(0.2+clamp((lastX-pts[0].x)/45,0,1)*0.3+(1-relErr)*0.35+(agree?0.1:0),0,0.95);
-  out.modelNote=(out.modelNote?out.modelNote+' · ':'')+chosen.name;
+  const bandDays=(out.t90Hi!=null&&out.t90Lo!=null)?Math.abs(out.t90Hi-out.t90Lo):null;
+  const tight=bandDays!=null?clamp(1-bandDays/120,0,1):0.35; // tighter band → higher confidence
+  out.conf=clamp(0.15+clamp((lastX-pts[0].x)/45,0,1)*0.25+(1-relErr)*0.3+(agree?0.1:0)+tight*0.15,0,0.95);
+  out.modelNote=(out.modelNote?out.modelNote+' · ':'')+chosen.name+` · ${Math.round(ci*100)}% band`;
   if(out.t90!=null&&out.t90>0){const lead=S.cfg.upgradeLeadDays;const c0=Math.max(0,out.t90-lead);out.window=[Math.round(c0),Math.round(Math.max(c0+15,out.t90))];}
   return out;
 }
@@ -1683,15 +1704,17 @@ function view_intf(){
         </div>
       </div>
       <div class="panel pad">
-        <div class="sec-title"><h2>Capacity forecast</h2><span class="sub">when this link runs out of headroom · ${f.modelNote||'trend model'}${hasFlt?' · always full history (unfiltered)':''}</span></div>
-        ${svgLineArea([{data:r.daily.map(d=>[d.d,d.p95]),color:'#2dd4bf',wide:true,name:'Historical daily p95'},{data:proj,color:'#fb923c',dash:true,name:'Forecast'}],{h:200,bands:r.th,y1:Math.max(1,f.proj[180]*1.1),speed:r.speed})}
-        <div class="legend"><span><i style="background:#2dd4bf"></i>historical p95</span><span><i style="background:#fb923c"></i>forecast</span></div>
+        <div class="sec-title"><h2>Capacity forecast</h2><span class="spacer"></span><span class="tabs" style="margin:0"><button class="${(S.cfg.forecastHours||'all')!=='bh'?'active':''}" onclick="setForecastHours('all')">All hours</button><button class="${S.cfg.forecastHours==='bh'?'active':''}" onclick="setForecastHours('bh')">Market hours</button></span></div>
+        <div class="sub" style="margin:-6px 0 8px">when this link runs out of headroom · ${f.modelNote||'trend model'} · basis: ${S.cfg.forecastHours==='bh'?'market hours only':'all hours'}${hasFlt?' · always full history (unfiltered)':''}</div>
+        ${(()=>{const bandLo=[[lastD,f.current]].concat([30,60,90,180].map(dd=>[lastD+dd*864e5,f.projLo[dd]!=null?f.projLo[dd]:f.current]));const bandHi=[[lastD,f.current]].concat([30,60,90,180].map(dd=>[lastD+dd*864e5,f.projHi[dd]!=null?f.projHi[dd]:f.current]));
+          return svgLineArea([{data:r.daily.map(d=>[d.d,d.p95]),color:'#2dd4bf',wide:true,name:'Historical daily p95'},{data:bandHi,color:'#fbbf24',dash:true,name:'range-hi'},{data:bandLo,color:'#fbbf24',dash:true,name:'range-lo'},{data:proj,color:'#fb923c',dash:true,name:'Forecast'}],{h:200,bands:r.th,y1:Math.max(1,f.proj[180]*1.1),speed:r.speed});})()}
+        <div class="legend"><span><i style="background:#2dd4bf"></i>historical p95</span><span><i style="background:#fb923c"></i>forecast (mid)</span><span><i style="background:#fbbf24"></i>${(f.ci*100||80).toFixed(0)}% range</span></div>
         <div class="grid g4" style="margin-top:12px">
-          ${fcell('Days to 80% full',f.t80)}${fcell('Days to 90% full',f.t90)}${fcell('Days to 95% full',f.t95)}
+          ${fcell('Days to 80% full',f.t80,f.t80Lo,f.t80Hi)}${fcell('Days to 90% full',f.t90,f.t90Lo,f.t90Hi)}${fcell('Days to 95% full',f.t95,f.t95Lo,f.t95Hi)}
           <div class="kpi"><div class="l">Upgrade window</div><div class="v mono" style="font-size:18px">${f.window?f.window[0]+'–'+f.window[1]+'d':'—'}</div><div class="t flat">conf ${(f.conf*100).toFixed(0)}%</div></div>
         </div>
-        ${(()=>{const N=S.cfg.provisionFactor||1.5;const peak=(r.pkP95!=null?Math.max(r.pkP95,r.mx):r.mx);const peakBps=r.speed?peak*r.speed:null;const recBps=peakBps?peakBps*N:null;const meets=r.speed&&recBps!=null?r.speed>=recBps:null;
-          return `<div class="ai" style="margin-top:12px"><div class="h">◆ Provisioning target</div><p>Policy: installed capacity ≥ <b>${N}× peak</b> (peak‑utilization ceiling ${(100/N).toFixed(0)}%). Peak here is <b>${pct1(peak)}</b>${peakBps?` (~${fmtBps(peakBps)})`:''}, so the <b>minimum capacity</b> that satisfies the policy is <b>${recBps?fmtBps(recBps):'—'}</b>. Current capacity ${r.speed?fmtBps(r.speed):'?'} — ${meets==null?'unknown':meets?`<b style="color:var(--normal)">already meets the target</b> (using ${(peak*N*100).toFixed(0)}% of the ${(100/N).toFixed(0)}% ceiling)`:'<b style="color:var(--critical)">below target; upgrade to the next tier</b>'}.</p></div>`;})()}
+        ${(()=>{const N=S.cfg.provisionFactor||1.5;const peak=(r.provisionPeak!=null?r.provisionPeak:(r.pkP95!=null?Math.max(r.pkP95,r.mx):r.mx));const peakBps=r.speed?peak*r.speed:null;const recBps=peakBps?peakBps*N:null;const meets=r.speed&&recBps!=null?r.speed>=recBps:null;const pkLbl=({p99:'p99',p999:'p99.9',max:'max'})[S.cfg.peakBasis||'p999'];
+          return `<div class="ai" style="margin-top:12px"><div class="h">◆ Provisioning target</div><p>Policy: installed capacity ≥ <b>${N}× peak</b> (peak‑utilization ceiling ${(100/N).toFixed(0)}%). Peak here (${pkLbl}) is <b>${pct1(peak)}</b>${peakBps?` (~${fmtBps(peakBps)})`:''}, so the <b>minimum capacity</b> that satisfies the policy is <b>${recBps?fmtBps(recBps):'—'}</b>. Current capacity ${r.speed?fmtBps(r.speed):'?'} — ${meets==null?'unknown':meets?`<b style="color:var(--normal)">already meets the target</b> (using ${(peak*N*100).toFixed(0)}% of the ${(100/N).toFixed(0)}% ceiling)`:'<b style="color:var(--critical)">below target; upgrade to the next tier</b>'}.</p></div>`;})()}
       </div>
     </div>
     <div>
@@ -1748,7 +1771,9 @@ function view_intf(){
     </div>
   </div>`;
 }
-function fcell(l,v){const days=v!=null&&v>0&&v<3650?Math.round(v)+'d':(v!=null&&v<=0?'now':'—');return `<div class="kpi"><div class="l">${l}</div><div class="v mono" style="font-size:20px">${days}</div></div>`;}
+function fcell(l,v,lo,hi){const fmt=x=>x!=null&&x>0&&x<3650?Math.round(x)+'d':(x!=null&&x<=0?'now':'—');
+  let rng='';if(v!=null&&v>0&&v<3650&&(lo!=null||hi!=null)){const h2=(hi!=null&&hi<3650)?Math.round(hi)+'d':'>1yr';rng=`<div class="t flat" style="font-size:10px" title="${(S.cfg.forecastCI*100||80).toFixed(0)}% confidence range">${fmt(lo)}–${h2}</div>`;}
+  return `<div class="kpi"><div class="l">${l}</div><div class="v mono" style="font-size:20px">${fmt(v)}</div>${rng}</div>`;}
 function distExplain(r){
   const warm=r.dist.warning+r.dist.high;const parts=[];
   if(r.dist.critical>0.02)parts.push(`This link was critically busy ${pct1(r.dist.critical)} of the time (plus ${pct1(r.dist.high)} in the high band).`);
@@ -1779,8 +1804,10 @@ function view_capacity(){
     <h3>${breaching.length} link(s) forecast to breach 90% within 90 days</h3>
     <div class="reason">Forecasts use robust trend regression on daily p95 (busy-period). Recommended windows account for a ${S.cfg.upgradeLeadDays}-day upgrade lead time.</div>
     <div class="act"><a onclick="genReport('capacity')">Generate Weekly Capacity Report →</a></div></div>
-  <div class="panel pad"><div class="sec-title"><h2>Capacity forecast table</h2><span class="sub">${list.length} link(s) · ${(S.cfg.forecastMetric||'p95')} · ${(S.cfg.forecastDirection||'combined')==='split'?'TX/RX split':'combined'} &nbsp; ${csvBtn('#main table','capacity_forecast.csv')}</span></div><table><thead><tr><th>Interface</th><th>Class</th><th>Impact</th><th>Current p95</th><th>Slope/mo</th><th>Time→80%</th><th>Time→90%</th><th>Time→95%</th><th>Upgrade window</th><th>Conf</th></tr></thead><tbody>
-  ${list.slice(0,60).map(r=>{const f=r.forecast;const tt=v=>v!=null&&v>0&&v<3650?Math.round(v)+'d':(v!=null&&v<=0?'now':'—');const urgent=f.t90!=null&&f.t90<=90;return `<tr data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><td><b>${esc(r.dev)}</b> ${esc(r.intf)}</td><td><span class="chip">${r.cls}</span></td><td><span class="chip impact-${r.impact}">${r.impact}</span></td><td class="mono">${pct1(f.current)}</td><td class="mono ${f.slopePerDay>0?'up':'down'}">${(f.slopePerDay*30*100).toFixed(1)}%</td><td class="mono">${tt(f.t80)}</td><td class="mono" style="${urgent?'color:var(--critical);font-weight:700':''}">${tt(f.t90)}</td><td class="mono">${tt(f.t95)}</td><td class="mono">${f.window?f.window[0]+'–'+f.window[1]+'d':'—'}</td><td class="mono">${(f.conf*100).toFixed(0)}%</td></tr>`;}).join('')}
+  <div class="panel pad"><div class="sec-title"><h2>Capacity forecast table</h2><span class="spacer"></span><span class="tabs" style="margin:0"><button class="${(S.cfg.forecastHours||'all')!=='bh'?'active':''}" onclick="setForecastHours('all')">All hours</button><button class="${S.cfg.forecastHours==='bh'?'active':''}" onclick="setForecastHours('bh')">Market hours</button></span></div>
+  <div class="sub" style="margin:-4px 0 8px">${list.length} link(s) · ${(S.cfg.forecastMetric||'p95')} · ${(S.cfg.forecastDirection||'combined')==='split'?'TX/RX split':'combined'} · basis ${S.cfg.forecastHours==='bh'?'market hours':'all hours'} · Time→ columns show the mid estimate with the ${(S.cfg.forecastCI*100||80).toFixed(0)}% range below &nbsp; ${csvBtn('#main table','capacity_forecast.csv')}</div>
+  <table><thead><tr><th>Interface</th><th>Class</th><th>Impact</th><th>Current p95</th><th>Slope/mo</th><th>Time→80%</th><th>Time→90%</th><th>Time→95%</th><th>Upgrade window</th><th>Conf</th></tr></thead><tbody>
+  ${list.slice(0,60).map(r=>{const f=r.forecast;const tt=v=>v!=null&&v>0&&v<3650?Math.round(v)+'d':(v!=null&&v<=0?'now':'—');const rg=(v,lo,hi)=>v!=null&&v>0&&v<3650&&lo!=null?`<div class="mini" style="font-size:9px">${tt(lo)}–${hi!=null&&hi<3650?Math.round(hi)+'d':'>1yr'}</div>`:'';const urgent=f.t90!=null&&f.t90<=90;return `<tr data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><td><b>${esc(r.dev)}</b> ${esc(r.intf)}</td><td><span class="chip">${r.cls}</span></td><td><span class="chip impact-${r.impact}">${r.impact}</span></td><td class="mono">${pct1(f.current)}</td><td class="mono ${f.slopePerDay>0?'up':'down'}">${(f.slopePerDay*30*100).toFixed(1)}%</td><td class="mono">${tt(f.t80)}${rg(f.t80,f.t80Lo,f.t80Hi)}</td><td class="mono" style="${urgent?'color:var(--critical);font-weight:700':''}">${tt(f.t90)}${rg(f.t90,f.t90Lo,f.t90Hi)}</td><td class="mono">${tt(f.t95)}${rg(f.t95,f.t95Lo,f.t95Hi)}</td><td class="mono">${f.window?f.window[0]+'–'+f.window[1]+'d':'—'}</td><td class="mono">${(f.conf*100).toFixed(0)}%</td></tr>`;}).join('')}
   </tbody></table></div>`;
 }
 function view_trends(){
@@ -2064,7 +2091,12 @@ function view_admin(){
       <label class="fld"><span>Direction</span><select id="fcDir"><option value="combined" ${(S.cfg.forecastDirection||'combined')==='combined'?'selected':''}>Combined (worse of TX/RX)</option><option value="split" ${S.cfg.forecastDirection==='split'?'selected':''}>Split — forecast TX &amp; RX separately</option></select></label>
       <label class="fld"><span>Provision to N× peak</span><input type="number" step="0.1" id="provN" value="${S.cfg.provisionFactor||1.5}"></label>
     </div>
-    <div class="mini" style="margin-bottom:10px">Metric = which daily level the trend is fit to. Split forecasts each direction and reports the one that saturates first. Provisioning target sizes recommended capacity to N× peak traffic (peak‑utilization ceiling ${(100/(S.cfg.provisionFactor||1.5)).toFixed(0)}%).</div>
+    <div class="grid g3" style="margin-top:8px">
+      <label class="fld"><span>Peak basis for sizing</span><select id="fcPeak"><option value="p999" ${(S.cfg.peakBasis||'p999')==='p999'?'selected':''}>p99.9 (true sustained peak)</option><option value="p99" ${S.cfg.peakBasis==='p99'?'selected':''}>p99</option><option value="max" ${S.cfg.peakBasis==='max'?'selected':''}>max (single highest)</option></select></label>
+      <label class="fld"><span>Confidence band (%)</span><input type="number" id="fcCI" value="${(S.cfg.forecastCI*100||80).toFixed(0)}" min="50" max="99"></label>
+      <label class="fld"><span>Min samples per day</span><input type="number" id="fcMinDay" value="${S.cfg.forecastMinDaySamples||3}" min="1"></label>
+    </div>
+    <div class="mini" style="margin-bottom:10px">Metric = which daily level the trend is fit to. Split forecasts each direction and reports the one that saturates first. Provisioning sizes to N× the chosen <b>peak basis</b> (ceiling ${(100/(S.cfg.provisionFactor||1.5)).toFixed(0)}%). The trend is deseasonalized (7-day) and days-to-threshold is shown as a <b>${(S.cfg.forecastCI*100||80).toFixed(0)}% range</b>; thin days (&lt; min samples) are dropped. Market-hours vs all-hours basis is toggled on the forecast/capacity views.</div>
     <button class="btn" onclick="saveForecastCfg()">Save forecast settings</button>
   </div>
   <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Class-specific policies</h2><span class="sub">editable — utilization bands per interface class (blank = use global)</span></div>
@@ -2283,7 +2315,7 @@ function regReportData(scope){
     const tReg=timeToLevel(r.forecast,T);
     const breachDays=new Set(overThr.map(x=>new Date(x.ts).toDateString())).size;
     const augment=r.p95>=T||(tReg!=null&&tReg>=0&&tReg<=180);
-    return {r,peak:r.pkP95!=null?Math.max(r.pkP95,r.mx):r.mx,p95:r.p95,avg:r.avg,
+    return {r,peak:r.provisionPeak!=null?r.provisionPeak:(r.pkP95!=null?Math.max(r.pkP95,r.mx):r.mx),p95:r.p95,avg:r.avg,
       pctOver:overThr.length/(r.count||1),mktPctOver:mktOver.length/(mkt.length||1),
       headThr:Math.max(0,T-r.p95),head100:Math.max(0,1-r.p95),breachDays,tReg,augment};
   }).sort((x,y)=>y.p95-x.p95);
@@ -2320,12 +2352,15 @@ function genRegReport(scope,fmt){
       ['Prepared by',c.reportPreparedBy||'',' ','Reviewed by',c.reportReviewedBy||'',' ','Approved by',c.reportApprovedBy||''],
       ['Classification','Confidential — regulatory']
     ];
-    const summ=[['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)',`Peak %`,`p95 %`,`Avg %`,`% time > ${Tp}% (all)`,`% time > ${Tp}% (mkt hrs)`,`Days > ${Tp}%`,`Headroom to ${Tp}% (pp)`,`Headroom to 100% (pp)`,`Days to ${Tp}%`,`Recommended capacity (${(S.cfg.provisionFactor||1.5)}×peak, Mbps)`,'Augmentation required','Verdict']];
+    const ciPct=(S.cfg.forecastCI*100||80).toFixed(0);
+    const summ=[['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)',`Peak %`,`p95 %`,`Avg %`,`% time > ${Tp}% (all)`,`% time > ${Tp}% (mkt hrs)`,`Days > ${Tp}%`,`Headroom to ${Tp}% (pp)`,`Headroom to 100% (pp)`,`Days to ${Tp}%`,`Days to ${Tp}% (${ciPct}% range)`,`Recommended capacity (${(S.cfg.provisionFactor||1.5)}×peak, Mbps)`,'Augmentation required','Verdict']];
     const N=S.cfg.provisionFactor||1.5;
     for(const x of D.rows){const recMbps=x.r.speed?+((x.peak*x.r.speed*N)/1e6).toFixed(0):'';
+      const f=x.r.forecast,dTo=sl=>f.current>=D.T?0:(sl>1e-5?(D.T-f.current)/sl:null);const tLo=dTo(f.slopeHi),tHi=dTo(f.slopeLo);
+      const tRange=x.tReg==null?'no trend':(x.tReg<=0?'AT/OVER':(tLo!=null?`${Math.round(Math.max(0,tLo))}–${tHi!=null&&tHi<3650?Math.round(tHi):'>365'}`:'—'));
       summ.push([x.r.dev,x.r.intf,x.r.linkname||'',x.r.site,x.r.cls,x.r.impact,x.r.speed?+(x.r.speed/1e6).toFixed(0):'',
       +(x.peak*100).toFixed(1),+(x.p95*100).toFixed(1),+(x.avg*100).toFixed(1),+(x.pctOver*100).toFixed(2),+(x.mktPctOver*100).toFixed(2),x.breachDays,
-      +(x.headThr*100).toFixed(1),+(x.head100*100).toFixed(1),x.tReg==null?'no trend':(x.tReg<=0?'AT/OVER':Math.round(x.tReg)),recMbps,x.augment?'YES':'No',x.r.verdict.title]);}
+      +(x.headThr*100).toFixed(1),+(x.head100*100).toFixed(1),x.tReg==null?'no trend':(x.tReg<=0?'AT/OVER':Math.round(x.tReg)),tRange,recMbps,x.augment?'YES':'No',x.r.verdict.title]);}
     const breach=[['Device','Interface','Site','Timestamp','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Market hours',`Threshold %`]];
     let n=0,trunc=false;
     for(const x of D.rows){for(const s of x.r.samples){if(s.util==null||s.util<D.T)continue;if(n++>=50000){trunc=true;break;}
@@ -2471,7 +2506,7 @@ function linkReportHTML(r){
   <h2>Technical summary</h2><div>${r.ai}</div>
   <h2>Key metrics</h2>${chart}
   <table>${kv('Busy-period utilization (p95)',pct1(r.p95)+(r.speed?' ('+fmtBps(r.p95*r.speed)+')':''))}${kv('Average utilization',pct1(r.avg))}${kv('Peak utilization',pct1(r.pkP95!=null?r.pkP95:r.mx))}${kv('Time in Normal/Warning/High/Critical',`${(r.dist.normal*100).toFixed(0)}% / ${(r.dist.warning*100).toFixed(0)}% / ${(r.dist.high*100).toFixed(0)}% / ${(r.dist.critical*100).toFixed(0)}%`)}${kv('Business-day breaches',r.bhDays)}</table>
-  <h2>Capacity forecast</h2><table>${kv('Current busy-period',pct1(f.current))}${kv('Time to 80% / 90% / 95%',`${tt(f.t80)} / ${tt(f.t90)} / ${tt(f.t95)}`)}${kv('Recommended upgrade window',f.window?f.window[0]+'–'+f.window[1]+' days':'—')}${kv('Growth',(f.growthMoM*100).toFixed(0)+'% per month')}${kv('Confidence',(f.conf*100).toFixed(0)+'% ('+(f.modelNote||'trend')+')')}</table>
+  <h2>Capacity forecast</h2><table>${kv('Current busy-period',pct1(f.current))}${kv('Time to 80% / 90% / 95%',`${tt(f.t80)} / ${tt(f.t90)} / ${tt(f.t95)}`)}${kv(`Days to 90% (${(f.ci*100||80).toFixed(0)}% range)`,f.t90!=null&&f.t90>0&&f.t90<3650&&f.t90Lo!=null?`${tt(f.t90Lo)} to ${f.t90Hi!=null&&f.t90Hi<3650?Math.round(f.t90Hi)+' days':'>1 year'}`:'—')}${kv('Recommended upgrade window',f.window?f.window[0]+'–'+f.window[1]+' days':'—')}${kv('Growth',(f.growthMoM*100).toFixed(0)+'% per month')}${kv('Confidence',(f.conf*100).toFixed(0)+'% ('+(f.modelNote||'trend')+')')}</table>
   <h2>Root-cause analysis</h2>
   <table>${Object.entries(qa).map(([q,ansr])=>kv(q,String(ansr).replace(/<[^>]+>/g,''))).join('')}</table>
   <div class="box" style="margin-top:8px"><b>Likely cause:</b> ${esc(cause)}<br><b>Recommended next steps:</b> ${esc(steps)}</div>
@@ -2518,7 +2553,12 @@ function saveThresholds(){
   save('cfg');logAudit('config.thresholds','',JSON.stringify({business:S.cfg.thresholds,offHours:S.cfg.thresholdsOff}));
   S.analytics=null;toast('Thresholds saved — verdicts recomputed');render();}
 function savePlanning(){S.cfg.businessHours.startHr=+$('#bhStart').value;S.cfg.businessHours.endHr=+$('#bhEnd').value;S.cfg.planHorizonDays=+$('#planH').value;S.cfg.upgradeLeadDays=+$('#leadD').value;save('cfg');logAudit('config.planning');S.analytics=null;toast('Saved');render();}
-function saveForecastCfg(){S.cfg.forecastMetric=$('#fcMetric').value;S.cfg.forecastDirection=$('#fcDir').value;S.cfg.provisionFactor=Math.max(1,+$('#provN').value||1.5);save('cfg');logAudit('config.forecast','',JSON.stringify({m:S.cfg.forecastMetric,d:S.cfg.forecastDirection,n:S.cfg.provisionFactor}));S.analytics=null;toast('Forecast settings saved — recomputed');render();}
+function saveForecastCfg(){S.cfg.forecastMetric=$('#fcMetric').value;S.cfg.forecastDirection=$('#fcDir').value;S.cfg.provisionFactor=Math.max(1,+$('#provN').value||1.5);
+  if($('#fcPeak'))S.cfg.peakBasis=$('#fcPeak').value;
+  if($('#fcCI'))S.cfg.forecastCI=clamp((+$('#fcCI').value||80)/100,0.5,0.99);
+  if($('#fcMinDay'))S.cfg.forecastMinDaySamples=Math.max(1,+$('#fcMinDay').value|0);
+  save('cfg');logAudit('config.forecast','',JSON.stringify({m:S.cfg.forecastMetric,d:S.cfg.forecastDirection,n:S.cfg.provisionFactor,peak:S.cfg.peakBasis,ci:S.cfg.forecastCI}));S.analytics=null;toast('Forecast settings saved — recomputed');render();}
+function setForecastHours(v){S.cfg.forecastHours=(v==='bh')?'bh':'all';save('cfg');logAudit('config.forecasthours','',S.cfg.forecastHours);S.analytics=null;render();}
 function saveClassThresholds(){const CL=['Core','Trading','Internet','WAN','Storage','Backup','Voice','Replication','Management','Customer'];const out={};
   for(const c of CL){const o={};['warn','high','crit'].forEach(bd=>{const el=$('#ct_'+c+'_'+bd);if(el&&el.value.trim()!==''){const n=parseFloat(el.value);if(!isNaN(n))o[bd]=clamp(n/100,0,2);}});if(Object.keys(o).length)out[c]=o;}
   S.cfg.classThresholds=out;save('cfg');logAudit('config.classbands','',JSON.stringify(out));S.analytics=null;toast('Class bands saved — verdicts recomputed');render();}
@@ -2760,7 +2800,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.genRegReport=genRegReport;window.saveCompliance=saveCompliance;window.setMarketHours=setMarketHours;window.saveForecastCfg=saveForecastCfg;window.saveClassThresholds=saveClassThresholds;window.exportTableCSV=exportTableCSV;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.doMergeVariants=doMergeVariants;window.setMergeAuto=setMergeAuto;window.mergeDevicesManual=mergeDevicesManual;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.genRegReport=genRegReport;window.saveCompliance=saveCompliance;window.setMarketHours=setMarketHours;window.saveForecastCfg=saveForecastCfg;window.setForecastHours=setForecastHours;window.saveClassThresholds=saveClassThresholds;window.exportTableCSV=exportTableCSV;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.doMergeVariants=doMergeVariants;window.setMergeAuto=setMergeAuto;window.mergeDevicesManual=mergeDevicesManual;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
