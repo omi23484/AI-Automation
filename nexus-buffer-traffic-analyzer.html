@@ -21,6 +21,8 @@
   --assump-bg:#1a1508; --assump-bd:#3a2f10; --assump-fg:#d8c98a;
   --chart-grid:#1b2433; --chart-axis:#5d6a7e; --chart-frame:#2530425a; --chart-raxis:#8a6a3c;
   --shadow:0 6px 20px rgba(0,0,0,.35); --shadow-sm:0 3px 10px rgba(0,0,0,.28); --glow:0 0 0 1px;
+  --sheen:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,0) 46%);
+  --hairline:rgba(255,255,255,.06); --accent-rgb:61,139,255; --accent2-rgb:34,211,238;
   color-scheme:dark;
 }
 /* ---------------- LIGHT THEME ---------------- */
@@ -34,6 +36,8 @@
   --assump-bg:#fdf6e3; --assump-bd:#ecdca6; --assump-fg:#8a6d0b;
   --chart-grid:#e2e8f1; --chart-axis:#6a7688; --chart-frame:#d3dae5; --chart-raxis:#9a7a3c;
   --shadow:0 8px 24px rgba(60,80,120,.14); --shadow-sm:0 3px 10px rgba(60,80,120,.10);
+  --sheen:linear-gradient(180deg,rgba(255,255,255,.6),rgba(255,255,255,0) 55%);
+  --hairline:rgba(255,255,255,.7); --accent-rgb:47,111,224; --accent2-rgb:14,143,168;
   color-scheme:light;
 }
 /* Light-mode overrides for surfaces that use tinted dark backgrounds */
@@ -396,7 +400,84 @@ table.dt tr.clickable:hover{transform:none}
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important;scroll-behavior:auto !important}
   .finding .fb{transition:none}
+  body::before{animation:none !important}
 }
+
+/* ============================================================
+   VISUAL POLISH — ambient depth, glassy surfaces, gradient accents, glow
+   ============================================================ */
+/* ambient aurora behind the content */
+body::before{content:"";position:fixed;inset:-10%;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(38% 42% at 12% -5%, rgba(var(--accent-rgb),.14), transparent 62%),
+    radial-gradient(34% 38% at 92% 8%, rgba(var(--accent2-rgb),.11), transparent 60%),
+    radial-gradient(42% 46% at 82% 108%, rgba(168,85,247,.10), transparent 60%);
+  animation:auroraDrift 28s ease-in-out infinite alternate;filter:saturate(1.1)}
+@keyframes auroraDrift{0%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(1.5%,-2%,0) scale(1.06)}100%{transform:translate3d(-1%,1.5%,0) scale(1.03)}}
+:root[data-theme="light"] body::before{opacity:.7}
+
+/* glassy raised surfaces */
+.kpi,.panel,.dz,.si,.finding,.frontpanel,.modal,#tooltip,#searchResults,.toast,.evidence{
+  background-image:var(--sheen);box-shadow:inset 0 1px 0 var(--hairline)}
+.panel{backdrop-filter:saturate(1.05)}
+.kpi{position:relative;overflow:hidden}
+.kpi::after{content:"";position:absolute;left:0;right:0;top:0;height:2px;
+  background:linear-gradient(90deg,var(--accent),var(--accent2));opacity:0;transform:scaleX(.4);transform-origin:left;
+  transition:opacity .28s ease,transform .35s cubic-bezier(.22,.8,.3,1)}
+.kpi:hover::after{opacity:.95;transform:scaleX(1)}
+.kpi:hover{box-shadow:var(--shadow),0 0 0 1px rgba(var(--accent-rgb),.25)}
+.kpi.crit .v{text-shadow:0 0 16px rgba(240,80,60,.5)}
+.kpi.warn .v{text-shadow:0 0 13px rgba(240,138,60,.4)}
+.kpi.ok .v{text-shadow:0 0 12px rgba(46,199,122,.32)}
+.kpi.watch .v{text-shadow:0 0 12px rgba(230,195,74,.32)}
+
+/* animated brand mark + gradient wordmark */
+#brand .logo{background:linear-gradient(135deg,var(--accent),var(--accent2),var(--blockB));background-size:220% 220%;
+  animation:logoShift 7s ease infinite;box-shadow:0 0 16px rgba(var(--accent-rgb),.4)}
+@keyframes logoShift{0%{background-position:0% 50%}50%{background-position:100% 50%}100%{background-position:0% 50%}}
+#brand .t{background:linear-gradient(92deg,var(--txt),var(--accent2) 130%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+#brand .t small{-webkit-text-fill-color:var(--txt3);background:none}
+
+/* topbar hairline glow */
+#topbar{box-shadow:0 1px 0 rgba(var(--accent-rgb),.12)}
+#globalSearch{transition:border-color .18s,box-shadow .22s,background-color .18s}
+#globalSearch:focus{outline:none;border-color:rgba(var(--accent-rgb),.8);box-shadow:0 0 0 3px rgba(var(--accent-rgb),.16)}
+
+/* primary button: gradient + glow */
+.btn.primary{background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--accent) 70%,var(--accent2)));border-color:transparent;
+  box-shadow:0 2px 12px rgba(var(--accent-rgb),.35)}
+.btn.primary:hover{box-shadow:0 5px 20px rgba(var(--accent-rgb),.55);filter:brightness(1.06)}
+
+/* sidebar active: gradient pill + glow */
+#sidebar .nav a.active{background:linear-gradient(90deg,rgba(var(--accent-rgb),.22),rgba(var(--accent-rgb),.04));
+  box-shadow:inset 3px 0 0 var(--accent),0 0 22px rgba(var(--accent-rgb),.1)}
+#sidebar .nav a.active .ic{filter:drop-shadow(0 0 6px rgba(var(--accent-rgb),.6))}
+
+/* gradient scrollbar */
+::-webkit-scrollbar-thumb{background:linear-gradient(180deg,var(--scroll),var(--scroll-h))}
+
+/* severity / status glow */
+.dot-s{box-shadow:0 0 7px currentColor}
+.s-CRITICAL{box-shadow:0 0 9px var(--crit)}
+.chip.CRITICAL,.chip.HIGH{box-shadow:0 0 12px rgba(240,80,60,.22)}
+.finding.CRITICAL{box-shadow:-5px 0 22px -12px rgba(240,80,60,.7)}
+.finding.WARNING{box-shadow:-5px 0 22px -14px rgba(240,138,60,.6)}
+.port.st-CRITICAL{box-shadow:0 0 12px -2px rgba(240,80,60,.5) inset}
+.heat td.h-CRITICAL{box-shadow:0 0 14px -4px rgba(240,80,60,.5)}
+.bl-tag{box-shadow:0 0 10px -3px currentColor}
+
+/* page title flourish */
+.page-h h1{background:linear-gradient(90deg,var(--txt) 30%,var(--accent2));
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:.2px}
+
+/* dropzone hover glow */
+.dz.over{box-shadow:0 0 0 1px var(--accent),0 8px 30px -10px rgba(var(--accent-rgb),.5)}
+
+/* pills */
+.pill.loaded{box-shadow:0 0 10px -3px rgba(46,199,122,.5)}
+
+/* chart-legend interactive feel */
+.chart-legend span:hover{filter:brightness(1.2)}
 @media print{
   #brand,#topbar,#sidebar{display:none}
   #app{display:block;height:auto}
@@ -2235,13 +2316,17 @@ const Chart=(function(){
         if(s.type==="area"){ctx.beginPath();ctx.moveTo(X(s.points[0][0]),base);
           s.points.forEach(p=>ctx.lineTo(X(p[0]),Y(p[1])));
           ctx.lineTo(X(s.points[s.points.length-1][0]),base);ctx.closePath();
-          ctx.fillStyle=scol+"22";ctx.fill();}
+          let fill=scol+"22";
+          if(ctx.createLinearGradient){const g=ctx.createLinearGradient(0,padT,0,base);
+            g.addColorStop(0,scol+"66");g.addColorStop(1,scol+"05");fill=g;}
+          ctx.fillStyle=fill;ctx.fill();}
         if(s.type==="bars"){ctx.fillStyle=scol;
           const bw=Math.max(2,plotW/Math.max(20,s.points.length)*0.6);
           s.points.forEach(p=>{if(p[1]<=0)return;const px=X(p[0]);const py=Y(p[1]);ctx.fillRect(px-bw/2,py,bw,base-py);});return;}
-        ctx.beginPath();ctx.strokeStyle=scol;ctx.lineWidth=s.width||1.6;
+        ctx.beginPath();ctx.strokeStyle=scol;ctx.lineWidth=s.width||1.9;
+        ctx.shadowColor=scol;ctx.shadowBlur=7;ctx.lineJoin="round";
         s.points.forEach((p,i)=>{const px=X(p[0]),py=Y(p[1]);if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);});
-        ctx.stroke();});
+        ctx.stroke();ctx.shadowBlur=0;});
       // markers fade in
       if(prog>0.15){ctx.globalAlpha=Math.min(1,(prog-0.15)/0.85);
         (opts.markers||[]).forEach(m=>{const px=X(m.x);const mcol=rc(m.color||"#f0503c");
@@ -2300,7 +2385,8 @@ const Chart=(function(){
         ctx.fillStyle=tc.txt;ctx.textAlign="left";
         ctx.fillText(clip(it.label,22),4,y+rowH*0.6);
         const full=Math.max(1,it.value/max*barW);const bw=full*prog;
-        ctx.fillStyle=rc(it.color||"#3d8bff");ctx.fillRect(barX,y+2,bw,rowH-6);
+        const bcol=rc(it.color||"#3d8bff");ctx.fillStyle=bcol;
+        ctx.shadowColor=bcol;ctx.shadowBlur=6;ctx.fillRect(barX,y+2,bw,rowH-6);ctx.shadowBlur=0;
         ctx.fillStyle=tc.txt2;ctx.textAlign="left";
         ctx.globalAlpha=prog;
         ctx.fillText(opts.fmt?opts.fmt(it.value):U.n(it.value),barX+full+5,y+rowH*0.6);
@@ -2519,9 +2605,10 @@ const UI=(function(){
       const target=parseInt(raw.replace(/,/g,""),10);
       if(!isFinite(target)||target<=0||target>100000000)return;
       const dur=Math.min(900,300+target.toString().length*140), t0=performance.now();
-      function tick(now){let p=Math.min(1,(now-t0)/dur);p=1-Math.pow(1-p,3);
-        node.textContent=Math.round(target*p).toLocaleString();
-        if(p<1)requestAnimationFrame(tick);else node.textContent=target.toLocaleString();}
+      node._counted=true;
+      function tick(now){let lin=Math.min(1,Math.max(0,(now-t0)/dur));const p=1-Math.pow(1-lin,3);
+        node.textContent=Math.max(0,Math.round(target*p)).toLocaleString();
+        if(lin<1)requestAnimationFrame(tick);else node.textContent=target.toLocaleString();}
       requestAnimationFrame(tick);
     });
   }
