@@ -551,6 +551,7 @@ const Zip=(function(){
       files,
       has:(n)=>!!files[n],
       names:()=>Object.keys(files),
+      bytes:(n)=>bytes(n),
       text:async(n)=>{const by=await bytes(n);return by==null?null:utf8(by);}
     };
   }
@@ -752,7 +753,24 @@ const FileParser=(function(){
     }
     const buf=await readArrayBuffer(file);
     const b=new Uint8Array(buf);
-    if(b[0]===0x50&&b[1]===0x4b){return await Xlsx.parse(buf);} // PK.. zip => xlsx
+    if(b[0]===0x50&&b[1]===0x4b){ // PK.. => xlsx workbook OR a plain .zip bundle of reports
+      const zip=Zip.read(buf);
+      if(zip.has("xl/workbook.xml"))return await Xlsx.parse(buf);
+      // plain zip bundle (e.g. nexus_collect.py output): extract each CSV/XLSX member
+      const members=[];
+      for(const nm of zip.names()){
+        const base=nm.replace(/^.*\//,"");
+        if(/\/$/.test(nm)||/^__MACOSX/.test(nm)||/^\./.test(base))continue;
+        if(/readme|license|collection_errors|notes?|\.md$/i.test(base))continue; // skip doc files
+        if(/\.(csv|txt|tsv)$/i.test(nm)){
+          const t=await zip.text(nm);if(t!=null)members.push({name:nm.replace(/^.*\//,""),result:Csv.parse(t)});
+        }else if(/\.xlsx$/i.test(nm)){
+          const by=await zip.bytes(nm);if(by)members.push({name:nm.replace(/^.*\//,""),result:await Xlsx.parse(by.buffer.slice(by.byteOffset,by.byteOffset+by.byteLength))});
+        }
+      }
+      if(!members.length)throw new Error("ZIP contains no .csv/.xlsx report files");
+      return {bundle:true,members};
+    }
     if(b[0]===0xD0&&b[1]===0xCF&&b[2]===0x11&&b[3]===0xE0){
       throw new Error("Legacy .xls (BIFF/OLE) is not supported in offline mode. Please re-save as .xlsx or .csv and re-upload.");
     }
@@ -1209,7 +1227,21 @@ const Store=(function(){
     return {sheetName:chosen.sheet.name,header:(chosen.sheet.rows[chosen.hp.row]||[]).map(x=>x==null?"":String(x)),
       map:chosen.hp.det.map,missing:chosen.hp.missing,headerRow:chosen.hp.row};
   }
-  return {S,ingest,matchStats,clearAll,allIfaces,allDevices,getDevice,getIface,fmtTs,ikey,preview};
+  // Decide which of the three report types a parsed file is, from its columns.
+  // Distinguishing signals: multicast has a group column; utilization has rx+tx Mbps;
+  // discards have discard/error columns. Falls back to a filename hint.
+  function classify(parseResult,fileName){
+    const uv=preview("util",parseResult), dv=preview("disc",parseResult), mv=preview("mcast",parseResult);
+    if(mv&&mv.map.group!=null&&(!uv||uv.map.rxMbps==null))return "mcast";
+    if(uv&&uv.map.rxMbps!=null&&uv.map.txMbps!=null)return "util";
+    if(dv&&(dv.map.rxDiscards!=null||dv.map.txDiscards!=null||dv.map.rxErrors!=null||dv.map.txErrors!=null))return "disc";
+    const n=(fileName||"").toLowerCase();
+    if(/multicast|mcast|igmp|group/.test(n))return "mcast";
+    if(/discard|error/.test(n))return "disc";
+    if(/util|traffic|link|bandwidth/.test(n))return "util";
+    return null;
+  }
+  return {S,ingest,matchStats,clearAll,allIfaces,allDevices,getDevice,getIface,fmtTs,ikey,preview,classify};
 })();
 /* ======================= Time Correlation / Bucketing ======================= */
 const TimeCorr=(function(){
@@ -2287,7 +2319,7 @@ UI._pending={util:null,disc:null,mcast:null};
 UI.renderImport=function(){
   const el=document.getElementById("view-import");
   const im=Store.S.imports;
-  el.innerHTML=UI.h.page("Import Data","Drag &amp; drop .xlsx / .xls / .csv reports. Processing is 100% local — nothing is uploaded.",
+  el.innerHTML=UI.h.page("Import Data","Drag &amp; drop .xlsx / .csv, or a .zip bundle from nexus_collect.py (auto-routed to the right card). Processing is 100% local — nothing is uploaded.",
     "<button class='btn' onclick=\"UI.loadDemo()\">Load Demo Data</button>")
     +"<div class='import-grid'>"
     +dz("util","1 · Utilization Report","Link utilization / traffic time-series","Hostname · IP · Interface · Receive Mbps · Transmit Mbps · Timestamp",im.util)
@@ -2302,7 +2334,7 @@ function dz(type,title,desc,cols,rep){
   return "<div class='dz"+(done?" done":"")+"' id='dz-"+type+"'>"
     +"<h3>"+title+"</h3><div class='desc'>"+desc+"</div>"
     +"<div class='drop'>Drop file here or <b>browse</b></div>"
-    +"<input type='file' id='file-"+type+"' accept='.xlsx,.xls,.csv,.txt,.tsv' multiple>"
+    +"<input type='file' id='file-"+type+"' accept='.xlsx,.xls,.csv,.txt,.tsv,.zip' multiple>"
     +"<div class='cols'>Recognized columns:<br>"+cols+"</div>"
     +(rep&&rep.files?rep.files.map(f=>"<div class='file'><span>"+U.esc(f)+"</span><span>"+(rep.accepted?"✓":"")+"</span></div>").join(""):"")
     +"</div>";
@@ -2323,6 +2355,24 @@ async function handleFiles(type,fileList){
     try{
       UI.toast("Parsing "+U.esc(file.name)+"…");
       const result=await FileParser.parse(file);
+      // ZIP bundle (e.g. nexus_collect.py output): auto-route each member to its report type
+      if(result&&result.bundle){
+        const labels={util:"Utilization",disc:"Errors/Discards",mcast:"Multicast"};
+        let routed=0;
+        for(const mem of result.members){
+          const t=Store.classify(mem.result,mem.name);
+          if(!t){UI.toast("Skipped <b>"+U.esc(mem.name)+"</b> — could not classify","warn");continue;}
+          const pv=Store.preview(t,mem.result);
+          if(pv&&pv.missing&&pv.missing.length){
+            UI.toast("<b>"+U.esc(mem.name)+"</b> ("+labels[t]+") missing "+pv.missing.join(", ")+" — imported best-effort","warn");
+          }
+          Store.ingest(t,mem.result,file.name+" › "+mem.name);
+          UI.toast("Imported <b>"+U.esc(mem.name)+"</b> → "+labels[t],"ok");
+          routed++;
+        }
+        if(!routed)UI.toast("No report files recognized inside "+U.esc(file.name),"err");
+        continue;
+      }
       const pv=Store.preview(type,result);
       if(pv&&pv.missing&&pv.missing.length){
         UI._pending[type]={result,fileName:file.name,pv};
