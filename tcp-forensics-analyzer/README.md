@@ -136,6 +136,17 @@ Timestamps embedded in the report are capture-start-relative integer
 nanoseconds (kept below 2^53 so JavaScript renders them exactly); absolute
 UTC timestamps are precomputed as strings.
 
+The dashboard uses a dark glassmorphism visual style with fluid,
+GPU-friendly animation: staggered panel/tile entrances, count-up summary
+tiles, animated histogram/CDF draws, a progressively drawn sequence ladder,
+an auto-playing SACK scoreboard that interpolates between events, and
+animated event markers on the latency timeline. The chart series palette
+(dup-ACK magenta, RTT blue, loss orange, DATA→ACK aqua, zero-window violet,
+retransmission red) was validated for color-vision-deficiency separation,
+lightness band and contrast against the dark chart surface, and every mark
+type is also distinguished by shape and legend label — never color alone.
+All motion is disabled automatically under `prefers-reduced-motion`.
+
 ## Architecture
 
 ```

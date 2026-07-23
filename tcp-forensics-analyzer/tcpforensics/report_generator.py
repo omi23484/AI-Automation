@@ -4,6 +4,11 @@ The report consumes the analysis model produced by :mod:`analyzer` — it
 performs *no* TCP interpretation of its own.  All CSS/JS is embedded, no
 external resources are referenced, and the file opens from disk (file://)
 with no server.  CSV exports are generated client-side via Blob URLs.
+
+Visual notes: the chart series palette (dup-ACK magenta, RTT blue, loss
+orange, DATA->ACK aqua, zero-window violet, retransmission red) was
+validated for CVD separation, lightness band and surface contrast against
+the dark chart surface; all motion honours ``prefers-reduced-motion``.
 """
 
 from __future__ import annotations
@@ -27,70 +32,199 @@ _TEMPLATE = r"""<!DOCTYPE html>
 <title>TCP Forensics Report</title>
 <style>
 :root{
-  --bg:#0d1117;--panel:#161b22;--panel2:#1c2129;--border:#2d333b;
-  --fg:#c9d1d9;--dim:#8b949e;--accent:#58a6ff;--ok:#3fb950;--warn:#d29922;
-  --bad:#f85149;--purple:#bc8cff;--orange:#f0883e;--mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  --bg:#0a0e1a;--surface:#10141f;
+  --panel:rgba(22,28,42,.66);--panel2:rgba(30,37,54,.62);--solid:#161c2a;
+  --border:rgba(120,140,190,.16);--border2:rgba(120,140,190,.28);
+  --fg:#d4dae6;--bright:#eef2f8;--dim:#8b95a8;
+  --accent:#3987e5;--accent2:#9085e9;
+  --ok:#2fb35c;--warn:#d29922;--bad:#e66767;
+  --c-rtt:#3987e5;--c-ack:#199e70;--c-retx:#e66767;
+  --c-loss:#d95926;--c-dup:#d55181;--c-zw:#9085e9;
+  --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  --ui:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --glow:0 0 24px rgba(57,135,229,.25);
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 var(--mono)}
-h1,h2,h3{font-weight:600;margin:.4em 0}
-h1{font-size:18px}h2{font-size:15px;color:var(--accent)}h3{font-size:13px;color:var(--dim)}
-a{color:var(--accent);cursor:pointer;text-decoration:none}
-.wrap{max-width:1500px;margin:0 auto;padding:14px}
-.panel{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:14px}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:13px/1.5 var(--mono);font-variant-numeric:tabular-nums;
+  overflow-x:hidden}
+/* ---- ambient background: aurora orbs + engineering grid ---- */
+body::before{content:'';position:fixed;inset:0;z-index:-3;background:
+  radial-gradient(60% 50% at 12% -5%, rgba(57,135,229,.17), transparent 62%),
+  radial-gradient(50% 42% at 88% 8%, rgba(144,133,233,.14), transparent 60%),
+  radial-gradient(45% 45% at 50% 105%, rgba(25,158,112,.08), transparent 60%)}
+body::after{content:'';position:fixed;inset:0;z-index:-2;pointer-events:none;
+  background:
+   linear-gradient(rgba(140,160,210,.035) 1px, transparent 1px),
+   linear-gradient(90deg, rgba(140,160,210,.035) 1px, transparent 1px);
+  background-size:44px 44px;
+  mask-image:radial-gradient(75% 60% at 50% 30%, #000 30%, transparent 100%)}
+.orb{position:fixed;border-radius:50%;filter:blur(90px);z-index:-1;
+  pointer-events:none;opacity:.5;will-change:transform}
+.orb.a{width:520px;height:520px;left:-160px;top:-140px;
+  background:radial-gradient(circle,rgba(57,135,229,.32),transparent 70%);
+  animation:orbA 26s ease-in-out infinite alternate}
+.orb.b{width:460px;height:460px;right:-140px;top:120px;
+  background:radial-gradient(circle,rgba(144,133,233,.26),transparent 70%);
+  animation:orbB 32s ease-in-out infinite alternate}
+@keyframes orbA{from{transform:translate(0,0) scale(1)}to{transform:translate(140px,90px) scale(1.15)}}
+@keyframes orbB{from{transform:translate(0,0) scale(1.1)}to{transform:translate(-120px,160px) scale(.95)}}
+
+h1,h2,h3{font-weight:650;margin:.4em 0;font-family:var(--ui);letter-spacing:.01em}
+h1{font-size:21px;background:linear-gradient(92deg,#eaf1fb 10%,#7fb3f5 45%,#b3a8f5 75%,#eaf1fb 95%);
+  background-size:220% 100%;-webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;animation:sheen 9s linear infinite}
+@keyframes sheen{from{background-position:0% 0}to{background-position:220% 0}}
+h2{font-size:15px;color:var(--bright)}
+h2::before{content:'';display:inline-block;width:9px;height:9px;margin-right:9px;
+  border-radius:3px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+  box-shadow:var(--glow)}
+h3{font-size:12.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+a{color:var(--accent);cursor:pointer;text-decoration:none;transition:color .15s}
+a:hover{color:#7fb3f5}
+.wrap{max-width:1520px;margin:0 auto;padding:16px}
+
+/* ---- glass panels with staggered entrance ---- */
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;
+  padding:16px 18px;margin-bottom:16px;position:relative;
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  box-shadow:0 8px 32px rgba(0,0,0,.35);
+  animation:riseIn .6s cubic-bezier(.22,1,.36,1) both;
+  animation-delay:calc(var(--i,0)*90ms)}
+.panel::before{content:'';position:absolute;inset:0;border-radius:14px;padding:1px;
+  background:linear-gradient(135deg,rgba(57,135,229,.35),transparent 30%,transparent 70%,rgba(144,133,233,.25));
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none}
+@keyframes riseIn{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+
+/* ---- stat tiles ---- */
 .tiles{display:flex;flex-wrap:wrap;gap:10px}
-.tile{background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:10px 14px;min-width:130px}
-.tile .v{font-size:17px;font-weight:700;color:#e6edf3}
-.tile .l{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+.tile{background:var(--panel2);border:1px solid var(--border);border-radius:11px;
+  padding:11px 15px;min-width:132px;position:relative;overflow:hidden;
+  transition:transform .22s cubic-bezier(.22,1,.36,1),box-shadow .22s,border-color .22s;
+  animation:riseIn .55s cubic-bezier(.22,1,.36,1) both;
+  animation-delay:calc(120ms + var(--i,0)*45ms)}
+.tile:hover{transform:translateY(-4px) scale(1.02);border-color:var(--border2);
+  box-shadow:0 12px 28px rgba(0,0,0,.45),var(--glow)}
+.tile::after{content:'';position:absolute;left:0;top:0;right:0;height:2px;
+  background:linear-gradient(90deg,var(--accent),var(--accent2));opacity:.5}
+.tile.ok::after{background:var(--ok)}
+.tile.warn::after{background:var(--warn)}
+.tile.bad::after{background:var(--bad)}
+.tile .v{font-size:18px;font-weight:700;color:var(--bright);letter-spacing:.01em}
+.tile .l{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;margin-top:2px}
 .tile.bad .v{color:var(--bad)}.tile.warn .v{color:var(--warn)}.tile.ok .v{color:var(--ok)}
+.tile.bad .l::after{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--bad);margin-left:6px;vertical-align:1px;animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+
+/* ---- tables ---- */
 table{border-collapse:collapse;width:100%;font-size:12px}
-th,td{border-bottom:1px solid var(--border);padding:4px 8px;text-align:left;white-space:nowrap}
-th{color:var(--dim);cursor:pointer;user-select:none;position:sticky;top:0;background:var(--panel)}
-tr.clickable:hover{background:var(--panel2);cursor:pointer}
-.num{text-align:right;font-variant-numeric:tabular-nums}
-.scroll{overflow:auto;max-height:480px;border:1px solid var(--border);border-radius:4px}
-.badge{display:inline-block;border-radius:10px;padding:1px 8px;font-size:11px;margin:1px 2px;border:1px solid}
-.b-ok{color:var(--ok);border-color:var(--ok)}
-.b-warn{color:var(--warn);border-color:var(--warn)}
-.b-bad{color:var(--bad);border-color:var(--bad)}
-.b-info{color:var(--accent);border-color:var(--accent)}
-.controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center}
-.controls input,.controls select,button{background:var(--panel2);color:var(--fg);
-  border:1px solid var(--border);border-radius:4px;padding:4px 8px;font:12px var(--mono)}
+th,td{border-bottom:1px solid rgba(120,140,190,.10);padding:5px 9px;text-align:left;white-space:nowrap}
+th{color:var(--dim);cursor:pointer;user-select:none;position:sticky;top:0;z-index:2;
+  background:rgba(16,20,31,.92);backdrop-filter:blur(6px);
+  text-transform:uppercase;font-size:10.5px;letter-spacing:.05em;
+  transition:color .15s}
+th:hover{color:var(--accent)}
+tr{transition:background .15s}
+tbody tr,table tr{animation:rowIn .4s ease both;animation-delay:calc(var(--i,0)*22ms)}
+@keyframes rowIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+tr.clickable{cursor:pointer}
+tr.clickable:hover{background:linear-gradient(90deg,rgba(57,135,229,.14),rgba(57,135,229,.04));
+  box-shadow:inset 3px 0 0 var(--accent)}
+.num{text-align:right}
+.scroll{overflow:auto;max-height:480px;border:1px solid var(--border);border-radius:9px;
+  background:rgba(10,14,26,.35)}
+.scroll::-webkit-scrollbar{width:9px;height:9px}
+.scroll::-webkit-scrollbar-thumb{background:rgba(120,140,190,.25);border-radius:5px}
+.scroll::-webkit-scrollbar-thumb:hover{background:rgba(120,140,190,.45)}
+.scroll::-webkit-scrollbar-track{background:transparent}
+
+.badge{display:inline-block;border-radius:20px;padding:1px 9px;font-size:10.5px;margin:1px 2px;
+  border:1px solid;letter-spacing:.02em}
+.b-ok{color:var(--ok);border-color:var(--ok);background:rgba(47,179,92,.09)}
+.b-warn{color:var(--warn);border-color:var(--warn);background:rgba(210,153,34,.09)}
+.b-bad{color:var(--bad);border-color:var(--bad);background:rgba(230,103,103,.09)}
+.b-info{color:var(--accent);border-color:var(--accent);background:rgba(57,135,229,.09)}
+
+/* ---- controls ---- */
+.controls{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:12px;align-items:center}
+.controls input,.controls select,button{background:rgba(30,37,54,.8);color:var(--fg);
+  border:1px solid var(--border);border-radius:7px;padding:5px 10px;font:12px var(--mono);
+  transition:border-color .18s,box-shadow .18s,transform .12s}
+.controls input:focus,.controls select:focus{outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(57,135,229,.18)}
 .controls label{color:var(--dim);font-size:11px}
-button{cursor:pointer}button:hover{border-color:var(--accent)}
-button.primary{border-color:var(--accent);color:var(--accent)}
-.tabs{display:flex;gap:2px;flex-wrap:wrap;border-bottom:1px solid var(--border);margin-bottom:10px}
-.tabs div{padding:6px 14px;cursor:pointer;color:var(--dim);border:1px solid transparent;border-bottom:none;border-radius:5px 5px 0 0}
-.tabs div.active{color:var(--accent);background:var(--panel2);border-color:var(--border)}
-.kv{display:grid;grid-template-columns:max-content 1fr;gap:2px 16px;font-size:12px}
+button{cursor:pointer}
+button:hover{border-color:var(--accent);box-shadow:0 0 12px rgba(57,135,229,.25)}
+button:active{transform:scale(.96)}
+button.primary{border-color:transparent;color:#fff;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  box-shadow:0 2px 12px rgba(57,135,229,.35)}
+input[type=range]{accent-color:var(--accent)}
+
+/* ---- tabs ---- */
+.tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);
+  margin-bottom:12px;padding-bottom:0}
+.tabs div{padding:7px 15px;cursor:pointer;color:var(--dim);border-radius:8px 8px 0 0;
+  position:relative;transition:color .18s,background .18s;font-family:var(--ui);font-size:12.5px}
+.tabs div:hover{color:var(--bright);background:rgba(57,135,229,.07)}
+.tabs div.active{color:var(--bright);background:var(--panel2)}
+.tabs div.active::after{content:'';position:absolute;left:8px;right:8px;bottom:0;height:2px;
+  border-radius:2px;background:linear-gradient(90deg,var(--accent),var(--accent2));
+  animation:tabGlow .35s ease}
+@keyframes tabGlow{from{transform:scaleX(.3);opacity:0}to{transform:none;opacity:1}}
+.tabIn{animation:tabBody .3s cubic-bezier(.22,1,.36,1)}
+@keyframes tabBody{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 18px;font-size:12px}
 .kv .k{color:var(--dim)}
-canvas{background:var(--panel2);border:1px solid var(--border);border-radius:4px;max-width:100%}
-.state-Original{color:var(--fg)}.state-ACKed{color:var(--ok)}.state-SACKed{color:var(--purple)}
-.state-Retransmitted{color:var(--bad)}.state-Duplicate{color:var(--orange)}
+canvas{background:var(--surface);border:1px solid var(--border);border-radius:9px;max-width:100%}
+.state-Original{color:var(--fg)}.state-ACKed{color:var(--ok)}.state-SACKed{color:var(--c-zw)}
+.state-Retransmitted{color:var(--c-retx)}.state-Duplicate{color:var(--c-loss)}
 .state-Out-of-order{color:var(--warn)}.state-Recovered{color:var(--ok)}
 .state-Ambiguous,.state-Missing{color:var(--warn)}
-.tooltip{position:fixed;background:#000c;border:1px solid var(--border);border-radius:4px;
-  padding:6px 8px;font-size:11px;pointer-events:none;z-index:99;white-space:pre;display:none}
-.warnbox{border-left:3px solid var(--warn);padding:6px 10px;margin:6px 0;background:var(--panel2);font-size:12px}
-.verdict{border-left:3px solid var(--border);padding:6px 10px;margin:6px 0;background:var(--panel2)}
+.tooltip{position:fixed;background:rgba(10,14,26,.92);border:1px solid var(--border2);
+  border-radius:8px;padding:7px 10px;font-size:11px;pointer-events:none;z-index:99;
+  white-space:pre;display:none;backdrop-filter:blur(8px);
+  box-shadow:0 8px 24px rgba(0,0,0,.5);animation:ttIn .15s ease}
+@keyframes ttIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.warnbox{border-left:3px solid var(--warn);padding:7px 12px;margin:7px 0;
+  background:rgba(210,153,34,.06);font-size:12px;border-radius:0 8px 8px 0}
+.verdict{border-left:3px solid var(--border2);padding:8px 12px;margin:7px 0;
+  background:var(--panel2);border-radius:0 9px 9px 0;
+  animation:rowIn .45s ease both;animation-delay:calc(var(--i,0)*70ms);
+  transition:transform .18s,box-shadow .18s}
+.verdict:hover{transform:translateX(4px);box-shadow:0 4px 16px rgba(0,0,0,.3)}
 .verdict.ok{border-color:var(--ok)}.verdict.warn{border-color:var(--warn)}
 .verdict.bad{border-color:var(--bad)}.verdict.info{border-color:var(--accent)}
-.verdict .ev{color:var(--dim);font-size:12px;margin-top:2px;white-space:normal}
+.verdict .ev{color:var(--dim);font-size:12px;margin-top:3px;white-space:normal}
 .mut{color:var(--dim)}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media(max-width:1000px){.grid2{grid-template-columns:1fr}}
 #detail{display:none}
-.legend span{margin-right:14px;font-size:11px}
-.dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle}
+#detail.pop{animation:detailIn .45s cubic-bezier(.22,1,.36,1)}
+@keyframes detailIn{from{opacity:0;transform:translateY(26px) scale(.985)}to{opacity:1;transform:none}}
+.legend{margin:6px 0}
+.legend span{margin-right:15px;font-size:11px;color:var(--dim)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:middle}
+.chip{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;
+  background:rgba(57,135,229,.12);border:1px solid rgba(57,135,229,.3);color:#8fbcf2}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation:none !important;transition:none !important}
+  html{scroll-behavior:auto}
+}
 </style>
 </head>
 <body>
+<div class="orb a"></div><div class="orb b"></div>
 <div class="tooltip" id="tt"></div>
 <div class="wrap">
-  <div class="panel" id="hdr"></div>
-  <div class="panel"><div class="tiles" id="tiles"></div></div>
-  <div class="panel" id="latPanel">
+  <div class="panel" style="--i:0" id="hdr"></div>
+  <div class="panel" style="--i:1"><div class="tiles" id="tiles"></div></div>
+  <div class="panel" style="--i:2" id="latPanel">
     <h2>Capture Latency &amp; Recovery Distribution</h2>
     <div class="grid2">
       <div><h3>Valid RTT (Karn-filtered)</h3><div id="gRttStats"></div>
@@ -101,12 +235,12 @@ canvas{background:var(--panel2);border:1px solid var(--border);border-radius:4px
         <canvas id="gRecCdf" width="640" height="150"></canvas></div>
     </div>
   </div>
-  <div class="panel">
+  <div class="panel" style="--i:3">
     <h2>Session Explorer</h2>
     <div class="controls" id="sessFilters"></div>
     <div class="scroll" style="max-height:420px"><table id="sessTable"></table></div>
   </div>
-  <div class="panel">
+  <div class="panel" style="--i:4">
     <h2>Loss &amp; Recovery Dashboard</h2>
     <div class="controls">
       <button onclick="exportLossCsv()">Export loss CSV</button>
@@ -124,19 +258,56 @@ canvas{background:var(--panel2);border:1px solid var(--border);border-radius:4px
 "use strict";
 const M = JSON.parse(document.getElementById('data').textContent);
 const $ = s => document.querySelector(s);
+if(!CanvasRenderingContext2D.prototype.roundRect){ // older-browser fallback
+  CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h){this.rect(x,y,w,h);};
+}
+const MOTION = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const EASE = t => t < .5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2) / 2;
+// series palette — validated for CVD separation & contrast on the dark surface
+const C = {rtt:'#3987e5', ack:'#199e70', retx:'#e66767',
+           loss:'#d95926', dup:'#d55181', zw:'#9085e9',
+           acked:'#199e70', sacked:'#9085e9', hole:'#e66767', out:'#2a3040'};
 let UNIT = 'ns';           // ns | us | ms
 let curSess = null, curTab = 'overview';
+let TILES_ANIMATED = false;
+
+/* ------------------------------------------------------ animation utils */
+function animCanvas(canvas, dur, draw){
+  if(canvas._tok) cancelAnimationFrame(canvas._tok);
+  if(!MOTION){ draw(1); return; }
+  const t0 = performance.now();
+  const step = now => {
+    const p = Math.min(1, (now - t0) / dur);
+    draw(EASE(p));
+    if(p < 1) canvas._tok = requestAnimationFrame(step);
+  };
+  canvas._tok = requestAnimationFrame(step);
+}
+function countUp(el, target, fmt, dur){
+  if(!MOTION || TILES_ANIMATED || typeof target !== 'number' || !isFinite(target)){
+    el.textContent = fmt(target); return;
+  }
+  const t0 = performance.now();
+  const step = now => {
+    const p = Math.min(1, (now - t0) / dur);
+    const v = Math.round(target * EASE(p));
+    el.textContent = fmt(Number.isInteger(target) ? v : target * EASE(p));
+    if(p < 1) requestAnimationFrame(step);
+    else el.textContent = fmt(target);
+  };
+  requestAnimationFrame(step);
+}
 
 /* ---------------------------------------------------------- formatting */
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function fmtInt(n){return n==null?'-':Number(n).toLocaleString('en-US');}
 function fmtNs(ns){ // duration in the selected unit; underlying value stays integer ns
   if(ns==null)return '-';
-  if(UNIT==='ns')return fmtInt(ns)+' ns';
+  if(UNIT==='ns')return fmtInt(Math.round(ns))+' ns';
   if(UNIT==='us')return (ns/1000).toLocaleString('en-US',{maximumFractionDigits:3})+' µs';
   return (ns/1e6).toLocaleString('en-US',{maximumFractionDigits:6})+' ms';
 }
-function fmtTs(ns){ // absolute -> relative to capture start, full ns precision
+function fmtTs(ns){ // capture-start-relative, full ns precision
   if(ns==null)return '-';
   const rel = ns - (M.capture.first_ts||0);
   const s = Math.floor(rel/1e9), f = String(rel-s*1e9).padStart(9,'0');
@@ -147,7 +318,7 @@ function fmtBytes(b){
   if(b>=1e9)return (b/1e9).toFixed(2)+' GB';
   if(b>=1e6)return (b/1e6).toFixed(2)+' MB';
   if(b>=1e3)return (b/1e3).toFixed(1)+' kB';
-  return b+' B';
+  return Math.round(b)+' B';
 }
 function pct(x){return x==null?'-':x.toFixed(2)+'%';}
 function tri(v){return v==null?'unknown':(v?'yes':'no');}
@@ -162,7 +333,7 @@ function renderHeader(){
   $('#hdr').innerHTML =
    '<h1>TCP Session, Sequence, SACK &amp; Nanosecond Latency Forensics</h1>'+
    '<div class="kv">'+
-   '<div class="k">Capture file</div><div>'+esc(c.path)+' <span class="mut">('+esc(c.format)+')</span></div>'+
+   '<div class="k">Capture file</div><div>'+esc(c.path)+' <span class="chip">'+esc(c.format)+'</span></div>'+
    '<div class="k">Capture point</div><div>'+esc(c.capture_point)+' <span class="mut">capture_id='+c.capture_id+'</span></div>'+
    '<div class="k">Timestamp precision</div><div>'+precNote+'</div>'+
    '<div class="k">First packet</div><div>'+esc(c.first_ts_str)+' UTC</div>'+
@@ -175,66 +346,94 @@ function renderHeader(){
        ' onclick="setUnit(\''+u+'\')">'+(u==='us'?'µs':u)+'</button>').join(' ')+
      ' <span class="mut">display only &mdash; internal values remain integer nanoseconds</span></div>'+
    '</div>'+
-   '<div class="mut" style="margin-top:6px">'+esc(M.tool.name)+' v'+esc(M.tool.version)+'</div>';
+   '<div class="mut" style="margin-top:8px">'+esc(M.tool.name)+' v'+esc(M.tool.version)+'</div>';
 }
 function setUnit(u){UNIT=u;renderAll();}
 
 /* -------------------------------------------------------------- tiles */
-function tile(label,val,cls){return '<div class="tile '+(cls||'')+'"><div class="v">'+val+'</div><div class="l">'+label+'</div></div>';}
 function renderTiles(){
   const t=M.totals,r=M.rtt_summary,rec=M.recovery_summary;
-  $('#tiles').innerHTML =
-    tile('Sessions',fmtInt(t.sessions))+
-    tile('TCP packets',fmtInt(t.tcp_packets))+
-    tile('TCP payload',fmtBytes(t.payload_bytes))+
-    tile('Retransmissions',fmtInt(t.retrans_segments),t.retrans_segments?'warn':'ok')+
-    tile('Retrans %',pct(t.retrans_pct),t.retrans_pct>2?'bad':t.retrans_pct>0.5?'warn':'ok')+
-    tile('SACK events',fmtInt(t.sack_events))+
-    tile('DSACK',fmtInt(t.dsack_events))+
-    tile('Loss events',fmtInt(t.loss_events),t.loss_events?'warn':'ok')+
-    tile('Dup ACKs',fmtInt(t.dup_acks))+
-    tile('Out-of-order',fmtInt(t.ooo_packets))+
-    tile('Zero-window',fmtInt(t.zero_window_events),t.zero_window_events?'bad':'ok')+
-    tile('Median RTT',fmtNs(r.median))+
-    tile('P95 RTT',fmtNs(r.p95))+
-    tile('P99 RTT',fmtNs(r.p99))+
-    tile('Max RTT',fmtNs(r.max))+
-    tile('Median recovery',fmtNs(rec.median))+
-    tile('P95 recovery',fmtNs(rec.p95))+
-    tile('Max recovery',fmtNs(rec.max));
+  const defs=[
+    ['Sessions',t.sessions,fmtInt,''],
+    ['TCP packets',t.tcp_packets,fmtInt,''],
+    ['TCP payload',t.payload_bytes,fmtBytes,''],
+    ['Retransmissions',t.retrans_segments,fmtInt,t.retrans_segments?'warn':'ok'],
+    ['Retrans %',t.retrans_pct,pct,t.retrans_pct>2?'bad':t.retrans_pct>0.5?'warn':'ok'],
+    ['SACK events',t.sack_events,fmtInt,''],
+    ['DSACK',t.dsack_events,fmtInt,''],
+    ['Loss events',t.loss_events,fmtInt,t.loss_events?'warn':'ok'],
+    ['Dup ACKs',t.dup_acks,fmtInt,''],
+    ['Out-of-order',t.ooo_packets,fmtInt,''],
+    ['Zero-window',t.zero_window_events,fmtInt,t.zero_window_events?'bad':'ok'],
+    ['Median RTT',r.median,fmtNs,''],
+    ['P95 RTT',r.p95,fmtNs,''],
+    ['P99 RTT',r.p99,fmtNs,''],
+    ['Max RTT',r.max,fmtNs,''],
+    ['Median recovery',rec.median,fmtNs,''],
+    ['P95 recovery',rec.p95,fmtNs,''],
+    ['Max recovery',rec.max,fmtNs,'']];
+  $('#tiles').innerHTML = defs.map((d,i)=>
+    '<div class="tile '+d[3]+'" style="--i:'+i+'"><div class="v" id="tv'+i+'"></div>'+
+    '<div class="l">'+d[0]+'</div></div>').join('');
+  defs.forEach((d,i)=>countUp($('#tv'+i), d[1], d[2], 700+i*40));
+  TILES_ANIMATED = true;
 }
 
 /* ------------------------------------------------------------- charts */
 function drawHist(canvas,h,color){
-  const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);
-  if(!h||!h.counts||!h.counts.length){ctx.fillStyle='#8b949e';ctx.fillText('no samples',10,20);return;}
+  const ctx=canvas.getContext('2d');
+  if(!h||!h.counts||!h.counts.length){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='#8b95a8';ctx.fillText('no samples',10,20);return;
+  }
   const W=canvas.width,H=canvas.height,pad=34,max=Math.max(...h.counts);
-  const bw=(W-pad-8)/h.counts.length;
-  ctx.fillStyle=color||'#58a6ff';
-  h.counts.forEach((c,i)=>{const bh=max?(H-26)*c/max:0;
-    ctx.fillRect(pad+i*bw,H-18-bh,Math.max(1,bw-1),bh);});
-  ctx.fillStyle='#8b949e';ctx.font='10px monospace';
-  ctx.fillText(fmtNs(h.buckets[0]),pad,H-5);
-  const last=fmtNs(h.buckets[h.buckets.length-1]);
-  ctx.fillText(last,W-8-ctx.measureText(last).width,H-5);
-  ctx.save();ctx.translate(10,H/2);ctx.rotate(-Math.PI/2);ctx.fillText('count',0,0);ctx.restore();
-  ctx.fillText('max '+max,pad,12);
+  const bw=(W-pad-8)/h.counts.length, n=h.counts.length;
+  animCanvas(canvas, 650, p=>{
+    ctx.clearRect(0,0,W,H);
+    h.counts.forEach((c,i)=>{
+      const pi=Math.max(0,Math.min(1,(p - (i/n)*0.35)/0.65));
+      const bh=max?(H-30)*c/max*pi:0;
+      const g=ctx.createLinearGradient(0,H-18-bh,0,H-18);
+      g.addColorStop(0,color);g.addColorStop(1,color+'55');
+      ctx.fillStyle=g;
+      const x=pad+i*bw, w=Math.max(1,bw-2);
+      ctx.beginPath();
+      ctx.roundRect(x,H-18-bh,w,Math.max(0,bh),[3,3,0,0]);
+      ctx.fill();
+    });
+    ctx.fillStyle='#8b95a8';ctx.font='10px monospace';
+    ctx.fillText(fmtNs(h.buckets[0]),pad,H-5);
+    const last=fmtNs(h.buckets[h.buckets.length-1]);
+    ctx.fillText(last,W-8-ctx.measureText(last).width,H-5);
+    ctx.save();ctx.translate(10,H/2);ctx.rotate(-Math.PI/2);ctx.fillText('count',0,0);ctx.restore();
+    ctx.fillText('max '+max,pad,12);
+  });
 }
 function drawCdf(canvas,h,color){
-  const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);
-  if(!h||!h.cdf||!h.cdf.length){ctx.fillStyle='#8b949e';ctx.fillText('no samples',10,20);return;}
+  const ctx=canvas.getContext('2d');
+  if(!h||!h.cdf||!h.cdf.length){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='#8b95a8';ctx.fillText('no samples',10,20);return;
+  }
   const W=canvas.width,H=canvas.height,pad=34;
-  const xs=h.cdf.map(p=>p[0]);const lo=xs[0],hi=xs[xs.length-1]||1;
+  const xs=h.cdf.map(q=>q[0]);const lo=xs[0],hi=xs[xs.length-1]||1;
   const X=v=>pad+(hi>lo?(v-lo)/(hi-lo):0)*(W-pad-8);
-  const Y=p=>H-16-(p/100)*(H-28);
-  ctx.strokeStyle=color||'#58a6ff';ctx.beginPath();
-  h.cdf.forEach((p,i)=>{i?ctx.lineTo(X(p[0]),Y(p[1])):ctx.moveTo(X(p[0]),Y(p[1]));});
-  ctx.stroke();
-  ctx.strokeStyle='#2d333b';[50,90,95,99].forEach(p=>{ctx.beginPath();ctx.moveTo(pad,Y(p));ctx.lineTo(W-8,Y(p));ctx.stroke();});
-  ctx.fillStyle='#8b949e';ctx.font='10px monospace';
-  [50,90,99].forEach(p=>ctx.fillText('P'+p,2,Y(p)+3));
-  ctx.fillText('CDF',pad,10);ctx.fillText(fmtNs(lo),pad,H-4);
-  const last=fmtNs(hi);ctx.fillText(last,W-8-ctx.measureText(last).width,H-4);
+  const Y=q=>H-16-(q/100)*(H-28);
+  animCanvas(canvas, 750, p=>{
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle='rgba(120,140,190,.18)';ctx.lineWidth=1;
+    [50,90,95,99].forEach(q=>{ctx.beginPath();ctx.moveTo(pad,Y(q));ctx.lineTo(W-8,Y(q));ctx.stroke();});
+    const upto=Math.max(2,Math.ceil(h.cdf.length*p));
+    ctx.strokeStyle=color;ctx.lineWidth=2;ctx.lineJoin='round';
+    ctx.shadowColor=color;ctx.shadowBlur=6;
+    ctx.beginPath();
+    h.cdf.slice(0,upto).forEach((q,i)=>{i?ctx.lineTo(X(q[0]),Y(q[1])):ctx.moveTo(X(q[0]),Y(q[1]));});
+    ctx.stroke();ctx.shadowBlur=0;
+    ctx.fillStyle='#8b95a8';ctx.font='10px monospace';
+    [50,90,99].forEach(q=>ctx.fillText('P'+q,2,Y(q)+3));
+    ctx.fillText('CDF',pad,10);ctx.fillText(fmtNs(lo),pad,H-4);
+    const last=fmtNs(hi);ctx.fillText(last,W-8-ctx.measureText(last).width,H-4);
+  });
 }
 function statLine(s){
   if(!s||!s.count)return '<span class="mut">no valid samples</span>';
@@ -247,12 +446,11 @@ function statLine(s){
 function renderGlobalCharts(){
   $('#gRttStats').innerHTML=statLine(M.rtt_summary);
   $('#gRecStats').innerHTML=statLine(M.recovery_summary);
-  drawHist($('#gRttHist'),M.rtt_hist,'#58a6ff');drawCdf($('#gRttCdf'),M.rtt_hist,'#58a6ff');
-  drawHist($('#gRecHist'),M.recovery_hist,'#f0883e');drawCdf($('#gRecCdf'),M.recovery_hist,'#f0883e');
+  drawHist($('#gRttHist'),M.rtt_hist,C.rtt);drawCdf($('#gRttCdf'),M.rtt_hist,C.rtt);
+  drawHist($('#gRecHist'),M.recovery_hist,C.loss);drawCdf($('#gRecCdf'),M.recovery_hist,C.loss);
 }
 
 /* -------------------------------------------------- session explorer */
-const F={};   // filter state
 let sortKey='id',sortDir=1;
 function renderSessFilters(){
   $('#sessFilters').innerHTML =
@@ -311,8 +509,8 @@ function renderSessTable(){
     return (x>y?1:x<y?-1:0)*sortDir;});
   let h='<tr>'+SESS_COLS.map(c=>'<th onclick="setSort(\''+c[0]+'\')">'+c[1]+
     (sortKey===c[0]?(sortDir>0?' ▲':' ▼'):'')+'</th>').join('')+'</tr>';
-  for(const s of rows){
-    h+='<tr class="clickable" onclick="openSession('+s.id+')"><td>'+s.label+
+  rows.forEach((s,i)=>{
+    h+='<tr class="clickable" style="--i:'+Math.min(i,30)+'" onclick="openSession('+s.id+')"><td>'+s.label+
       (s.partial?' <span class="badge b-warn">partial</span>':'')+'</td>'+
       '<td>'+esc(s.client)+'</td><td>'+esc(s.server)+'</td>'+
       '<td class="num">'+fmtNs(s.duration_ns)+'</td>'+
@@ -328,7 +526,7 @@ function renderSessTable(){
       '<td class="num">'+fmtNs(s.stats.rtt.p99)+'</td>'+
       '<td class="num">'+fmtInt(s.stats.zero_window_events)+'</td>'+
       '<td>'+esc(s.state)+'</td></tr>';
-  }
+  });
   $('#sessTable').innerHTML=h+(rows.length?'':'<tr><td colspan="16" class="mut">no sessions match the filters</td></tr>');
 }
 function setSort(k){if(sortKey===k)sortDir=-sortDir;else{sortKey=k;sortDir=1;}renderSessTable();}
@@ -344,8 +542,8 @@ function renderLossTable(){
     '<th>Original TX</th><th>Detected</th><th>Retrans</th><th>Recovery</th>'+
     '<th>Detection</th><th>Reaction</th><th>Post-retx</th><th>Total</th>'+
     '<th>SACK</th><th>DupACKs</th><th>Class</th></tr>';
-  for(const {s,e} of allLoss()){
-    h+='<tr class="clickable" onclick="openSession('+s.id+',\'loss\')">'+
+  allLoss().forEach(({s,e},i)=>{
+    h+='<tr class="clickable" style="--i:'+Math.min(i,30)+'" onclick="openSession('+s.id+',\'loss\')">'+
      '<td>'+esc(e.loss_id)+'</td><td>#'+s.id+'</td><td>'+e.dir+'</td>'+
      '<td class="num">'+fmtInt(e.seq)+'–'+fmtInt(e.end)+'</td>'+
      '<td class="num">'+fmtInt(e.bytes)+'</td>'+
@@ -359,27 +557,29 @@ function renderLossTable(){
      '<td class="num">'+fmtNs(e.total_ns)+'</td>'+
      '<td>'+(e.sack?'yes':'no')+'</td><td class="num">'+e.dup_acks+'</td>'+
      '<td>'+esc(e.classification)+(e.recovered?'':' <span class="badge b-bad">unrecovered</span>')+'</td></tr>';
-  }
+  });
   $('#lossTable').innerHTML=h+(allLoss().length?'':'<tr><td colspan="16" class="mut">no loss events</td></tr>');
 }
 
 /* -------------------------------------------------------- session view */
 function openSession(id,tab){
   curSess=M.sessions.find(s=>s.id===id);curTab=tab||'overview';
-  renderDetail();
-  $('#detail').scrollIntoView({behavior:'smooth'});
+  renderDetail(true);
+  $('#detail').scrollIntoView({behavior:MOTION?'smooth':'auto'});
 }
 const TABS=[['overview','Overview'],['sequence','Sequence'],['ack','ACK'],['sack','SACK'],
  ['loss','Loss'],['retrans','Retransmissions'],['rtt','RTT'],['window','Window'],
  ['timeline','Timeline'],['packets','Packets']];
-function renderDetail(){
+function renderDetail(pop){
   const s=curSess;if(!s){$('#detail').style.display='none';return;}
-  $('#detail').style.display='block';
+  const d=$('#detail');
+  d.style.display='block';
+  if(pop){d.classList.remove('pop');void d.offsetWidth;d.classList.add('pop');}
   let h='<h2>'+s.label+' &mdash; '+esc(s.client)+' ⇄ '+esc(s.server)+'</h2>';
   h+='<div class="tabs">'+TABS.map(t=>'<div class="'+(curTab===t[0]?'active':'')+
     '" onclick="switchTab(\''+t[0]+'\')">'+t[1]+'</div>').join('')+'</div>';
   h+='<div id="tabBody"></div>';
-  $('#detail').innerHTML=h;
+  d.innerHTML=h;
   renderTab();
 }
 function switchTab(t){curTab=t;renderDetail();}
@@ -388,7 +588,7 @@ function renderTab(){
   const fn={overview:tabOverview,sequence:tabSequence,ack:tabAck,sack:tabSack,
     loss:tabLoss,retrans:tabRetrans,rtt:tabRtt,window:tabWindow,
     timeline:tabTimeline,packets:tabPackets}[curTab];
-  body.innerHTML=fn(s);
+  body.innerHTML='<div class="tabIn">'+fn(s)+'</div>';
   const post={sack:postSack,timeline:postTimeline,rtt:postRtt,ack:postAck}[curTab];
   if(post)post(s);
 }
@@ -417,10 +617,10 @@ function tabOverview(s){
    ['Out-of-order','ooo_packets'],['Duplicates','dup_packets'],['SACK events','sack_events'],
    ['SACK blocks','sack_blocks'],['SACK holes','sack_holes'],['DSACK','dsack_events'],
    ['Zero-window','zero_window_events'],['MSS','mss'],['Window scale','window_scale']];
-  for(const [lab,k] of rows)h+='<tr><td class="mut">'+lab+'</td><td class="num">'+fmtInt(s.dir_a[k])+'</td><td class="num">'+fmtInt(s.dir_b[k])+'</td></tr>';
+  rows.forEach((r,i)=>{h+='<tr style="--i:'+i+'"><td class="mut">'+r[0]+'</td><td class="num">'+fmtInt(s.dir_a[r[1]])+'</td><td class="num">'+fmtInt(s.dir_b[r[1]])+'</td></tr>';});
   h+='</table></div></div>';
-  h+='<h3>Automated verdicts <span class="mut">(thresholds: '+esc(JSON.stringify(M.verdict_config))+')</span></h3>';
-  for(const v of s.verdicts)h+='<div class="verdict '+v.severity+'"><b>'+esc(v.verdict)+'</b><div class="ev">'+esc(v.evidence)+'</div></div>';
+  h+='<h3>Automated verdicts <span class="mut" style="text-transform:none">(thresholds: '+esc(JSON.stringify(M.verdict_config))+')</span></h3>';
+  s.verdicts.forEach((v,i)=>{h+='<div class="verdict '+v.severity+'" style="--i:'+i+'"><b>'+esc(v.verdict)+'</b><div class="ev">'+esc(v.evidence)+'</div></div>';});
   if(s.warnings.length){h+='<h3>Capture artifact warnings</h3>';
     for(const w of s.warnings)h+='<div class="warnbox">⚠ '+esc(w)+'</div>';}
   return h;
@@ -449,8 +649,8 @@ function renderSeqRows(){
   let h='<tr><th>Time</th><th>Frame</th><th>Dir</th><th>SEQ start</th><th>SEQ end</th><th>NEXTSEQ</th>'+
    '<th>Len</th><th>Flags</th><th>State</th><th>Orig frame</th><th>Retx delay</th>'+
    '<th>ACKed by</th><th>DATA→ACK</th><th>RTT</th><th>SACKed by</th></tr>';
-  for(const r of rows.slice(0,4000)){
-    h+='<tr><td class="num">'+fmtTs(r.ts)+'</td><td class="num">'+r.frame+'</td><td>'+r.dir+'</td>'+
+  rows.slice(0,4000).forEach((r,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+fmtTs(r.ts)+'</td><td class="num">'+r.frame+'</td><td>'+r.dir+'</td>'+
      '<td class="num">'+fmtInt(r.seq)+'</td><td class="num">'+fmtInt(r.end)+'</td><td class="num">'+fmtInt(r.end)+'</td>'+
      '<td class="num">'+r.len+'</td><td>'+r.flags+'</td>'+
      '<td class="state-'+r.state.replace(/ /g,'-')+'">'+r.state+(r.retx_kind?' <span class="mut">('+r.retx_kind+')</span>':'')+'</td>'+
@@ -458,7 +658,7 @@ function renderSeqRows(){
      '<td class="num">'+(r.ack_frame??'-')+'</td><td class="num">'+fmtNs(r.ack_lat)+'</td>'+
      '<td class="num">'+(r.rtt_ambiguous?'<span class="b-warn">AMBIGUOUS</span>':fmtNs(r.rtt))+'</td>'+
      '<td class="num">'+(r.sack_frame??'-')+'</td></tr>';
-  }
+  });
   if(rows.length>4000)h+='<tr><td colspan="15" class="mut">'+fmtInt(rows.length-4000)+' more rows not shown — refine the filter</td></tr>';
   $('#seqTable').innerHTML=h;
 }
@@ -470,21 +670,23 @@ function tabAck(s){
    '<h3>Duplicate ACK trains</h3><div class="scroll" style="max-height:300px"><table><tr>'+
    '<th>Dir</th><th>ACK</th><th>First frame</th><th>First TS</th><th>Dup count</th><th>Inter-ACK gaps</th>'+
    '<th>SACK blocks</th><th>Missing range</th><th>Retrans frame</th><th>Time to retrans</th><th>Time to recovery</th></tr>';
-  for(const t of s.dup_ack_trains){
-    h+='<tr><td>'+t.dir+'</td><td class="num">'+fmtInt(t.ack)+'</td><td class="num">'+t.first_frame+'</td>'+
+  s.dup_ack_trains.forEach((t,i)=>{
+    h+='<tr style="--i:'+i+'"><td>'+t.dir+'</td><td class="num">'+fmtInt(t.ack)+'</td><td class="num">'+t.first_frame+'</td>'+
      '<td class="num">'+fmtTs(t.first_ts)+'</td><td class="num">'+t.count+'</td>'+
      '<td class="num">'+t.gaps_ns.slice(0,6).map(g=>fmtNs(g)).join(', ')+(t.gaps_ns.length>6?' …':'')+'</td>'+
      '<td class="num">'+t.sack_blocks+'</td>'+
      '<td class="num">'+(t.missing_seq!=null?fmtInt(t.missing_seq)+'–'+fmtInt(t.missing_end):'-')+'</td>'+
      '<td class="num">'+(t.retrans_frame??'-')+'</td><td class="num">'+fmtNs(t.time_to_retrans)+'</td>'+
      '<td class="num">'+fmtNs(t.time_to_recovery)+'</td></tr>';
-  }
+  });
   if(!s.dup_ack_trains.length)h+='<tr><td colspan="11" class="mut">no duplicate ACK trains</td></tr>';
   return h+'</table></div>';
 }
-function postAck(s){drawHist($('#ackHist'),s.ack_hist,'#3fb950');}
+function postAck(s){drawHist($('#ackHist'),s.ack_hist,C.ack);}
 
 /* --- SACK tab */
+const sbState={};   // per-id previous drawn scoreboard (for fluid interpolation)
+const sbTimers={};
 function tabSack(s){
   let h='<div class="kv">'+
    '<div class="k">SACK client</div><div>'+tri(s.sack_client)+'</div>'+
@@ -494,51 +696,84 @@ function tabSack(s){
     const snaps=s.sack_snapshots[dir]||[];
     if(!snaps.length)continue;
     const id=dir==='A->B'?'ab':'ba';
-    h+='<h3>SACK scoreboard — data direction '+dir+' <span class="mut">('+snaps.length+' SACK events; step chronologically)</span></h3>'+
+    delete sbState[id];
+    h+='<h3>SACK scoreboard — data direction '+dir+' <span class="mut" style="text-transform:none">('+snaps.length+' SACK events; step chronologically)</span></h3>'+
      '<div class="controls"><button onclick="sbStep(\''+id+'\',-1)">◀ prev</button>'+
-     '<input type="range" id="sb_'+id+'" min="0" max="'+(snaps.length-1)+'" value="0" style="width:340px" oninput="sbDraw(\''+id+'\')">'+
-     '<button onclick="sbStep(\''+id+'\',1)">next ▶</button><span id="sbInfo_'+id+'" class="mut"></span></div>'+
+     '<input type="range" id="sb_'+id+'" min="0" max="'+(snaps.length-1)+'" value="0" style="width:340px" oninput="sbStop(\''+id+'\');sbDraw(\''+id+'\')">'+
+     '<button onclick="sbStep(\''+id+'\',1)">next ▶</button>'+
+     '<button id="sbPlayBtn_'+id+'" class="primary" onclick="sbPlay(\''+id+'\')">▶ play</button>'+
+     '<span id="sbInfo_'+id+'" class="mut"></span></div>'+
      '<canvas id="sbCanvas_'+id+'" width="1100" height="110"></canvas>'+
-     '<div class="legend"><span><span class="dot" style="background:#3fb950"></span>cumulatively ACKed</span>'+
-     '<span><span class="dot" style="background:#bc8cff"></span>SACKed</span>'+
-     '<span><span class="dot" style="background:#f85149"></span>hole / missing</span>'+
-     '<span><span class="dot" style="background:#30363d"></span>outstanding</span></div>';
+     '<div class="legend"><span><span class="dot" style="background:'+C.acked+'"></span>cumulatively ACKed</span>'+
+     '<span><span class="dot" style="background:'+C.sacked+'"></span>SACKed</span>'+
+     '<span><span class="dot" style="background:'+C.hole+'"></span>hole / missing</span>'+
+     '<span><span class="dot" style="background:'+C.out+'"></span>outstanding</span></div>';
   }
   h+='<h3>SACK option records</h3><div class="scroll" style="max-height:320px"><table><tr>'+
    '<th>Frame</th><th>Time</th><th>Data dir</th><th>Cum ACK</th><th>#Blocks</th><th>Blocks (left–right)</th><th>DSACK</th></tr>';
-  for(const r of s.sack_records.slice(0,3000)){
-    h+='<tr><td class="num">'+r.frame+'</td><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.data_dir+'</td>'+
+  s.sack_records.slice(0,3000).forEach((r,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+r.frame+'</td><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.data_dir+'</td>'+
      '<td class="num">'+fmtInt(r.ack)+'</td><td class="num">'+r.blocks.length+'</td>'+
      '<td class="num">'+r.blocks.map(b=>fmtInt(b[0])+'–'+fmtInt(b[1])).join(' | ')+'</td>'+
      '<td>'+(r.dsack?'<span class="badge b-warn">DSACK</span> <span class="mut">'+esc(r.dsack_reason||'')+'</span>':'-')+'</td></tr>';
-  }
+  });
   if(!s.sack_records.length)h+='<tr><td colspan="7" class="mut">no SACK options observed</td></tr>';
   return h+'</table></div>';
 }
 function postSack(s){for(const id of ['ab','ba'])if($('#sb_'+id))sbDraw(id);}
-function sbStep(id,d){const el=$('#sb_'+id);el.value=Math.max(0,Math.min(+el.max,+el.value+d));sbDraw(id);}
+function sbStep(id,d){sbStop(id);const el=$('#sb_'+id);el.value=Math.max(0,Math.min(+el.max,+el.value+d));sbDraw(id);}
+function sbPlay(id){
+  if(sbTimers[id]){sbStop(id);return;}
+  const el=$('#sb_'+id);
+  if(+el.value>=+el.max)el.value=0;
+  $('#sbPlayBtn_'+id).textContent='⏸ pause';
+  sbTimers[id]=setInterval(()=>{
+    if(+el.value>=+el.max){sbStop(id);return;}
+    el.value=+el.value+1;sbDraw(id);
+  }, MOTION?750:400);
+  sbDraw(id);
+}
+function sbStop(id){
+  if(sbTimers[id]){clearInterval(sbTimers[id]);delete sbTimers[id];}
+  const b=$('#sbPlayBtn_'+id);if(b)b.textContent='▶ play';
+}
 function sbDraw(id){
   const dir=id==='ab'?'A->B':'B->A';
   const snaps=curSess.sack_snapshots[dir];const i=+$('#sb_'+id).value;const sn=snaps[i];
   $('#sbInfo_'+id).textContent=' event '+(i+1)+'/'+snaps.length+' frame '+sn.frame+' '+fmtTs(sn.ts)+
     ' ACK='+fmtInt(sn.ack)+(sn.dsack?' [DSACK]':'')+(sn.ack_advanced?' [ACK advanced]':'');
   const cv=$('#sbCanvas_'+id),ctx=cv.getContext('2d');
-  ctx.clearRect(0,0,cv.width,cv.height);
   let lo=sn.ack,hi=sn.ack+1;
   for(const [a,b] of sn.sacked){lo=Math.min(lo,a);hi=Math.max(hi,b);}
   for(const [a,b] of sn.holes){lo=Math.min(lo,a);hi=Math.max(hi,b);}
   lo=Math.min(lo,Math.max(0,sn.ack-(hi-lo)*0.15));
-  const X=v=>30+(hi>lo?(v-lo)/(hi-lo):0)*(cv.width-60);
-  ctx.fillStyle='#30363d';ctx.fillRect(30,40,cv.width-60,28);
-  ctx.fillStyle='#3fb950';ctx.fillRect(30,40,Math.max(0,X(sn.ack)-30),28);
-  for(const [a,b] of sn.sacked){ctx.fillStyle='#bc8cff';ctx.fillRect(X(a),40,Math.max(2,X(b)-X(a)),28);}
-  for(const [a,b] of sn.holes){ctx.fillStyle='#f85149';ctx.fillRect(X(a),40,Math.max(2,X(b)-X(a)),28);}
-  ctx.fillStyle='#8b949e';ctx.font='10px monospace';
-  ctx.fillText(fmtInt(lo),30,90);const t2=fmtInt(hi);ctx.fillText(t2,cv.width-30-ctx.measureText(t2).width,90);
-  ctx.fillStyle='#c9d1d9';ctx.fillText('ACK '+fmtInt(sn.ack),Math.min(cv.width-90,Math.max(30,X(sn.ack))),30);
-  ctx.strokeStyle='#c9d1d9';ctx.beginPath();ctx.moveTo(X(sn.ack),34);ctx.lineTo(X(sn.ack),72);ctx.stroke();
-  for(const [a,b] of sn.holes){ctx.fillStyle='#f85149';
-    ctx.fillText('hole '+fmtInt(a)+'–'+fmtInt(b),Math.max(30,Math.min(cv.width-160,X(a))),105);}
+  const target={ack:sn.ack,lo,hi,sacked:sn.sacked,holes:sn.holes};
+  const prev=sbState[id];
+  sbState[id]=target;
+  const lerp=(a,b,p)=>a+(b-a)*p;
+  const render=p=>{
+    const L=prev?lerp(prev.lo,lo,p):lo, H=prev?lerp(prev.hi,hi,p):hi;
+    const A=prev?lerp(prev.ack,sn.ack,p):sn.ack;
+    const X=v=>30+(H>L?(v-L)/(H-L):0)*(cv.width-60);
+    ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.fillStyle=C.out;ctx.beginPath();ctx.roundRect(30,40,cv.width-60,28,5);ctx.fill();
+    ctx.fillStyle=C.acked;
+    ctx.beginPath();ctx.roundRect(30,40,Math.max(0,X(A)-30),28,[5,0,0,5]);ctx.fill();
+    const alpha=prev?Math.min(1,.35+.65*p):1;
+    ctx.globalAlpha=alpha;
+    for(const [a,b] of sn.sacked){ctx.fillStyle=C.sacked;ctx.fillRect(X(a),40,Math.max(2,X(b)-X(a)),28);}
+    for(const [a,b] of sn.holes){ctx.fillStyle=C.hole;ctx.fillRect(X(a),40,Math.max(2,X(b)-X(a)),28);}
+    ctx.globalAlpha=1;
+    ctx.fillStyle='#8b95a8';ctx.font='10px monospace';
+    ctx.fillText(fmtInt(Math.round(L)),30,92);
+    const t2=fmtInt(Math.round(H));ctx.fillText(t2,cv.width-30-ctx.measureText(t2).width,92);
+    ctx.fillStyle='#eef2f8';ctx.fillText('ACK '+fmtInt(sn.ack),Math.min(cv.width-100,Math.max(30,X(A))),30);
+    ctx.strokeStyle='#eef2f8';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(X(A),34);ctx.lineTo(X(A),72);ctx.stroke();
+    for(const [a,b] of sn.holes){ctx.fillStyle=C.hole;
+      ctx.fillText('hole '+fmtInt(a)+'–'+fmtInt(b),Math.max(30,Math.min(cv.width-170,X(a))),105);}
+  };
+  if(prev)animCanvas(cv,380,render);else render(1);
 }
 
 /* --- loss tab */
@@ -549,8 +784,8 @@ function tabLoss(s){
    '<th>Original TX</th><th>Evidence</th><th>Retrans</th><th>Recovery</th>'+
    '<th>Detection</th><th>Reaction</th><th>Post-retx</th><th>Total</th>'+
    '<th>Mechanism</th><th>SACK reports</th><th>DupACKs</th><th>Extra holes</th><th>Class</th><th></th></tr>';
-  for(const e of s.loss_events){
-    h+='<tr><td>'+esc(e.loss_id)+'</td><td>'+e.dir+'</td>'+
+  s.loss_events.forEach((e,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td>'+esc(e.loss_id)+'</td><td>'+e.dir+'</td>'+
      '<td class="num">'+fmtInt(e.seq)+'–'+fmtInt(e.end)+'</td><td class="num">'+e.bytes+'</td>'+
      '<td class="num">'+fmtTs(e.original_tx)+(e.original_frame?' <span class="mut">#'+e.original_frame+'</span>':'')+'</td>'+
      '<td class="num">'+fmtTs(e.evidence_ts)+' <span class="mut">'+esc(e.evidence_kind)+' #'+(e.evidence_frame??'-')+'</span></td>'+
@@ -564,9 +799,9 @@ function tabLoss(s){
      '<td class="num">'+e.additional_holes+'</td>'+
      '<td>'+esc(e.classification)+(e.classification_evidence?' <span class="mut" title="'+esc(e.classification_evidence)+'">ⓘ</span>':'')+'</td>'+
      '<td><a onclick="jumpToSeq('+e.seq+')">sequence →</a></td></tr>';
-  }
+  });
   if(!s.loss_events.length)h+='<tr><td colspan="18" class="mut">no loss events</td></tr>';
-  setTimeout(()=>drawHist($('#recHist'),s.recovery_hist,'#f0883e'),0);
+  setTimeout(()=>drawHist($('#recHist'),s.recovery_hist,C.loss),0);
   return h+'</table></div>';
 }
 function jumpToSeq(seq){switchTab('sequence');setTimeout(()=>{$('#seqSearch').value=seq;renderSeqRows();},50);}
@@ -576,14 +811,14 @@ function tabRetrans(s){
   let h='<div class="scroll" style="max-height:520px"><table><tr><th>Frame</th><th>Time</th><th>Dir</th>'+
    '<th>SEQ range</th><th>Bytes</th><th>Classification</th><th>Original</th><th>Delay</th>'+
    '<th>DupACKs before</th><th>SACK</th><th>Evidence</th></tr>';
-  for(const r of s.retrans_events){
-    h+='<tr><td class="num">'+r.frame+'</td><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.dir+'</td>'+
+  s.retrans_events.forEach((r,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+r.frame+'</td><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.dir+'</td>'+
      '<td class="num">'+fmtInt(r.seq)+'–'+fmtInt(r.end)+'</td><td class="num">'+r.bytes+'</td>'+
      '<td class="state-Retransmitted">'+esc(r.class)+'</td>'+
      '<td class="num">'+(r.orig_frame?'#'+r.orig_frame+' '+fmtTs(r.orig_ts):'-')+'</td>'+
      '<td class="num">'+fmtNs(r.delay)+'</td><td class="num">'+r.dup_acks+'</td>'+
      '<td>'+(r.sack?'yes':'no')+'</td><td style="white-space:normal;max-width:420px">'+esc(r.evidence)+'</td></tr>';
-  }
+  });
   if(!s.retrans_events.length)h+='<tr><td colspan="11" class="mut">no retransmissions</td></tr>';
   return h+'</table></div>';
 }
@@ -595,12 +830,12 @@ function tabRtt(s){
    '<canvas id="rttHist" width="700" height="170"></canvas><canvas id="rttCdf" width="700" height="150"></canvas>'+
    '<h3>Valid RTT samples</h3><div class="scroll" style="max-height:280px"><table><tr>'+
    '<th>Time</th><th>Kind</th><th>Dir</th><th>SEQ range</th><th>Data frame</th><th>ACK frame</th><th>RTT</th></tr>';
-  for(const r of s.rtt_samples.slice(0,3000)){
-    h+='<tr><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.kind+'</td><td>'+r.dir+'</td>'+
+  s.rtt_samples.slice(0,3000).forEach((r,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.kind+'</td><td>'+r.dir+'</td>'+
      '<td class="num">'+fmtInt(r.seq)+'–'+fmtInt(r.end)+'</td>'+
      '<td class="num">'+r.frame_data+'</td><td class="num">'+r.frame_ack+'</td>'+
      '<td class="num">'+fmtNs(r.rtt)+'</td></tr>';
-  }
+  });
   h+='</table></div>';
   if(s.rtt_ambiguous.length){
     h+='<h3>RTT AMBIGUOUS (excluded, retained for forensics)</h3><div class="scroll" style="max-height:200px"><table><tr>'+
@@ -612,7 +847,7 @@ function tabRtt(s){
   }
   return h;
 }
-function postRtt(s){drawHist($('#rttHist'),s.rtt_hist,'#58a6ff');drawCdf($('#rttCdf'),s.rtt_hist,'#58a6ff');}
+function postRtt(s){drawHist($('#rttHist'),s.rtt_hist,C.rtt);drawCdf($('#rttCdf'),s.rtt_hist,C.rtt);}
 
 /* --- window tab */
 function tabWindow(s){
@@ -620,9 +855,10 @@ function tabWindow(s){
    '<div class="k">A&rarr;B advertised window</div><div>min '+fmtInt(s.dir_a.window_min)+' / max '+fmtInt(s.dir_a.window_max)+' bytes (scale '+fmtInt(s.dir_a.window_scale)+')</div>'+
    '<div class="k">B&rarr;A advertised window</div><div>min '+fmtInt(s.dir_b.window_min)+' / max '+fmtInt(s.dir_b.window_max)+' bytes (scale '+fmtInt(s.dir_b.window_scale)+')</div></div>'+
    '<div class="scroll" style="max-height:420px"><table><tr><th>Time</th><th>Frame</th><th>Advertiser dir</th><th>Kind</th><th>Window</th><th>Detail</th></tr>';
-  for(const w of s.window_events)
-    h+='<tr><td class="num">'+fmtTs(w.ts)+'</td><td class="num">'+w.frame+'</td><td>'+w.dir+'</td>'+
+  s.window_events.forEach((w,i)=>{
+    h+='<tr style="--i:'+i+'"><td class="num">'+fmtTs(w.ts)+'</td><td class="num">'+w.frame+'</td><td>'+w.dir+'</td>'+
      '<td>'+esc(w.kind)+'</td><td class="num">'+fmtInt(w.window)+'</td><td style="white-space:normal">'+esc(w.detail)+'</td></tr>';
+  });
   if(!s.window_events.length)h+='<tr><td colspan="6" class="mut">no window events</td></tr>';
   return h+'</table></div>';
 }
@@ -632,59 +868,74 @@ function tabTimeline(s){
   const n=s.packets.length;
   return '<h3>Sequence ladder ('+esc(s.ep_a)+' left, '+esc(s.ep_b)+' right) — click an arrow for full details</h3>'+
    '<div class="controls"><label>window start <input type="range" id="tlStart" min="0" max="'+Math.max(0,n-1)+'" value="0" style="width:320px" oninput="drawLadder()"></label>'+
-   '<label>events <select id="tlCount" onchange="drawLadder()"><option>30</option><option selected>60</option><option>120</option><option>250</option></select></label>'+
+   '<label>events <select id="tlCount" onchange="drawLadder(true)"><option>30</option><option selected>60</option><option>120</option><option>250</option></select></label>'+
    '<span id="tlInfo" class="mut"></span></div>'+
    '<canvas id="ladder" width="1100" height="600" onclick="ladderClick(event)" onmousemove="ladderHover(event)"></canvas>'+
-   '<div id="ladderDetail" class="warnbox" style="display:none;border-color:var(--accent)"></div>'+
+   '<div id="ladderDetail" class="warnbox" style="display:none;border-color:var(--accent);background:rgba(57,135,229,.07)"></div>'+
    '<h3>Latency timeline — RTT / DATA→ACK samples with loss, retransmission, dup-ACK and zero-window markers</h3>'+
-   '<div class="legend"><span><span class="dot" style="background:#58a6ff"></span>RTT sample</span>'+
-   '<span><span class="dot" style="background:#3fb950"></span>DATA→ACK</span>'+
-   '<span><span class="dot" style="background:#f85149"></span>retransmission</span>'+
-   '<span><span class="dot" style="background:#f0883e"></span>loss evidence</span>'+
-   '<span><span class="dot" style="background:#d29922"></span>dup-ACK train</span>'+
-   '<span><span class="dot" style="background:#bc8cff"></span>zero-window</span></div>'+
+   '<div class="legend">'+
+   '<span><span class="dot" style="background:'+C.dup+'"></span>dup-ACK train</span>'+
+   '<span><span class="dot" style="background:'+C.rtt+'"></span>RTT sample</span>'+
+   '<span><span class="dot" style="background:'+C.loss+'"></span>loss evidence</span>'+
+   '<span><span class="dot" style="background:'+C.ack+'"></span>DATA→ACK</span>'+
+   '<span><span class="dot" style="background:'+C.zw+'"></span>zero-window</span>'+
+   '<span><span class="dot" style="background:'+C.retx+'"></span>retransmission</span></div>'+
    '<canvas id="latTl" width="1100" height="260" onmousemove="latHover(event)"></canvas>';
 }
 let ladderRows=[];
-function postTimeline(s){drawLadder();drawLatTimeline(s);}
-function drawLadder(){
+function postTimeline(s){drawLadder(true);drawLatTimeline(s);}
+function drawLadder(animate){
   const s=curSess,cv=$('#ladder'),ctx=cv.getContext('2d');
   const start=+($('#tlStart')?.value||0),count=+($('#tlCount')?.value||60);
   const rows=s.packets.slice(start,start+count);
   ladderRows=[];
-  ctx.clearRect(0,0,cv.width,cv.height);
   const L=180,R=cv.width-180,top=30,step=Math.max(9,(cv.height-60)/Math.max(1,rows.length));
-  ctx.strokeStyle='#2d333b';
-  ctx.beginPath();ctx.moveTo(L,top-14);ctx.lineTo(L,cv.height-10);ctx.moveTo(R,top-14);ctx.lineTo(R,cv.height-10);ctx.stroke();
-  ctx.fillStyle='#c9d1d9';ctx.font='11px monospace';
-  ctx.fillText(s.ep_a,L-ctx.measureText(s.ep_a).width/2,14);
-  ctx.fillText(s.ep_b,R-ctx.measureText(s.ep_b).width/2,14);
   $('#tlInfo').textContent=' showing '+(start+1)+'–'+(start+rows.length)+' of '+s.packets.length+' packets';
-  rows.forEach((p,i)=>{
+  const rowMeta=rows.map((p,i)=>{
     const y=top+i*step;
     const [frame,ts,dir,seq,end,len,flags,ack,win,sackn,state]=p;
-    const l2r=dir==='A->B';
-    let color='#8b949e';
-    if(state==='Retransmitted')color='#f85149';
-    else if(state==='Duplicate')color='#f0883e';
-    else if(state==='Out-of-order')color='#d29922';
-    else if(len>0)color='#58a6ff';
-    else if(sackn>0)color='#bc8cff';
-    else if(flags.includes('SYN')||flags.includes('FIN')||flags.includes('RST'))color='#e6edf3';
-    ctx.strokeStyle=color;ctx.fillStyle=color;
-    ctx.beginPath();ctx.moveTo(l2r?L:R,y);ctx.lineTo(l2r?R:L,y);ctx.stroke();
-    const hx=l2r?R:L,dx=l2r?-7:7;
-    ctx.beginPath();ctx.moveTo(hx,y);ctx.lineTo(hx+dx,y-4);ctx.lineTo(hx+dx,y+4);ctx.closePath();ctx.fill();
+    let color='#8b95a8';
+    if(state==='Retransmitted')color=C.retx;
+    else if(state==='Duplicate')color=C.loss;
+    else if(state==='Out-of-order')color=C.dup;
+    else if(len>0)color=C.rtt;
+    else if(sackn>0)color=C.zw;
+    else if(flags.includes('SYN')||flags.includes('FIN')||flags.includes('RST'))color='#eef2f8';
     let lab=flags;
     if(len>0)lab='SEQ '+fmtInt(seq)+'–'+fmtInt(end)+' ('+len+'B) '+flags;
-    else if(ack!=null)lab='ACK'+(sackn?'+SACK×'+sackn:'')+' '+flags;
+    else if(ack!=null)lab='ACK'+(sackn>0?'+SACK×'+sackn:'')+' '+flags;
     if(state==='Retransmitted')lab+=' [RETX]';
     if(state==='Out-of-order')lab+=' [OOO]';
-    ctx.fillText(lab,(L+R)/2-ctx.measureText(lab).width/2,y-3);
-    ctx.fillStyle='#8b949e';
-    const tsl=fmtTs(ts);ctx.fillText(tsl,8,y+3);
     ladderRows.push({y,p});
+    return {y,p,color,lab,l2r:dir==='A->B'};
   });
+  const render=pr=>{
+    ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.strokeStyle='rgba(120,140,190,.28)';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(L,top-14);ctx.lineTo(L,cv.height-10);ctx.moveTo(R,top-14);ctx.lineTo(R,cv.height-10);ctx.stroke();
+    ctx.fillStyle='#eef2f8';ctx.font='11px monospace';
+    ctx.fillText(s.ep_a,L-ctx.measureText(s.ep_a).width/2,14);
+    ctx.fillText(s.ep_b,R-ctx.measureText(s.ep_b).width/2,14);
+    const visible=pr*rowMeta.length;
+    rowMeta.forEach((m,i)=>{
+      if(i>=visible)return;
+      const frac=Math.min(1,visible-i);            // arrow grows across
+      const [frame,ts]=m.p;
+      const x0=m.l2r?L:R, x1=m.l2r?R:L;
+      const xe=x0+(x1-x0)*frac;
+      ctx.strokeStyle=m.color;ctx.fillStyle=m.color;ctx.lineWidth=1.4;
+      ctx.beginPath();ctx.moveTo(x0,m.y);ctx.lineTo(xe,m.y);ctx.stroke();
+      if(frac>=1){
+        const dx=m.l2r?-7:7;
+        ctx.beginPath();ctx.moveTo(x1,m.y);ctx.lineTo(x1+dx,m.y-4);ctx.lineTo(x1+dx,m.y+4);ctx.closePath();ctx.fill();
+        ctx.fillText(m.lab,(L+R)/2-ctx.measureText(m.lab).width/2,m.y-3);
+        ctx.fillStyle='#8b95a8';
+        ctx.fillText(fmtTs(ts),8,m.y+3);
+      }
+    });
+  };
+  if(animate&&MOTION)animCanvas(cv,Math.min(1200,140+rows.length*14),render);
+  else{if(cv._tok)cancelAnimationFrame(cv._tok);render(1);}
 }
 function ladderAt(ev){
   const cv=$('#ladder'),r=cv.getBoundingClientRect();
@@ -716,31 +967,51 @@ function ladderClick(ev){
 }
 let latPts=[];
 function drawLatTimeline(s){
-  const cv=$('#latTl'),ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);
+  const cv=$('#latTl'),ctx=cv.getContext('2d');
   latPts=[];
   const t0=s.start_ts,t1=Math.max(s.end_ts,t0+1);
-  const samples=s.rtt_samples.map(r=>({t:r.ts,v:r.rtt,c:'#58a6ff',lab:'RTT '+r.kind}));
-  for(const g of s.segments)if(g.ack_lat!=null&&g.ack_lat>=0)samples.push({t:g.acked_ts,v:g.ack_lat,c:'#3fb950',lab:'DATA→ACK frame '+g.frame});
-  const vmax=Math.max(1,...samples.map(p=>p.v));
+  const samples=s.rtt_samples.map(r=>({t:r.ts,v:r.rtt,c:C.rtt,lab:'RTT '+r.kind}));
+  for(const g of s.segments)if(g.ack_lat!=null&&g.ack_lat>=0&&g.len>0)
+    samples.push({t:g.acked_ts,v:g.ack_lat,c:C.ack,lab:'DATA→ACK frame '+g.frame});
+  samples.sort((a,b)=>a.t-b.t);
+  const vmax=Math.max(1,...samples.map(q=>q.v));
   const X=t=>40+(t-t0)/(t1-t0)*(cv.width-56);
   const Y=v=>cv.height-24-(v/vmax)*(cv.height-46);
-  // event markers
-  function mark(ts,color){if(ts==null)return;ctx.strokeStyle=color;ctx.globalAlpha=.7;
-    ctx.beginPath();ctx.moveTo(X(ts),12);ctx.lineTo(X(ts),cv.height-20);ctx.stroke();ctx.globalAlpha=1;}
-  for(const r of s.retrans_events)mark(r.ts,'#f85149');
-  for(const e of s.loss_events)mark(e.evidence_ts,'#f0883e');
-  for(const t of s.dup_ack_trains)if(t.count>=3)mark(t.first_ts,'#d29922');
-  for(const w of s.window_events)if(w.kind==='zero-window')mark(w.ts,'#bc8cff');
-  for(const p of samples){ctx.fillStyle=p.c;ctx.fillRect(X(p.t)-1.5,Y(p.v)-1.5,3,3);latPts.push({x:X(p.t),y:Y(p.v),p});}
-  ctx.fillStyle='#8b949e';ctx.font='10px monospace';
-  ctx.fillText(fmtNs(vmax),4,14);ctx.fillText('0',4,cv.height-22);
-  ctx.fillText(fmtTs(t0),40,cv.height-6);
-  const te=fmtTs(t1);ctx.fillText(te,cv.width-16-ctx.measureText(te).width,cv.height-6);
+  const markers=[];
+  for(const r of s.retrans_events)markers.push([r.ts,C.retx]);
+  for(const e of s.loss_events)markers.push([e.evidence_ts,C.loss]);
+  for(const t of s.dup_ack_trains)if(t.count>=3)markers.push([t.first_ts,C.dup]);
+  for(const w of s.window_events)if(w.kind==='zero-window')markers.push([w.ts,C.zw]);
+  animCanvas(cv, 800, p=>{
+    ctx.clearRect(0,0,cv.width,cv.height);
+    markers.forEach(([ts,color])=>{
+      if(ts==null)return;
+      ctx.strokeStyle=color;ctx.globalAlpha=.7*p;ctx.lineWidth=1.5;
+      const yTop=12+(1-p)*(cv.height-32);
+      ctx.beginPath();ctx.moveTo(X(ts),yTop);ctx.lineTo(X(ts),cv.height-20);ctx.stroke();
+      ctx.globalAlpha=1;
+    });
+    const visible=p*samples.length;
+    latPts=[];
+    samples.forEach((q,i)=>{
+      if(i>=visible)return;
+      const pop=Math.min(1,visible-i);
+      const r=1.5+1.5*pop;
+      ctx.fillStyle=q.c;ctx.globalAlpha=pop;
+      ctx.beginPath();ctx.arc(X(q.t),Y(q.v),r,0,7);ctx.fill();
+      ctx.globalAlpha=1;
+      latPts.push({x:X(q.t),y:Y(q.v),p:q});
+    });
+    ctx.fillStyle='#8b95a8';ctx.font='10px monospace';
+    ctx.fillText(fmtNs(vmax),4,14);ctx.fillText('0',4,cv.height-22);
+    ctx.fillText(fmtTs(t0),40,cv.height-6);
+    const te=fmtTs(t1);ctx.fillText(te,cv.width-16-ctx.measureText(te).width,cv.height-6);
+  });
 }
 function latHover(ev){
   const cv=$('#latTl'),r=cv.getBoundingClientRect(),tt=$('#tt');
   const x=(ev.clientX-r.left)*cv.width/r.width,y=(ev.clientY-r.top)*cv.height/r.height;
-  let best=null,bd=8;
+  let best=null,bd=9;
   for(const q of latPts){const d=Math.hypot(q.x-x,q.y-y);if(d<bd){bd=d;best=q;}}
   if(best){tt.style.display='block';tt.style.left=(ev.clientX+12)+'px';tt.style.top=(ev.clientY+12)+'px';
     tt.textContent=best.p.lab+'\n'+fmtNs(best.p.v)+' @ '+fmtTs(best.p.t);}
@@ -753,12 +1024,12 @@ function tabPackets(s){
   if(s.packets_truncated)h+='<div class="warnbox">'+fmtInt(s.packets_truncated)+' packet rows omitted from the embedded report (large session) — the sequence ledger and events above remain complete.</div>';
   h+='<div class="scroll" style="max-height:560px"><table><tr><th>Frame</th><th>Time</th><th>Dir</th>'+
    '<th>SEQ(rel)</th><th>End</th><th>Len</th><th>Flags</th><th>ACK(raw)</th><th>Win(raw)</th><th>SACK</th><th>State</th></tr>';
-  for(const p of s.packets.slice(0,6000)){
-    h+='<tr><td class="num">'+p[0]+'</td><td class="num">'+fmtTs(p[1])+'</td><td>'+p[2]+'</td>'+
+  s.packets.slice(0,6000).forEach((p,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+p[0]+'</td><td class="num">'+fmtTs(p[1])+'</td><td>'+p[2]+'</td>'+
      '<td class="num">'+fmtInt(p[3])+'</td><td class="num">'+fmtInt(p[4])+'</td><td class="num">'+p[5]+'</td>'+
      '<td>'+p[6]+'</td><td class="num">'+fmtInt(p[7])+'</td><td class="num">'+fmtInt(p[8])+'</td>'+
      '<td class="num">'+(p[9]||'-')+'</td><td class="state-'+String(p[10]).replace(/ /g,'-')+'">'+ (p[10]||'-')+'</td></tr>';
-  }
+  });
   return h+'</table></div>';
 }
 
