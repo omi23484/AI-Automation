@@ -94,7 +94,14 @@ Set **Warn/High/Critical %** per class (Core, Trading, Internet, WAN, Storage, B
 ### CSV export on tables
 Most tables (Upgrade Watch, Capacity forecast, Link Manager, Anomalies, Audit) have a **⤓ CSV** button in the header that exports exactly the rows shown, for use in Excel or a ticket.
 
-### 2.5 Data management
+### 2.6 Device-name variants (data hygiene)
+When a poller exports the same interface under both a **short hostname** and its **FQDN** (e.g. `CORE1.BSE` and `CORE1.BSE.DOMAIN`), NetPulse would otherwise treat them as two separate links — usually one real link plus a tiny stub — which splits the data and makes the stub easy to pick by mistake in reports.
+- The panel lists every host that appears under more than one name (canonical = the shortest name, with each variant's sample count). **Merge host(s) now** rewrites the stored data so each interface is a single link. The **watchlist, per-link overrides and RCA notes** are carried to the merged link; the canonical link's overrides win on any conflict.
+- **Detection rule (safe):** two names merge only when one is a **dotted prefix** of the other (`X` and `X.…`), so unrelated hosts never merge.
+- **Automatically merge new variants after each upload** — a toggle to re-run the merge on every commit, so re-introduced variants stay merged.
+- Merging rewrites stored data and is **not auto-reversible** (re-upload to undo).
+
+### 2.7 Data management
 - **⤓ Export all data (JSON)** — full local backup.
 - **Reset all data** — wipes uploads, batches, config, audit (confirmation required).
 

@@ -289,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v30</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v31</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -372,6 +372,7 @@ const DEFAULT_CFG={
   // Compliance / regulatory (SEBI CSCRF & BCP-DR capacity, RBI IT/Cyber, CERT-In logging).
   // The threshold is configurable — set it to the value in your current applicable circular.
   regThreshold:0.70, regRetentionDays:180, tz:'Asia/Kolkata',
+  mergeHostnames:false, // auto-merge a link split across a short hostname and its FQDN
   institution:'', reportPreparedBy:'', reportReviewedBy:'', reportApprovedBy:''
 };
 const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},rca:{},watch:[],watchWin:'all',
@@ -824,6 +825,7 @@ async function commitStaged(){
   save('ifinfo');save('batches');
   logAudit('upload.commit',st.parsed.name,`${totalAdded} samples across ${done} file(s)`);
   S.analytics=null;
+  if(S.cfg.mergeHostnames){const m=mergeDeviceVariants();if(m)logAudit('data.mergevariants','auto-on-commit',m+' merged');}
   toast(`✅ Committed ${done} file(s) — ${totalAdded.toLocaleString()} new samples`);
   S.uploadQueue=deferred;
   if(deferred.length)stageNext(); // prompt once for the next distinct layout
@@ -866,6 +868,57 @@ const th=cls=>Object.assign({},S.cfg.thresholds,S.cfg.classThresholds[cls]||{});
 function stateOfT(util,t){if(util==null)return'nodata';if(util>=t.crit)return'critical';if(util>=t.high)return'high';if(util>=t.warn)return'warning';return'normal';}
 function stateOf(util,cls){return stateOfT(util,th(cls));}
 function isBH(ts){const d=new Date(ts),bh=S.cfg.businessHours;if(!bh.days.includes(d.getDay()))return false;const m=d.getHours()*60+d.getMinutes();return m>=bh.startHr*60+(bh.startMin||0)&&m<bh.endHr*60+(bh.endMin||0);}
+
+/* ---- Device-name variant merge --------------------------------------------
+   The same interface can arrive under a short hostname AND its FQDN (e.g.
+   "PJ-CORP.BSELTD" and "PJ-CORP.BSELTD.DOMAIN"), splitting one link into two.
+   Family rule: device A and B are the same host when one name is a dotted-prefix
+   of the other (B === A + ".…"). Union-find keeps the SHORTEST name canonical. */
+function splitIfid(k){const i=k.indexOf('|');return [k.slice(0,i),k.slice(i+1)];}
+function deviceAliasMap(devs){
+  const parent={};devs.forEach(d=>parent[d]=d);
+  const find=d=>{while(parent[d]!==d)d=parent[d]=parent[parent[d]];return d;};
+  const union=(a,b)=>{a=find(a);b=find(b);if(a===b)return;const root=a.length<=b.length?a:b,other=root===a?b:a;parent[other]=root;};
+  for(const A of devs)for(const B of devs)if(A!==B&&B.startsWith(A+'.'))union(A,B);
+  const map={};for(const d of devs){const c=find(d);if(c!==d)map[d]=c;}
+  return map; // { fqdn -> shortname } for every non-canonical variant
+}
+function deviceVariantFamilies(){
+  const cnt={};for(const x of S.samples)cnt[x.dev]=(cnt[x.dev]||0)+1;
+  const map=deviceAliasMap(Object.keys(cnt));const canon=d=>map[d]||d;
+  const fam={};for(const d in cnt){const c=canon(d);(fam[c]=fam[c]||[]).push({dev:d,n:cnt[d]});}
+  return Object.entries(fam).filter(([,ms])=>ms.length>1)
+    .map(([c,ms])=>({canon:c,members:ms.sort((a,b)=>b.n-a.n),total:ms.reduce((s,m)=>s+m.n,0)}))
+    .sort((a,b)=>b.total-a.total);
+}
+function mergeDeviceVariants(){
+  const map=deviceAliasMap([...new Set(S.samples.map(x=>x.dev))]);
+  const keys=Object.keys(map);if(!keys.length)return 0;
+  const canon=d=>map[d]||d;
+  const touched=new Set();
+  for(const x of S.samples)if(map[x.dev]){x.dev=intern(canon(x.dev));x.ifid=intern(x.dev+'|'+x.intf);touched.add(x.batch);}
+  // move/merge each ifid-keyed map old-key → canonical-key
+  const remap=(obj,merge)=>{for(const k of Object.keys(obj)){const [d,intf]=splitIfid(k);if(!map[d])continue;const nk=canon(d)+'|'+intf;if(nk===k)continue;obj[nk]=(nk in obj)?merge(obj[nk],obj[k]):obj[k];delete obj[k];}};
+  remap(S.ifmeta ,(keep,drop)=>({...drop,...keep}));   // canonical link's overrides win
+  remap(S.ifinfo ,(keep,drop)=>({...drop,...keep}));
+  remap(S.rca    ,(keep)=>keep);
+  remap(S.comments,(keep,drop)=>[...(drop||[]),...(keep||[])]); // concat comment threads
+  S.watch=[...new Set(S.watch.map(id=>{const [d,intf]=splitIfid(id);return map[d]?canon(d)+'|'+intf:id;}))];
+  for(const b of touched)IDB.put('spl:'+b,S.samples.filter(x=>x.batch===b));
+  for(const bt of S.batches){const ss=S.samples.filter(x=>x.batch===bt.id);if(ss.length)bt.entities=new Set(ss.map(x=>x.ifid)).size;}
+  save('ifmeta');save('ifinfo');save('rca');save('comments');IDB.put('watch',S.watch);save('batches');
+  S.analytics=null;
+  return keys.length;
+}
+function doMergeVariants(){
+  const fams=deviceVariantFamilies();if(!fams.length){toast('No device-name variants to merge');return;}
+  if(!confirm(`Merge ${fams.length} host(s) reported under more than one device name? This rewrites stored data (re-upload to undo). Watchlist, per-link overrides and RCA notes are carried to the merged link.`))return;
+  const n=mergeDeviceVariants();logAudit('data.mergevariants','',n+' variant name(s) merged');
+  toast(`✅ Merged ${fams.length} host(s) — analytics recomputed`);render();
+}
+function setMergeAuto(v){S.cfg.mergeHostnames=!!v;save('cfg');logAudit('config.mergehostnames','',String(!!v));
+  if(v){const n=mergeDeviceVariants();if(n)logAudit('data.mergevariants','auto',n+' merged');}
+  toast(v?'Auto-merge on':'Auto-merge off');render();}
 
 function computeAnalytics(){
   const groups={};
@@ -1991,6 +2044,18 @@ function view_admin(){
     <div class="mini" style="margin-bottom:10px">The threshold and format must be validated by your compliance team against the current applicable circulars — NetPulse provides the data and structure.</div>
     <button class="btn" onclick="saveCompliance()">Save compliance settings</button>
   </div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Device-name variants</h2><span class="sub">data hygiene — merge one interface split across a short hostname and its FQDN</span></div>
+  ${(()=>{const fams=S.samples.length?deviceVariantFamilies():[];
+    if(!fams.length)return `<div class="small" style="color:var(--muted)">No device-name variants detected — every host uses one consistent name. 👍</div>`;
+    return `<div class="small" style="margin-bottom:10px">${fams.length} host(s) appear under more than one device name, so their interfaces are split into separate links. Merging keys all data — plus watchlist, overrides and RCA notes — to the shortest name:</div>
+    <div style="overflow-x:auto"><table style="min-width:560px"><thead><tr><th>Canonical (kept)</th><th>Variants merged in</th><th>Samples</th></tr></thead><tbody>
+    ${fams.slice(0,25).map(f=>`<tr style="cursor:default"><td><b class="mono">${esc(f.canon)}</b></td><td class="small">${f.members.map(m=>(m.dev===f.canon?'<b>':'')+esc(m.dev)+(m.dev===f.canon?'</b>':'')+' · '+m.n.toLocaleString()).join('<br>')}</td><td class="mono">${f.total.toLocaleString()}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="flex" style="margin-top:12px"><button class="btn" onclick="doMergeVariants()">Merge ${fams.length} host(s) now</button></div>
+    <div class="mini" style="margin-top:6px;color:var(--muted)">Rewrites stored data (not auto-reversible — re-upload to undo). Safe rule: one hostname must be a dotted prefix of the other (short name vs FQDN).</div>`;
+  })()}
+    <label class="fld" style="display:flex;align-items:center;gap:8px;margin-top:14px"><input type="checkbox" id="mergeAuto" ${S.cfg.mergeHostnames?'checked':''} style="width:auto" onchange="setMergeAuto(this.checked)"> <span style="margin:0">Automatically merge new variants after each upload</span></label>
+  </div>
   <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Data management</h2></div><div class="flex"><button class="btn ghost" onclick="exportAll()">⤓ Export all data (JSON)</button><button class="btn ghost" onclick="resetAll()" style="color:var(--errtxt)">Reset all data</button></div></div>`;
 }
 
@@ -2636,7 +2701,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.genRegReport=genRegReport;window.saveCompliance=saveCompliance;window.setMarketHours=setMarketHours;window.saveForecastCfg=saveForecastCfg;window.saveClassThresholds=saveClassThresholds;window.exportTableCSV=exportTableCSV;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.genRegReport=genRegReport;window.saveCompliance=saveCompliance;window.setMarketHours=setMarketHours;window.saveForecastCfg=saveForecastCfg;window.saveClassThresholds=saveClassThresholds;window.exportTableCSV=exportTableCSV;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.doMergeVariants=doMergeVariants;window.setMergeAuto=setMergeAuto;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
