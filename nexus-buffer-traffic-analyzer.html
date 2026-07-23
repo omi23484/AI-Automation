@@ -440,6 +440,7 @@ table.dt tr.clickable:hover{transform:none}
       <a data-view="devices"><span class="ic">▦</span>Devices</a>
       <a data-view="blocks"><span class="ic">▓</span>Buffer Blocks</a>
       <a data-view="interfaces"><span class="ic">≣</span>Interfaces</a>
+      <a data-view="compare"><span class="ic">⇄</span>Compare</a>
       <a data-view="multicast"><span class="ic">⧉</span>Multicast</a>
       <div class="sect">Analysis</div>
       <a data-view="correlation"><span class="ic">⟿</span>Correlation</a>
@@ -473,6 +474,8 @@ table.dt tr.clickable:hover{transform:none}
     <div class="view" id="view-blocks"></div>
     <!-- INTERFACES -->
     <div class="view" id="view-interfaces"></div>
+    <!-- COMPARE -->
+    <div class="view" id="view-compare"></div>
     <!-- MULTICAST -->
     <div class="view" id="view-multicast"></div>
     <!-- CORRELATION -->
@@ -1164,6 +1167,44 @@ const Settings=(function(){
   return {get,set,resetAll,exportJSON,importJSON,saveModels,DEFAULTS,DEFAULT_MODELS};
 })();
 
+/* ======================= Persistence (opt-in, IndexedDB + localStorage fallback) =======================
+   Only stores the loaded monitoring dataset when the user explicitly enables it in Settings.
+   IndexedDB handles large datasets; localStorage is a small-data fallback. */
+const Persist=(function(){
+  const DB="nxf_db", STORE="snap", KEY="data", LS="nxf_snapshot_v1";
+  function idbOpen(){
+    return new Promise((res,rej)=>{
+      if(typeof indexedDB==="undefined")return rej(new Error("no idb"));
+      const r=indexedDB.open(DB,1);
+      r.onupgradeneeded=()=>{try{r.result.createObjectStore(STORE);}catch(e){}};
+      r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error||new Error("idb error"));
+    });
+  }
+  async function save(obj){
+    try{const db=await idbOpen();
+      return await new Promise((res,rej)=>{const tx=db.transaction(STORE,"readwrite");
+        tx.objectStore(STORE).put(obj,KEY);tx.oncomplete=()=>res(true);tx.onerror=()=>rej(tx.error);});
+    }catch(e){
+      try{localStorage.setItem(LS,JSON.stringify(obj));return true;}catch(e2){return false;}
+    }
+  }
+  async function load(){
+    try{const db=await idbOpen();
+      const v=await new Promise((res)=>{const tx=db.transaction(STORE,"readonly");
+        const rq=tx.objectStore(STORE).get(KEY);rq.onsuccess=()=>res(rq.result||null);rq.onerror=()=>res(null);});
+      if(v)return v;
+    }catch(e){}
+    try{const raw=localStorage.getItem(LS);return raw?JSON.parse(raw):null;}catch(e){return null;}
+  }
+  async function clear(){
+    try{const db=await idbOpen();await new Promise((res)=>{const tx=db.transaction(STORE,"readwrite");
+      tx.objectStore(STORE).delete(KEY);tx.oncomplete=()=>res();tx.onerror=()=>res();});}catch(e){}
+    try{localStorage.removeItem(LS);}catch(e){}
+  }
+  function enabled(){return Settings.get().persistData===true;}
+  return {save,load,clear,enabled};
+})();
+
 /* ======================= Buffer Mapping Engine ======================= */
 const BufferMap=(function(){
   function expandRanges(str){ // "1-4,13-16" -> Set{1,2,3,4,13,14,15,16}
@@ -1382,6 +1423,47 @@ const Store=(function(){
     return {sheetName:chosen.sheet.name,header:(chosen.sheet.rows[chosen.hp.row]||[]).map(x=>x==null?"":String(x)),
       map:chosen.hp.det.map,missing:chosen.hp.missing,headerRow:chosen.hp.row};
   }
+  // ---- serialize / hydrate for optional local persistence (compact arrays) ----
+  function serialize(){
+    const devices=[];
+    S.devices.forEach(d=>{
+      const ifs=[];
+      d.interfaces.forEach(it=>ifs.push({i:it.iface,ir:it.ifaceRaw,ip:it.ip,de:it.description,pe:it.peer,pi:it.peerIp,
+        pf:it.peerIface,mc:it.mac,ro:it.role,rd:it.roleDerived,sp:it.speed,sa:it.speedAssumed,vl:it.vlan,fe:it.feed,
+        tg:it.tags,mg:[...it.mcastGroups],iu:it.inUtil,idd:it.inDisc,im:it.inMcast,
+        u:it.util.map(s=>[s.t.getTime(),s.rx,s.tx,s.rxSp,s.txSp]),
+        d:it.disc.map(s=>[s.t.getTime(),s.rd,s.re,s.td,s.te])}));
+      devices.push({k:d.key,n:d.name,ip:d.ip,m:d.model,ifs});
+    });
+    const groups=[];S.groupIndex.forEach((v,g)=>groups.push([g,v]));
+    const imp={};["util","disc","mcast"].forEach(t=>{const r=S.imports[t];if(r)imp[t]={rows:r.rows,accepted:r.accepted,
+      files:r.files,switches:[...r.switches],ifaces:[...r.ifaces],tsMin:r.tsMin,tsMax:r.tsMax,
+      issues:(r.issues||[]).slice(0,400),mapping:r.mapping};});
+    return {v:1,demo:S.demo,tsMin:S.tsMin,tsMax:S.tsMax,files:S.files,devices,groups,imports:imp,savedAt:Date.now()};
+  }
+  function hydrate(snap){
+    clearAll();
+    if(!snap||!snap.devices)return 0;
+    S.demo=!!snap.demo;S.tsMin=snap.tsMin;S.tsMax=snap.tsMax;S.files=snap.files||{util:[],disc:[],mcast:[]};
+    snap.devices.forEach(d=>{
+      const dev=getDevice(d.n,d.ip);dev.model=d.m||BufferMap.defaultModel().id;
+      (d.ifs||[]).forEach(o=>{
+        const it=getIface(dev,o.i,o.ir);
+        it.ip=o.ip;it.description=o.de;it.peer=o.pe;it.peerIp=o.pi;it.peerIface=o.pf;it.mac=o.mc;
+        it.role=o.ro;it.roleDerived=o.rd;it.speed=o.sp;it.speedAssumed=o.sa;it.vlan=o.vl;it.feed=o.fe;
+        it.tags=o.tg||[];it.mcastGroups=new Set(o.mg||[]);it.inUtil=o.iu;it.inDisc=o.idd;it.inMcast=o.im;
+        it.util=(o.u||[]).map(a=>({t:new Date(a[0]),rx:a[1],tx:a[2],rxSp:a[3],txSp:a[4]}));
+        it.disc=(o.d||[]).map(a=>({t:new Date(a[0]),rd:a[1],re:a[2],td:a[3],te:a[4]}));
+      });
+    });
+    (snap.groups||[]).forEach(([g,v])=>S.groupIndex.set(g,v));
+    const imp={util:null,disc:null,mcast:null};
+    if(snap.imports)for(const t in snap.imports){const r=snap.imports[t];if(!r)continue;
+      imp[t]={rows:r.rows,accepted:r.accepted,files:r.files||[],switches:new Set(r.switches||[]),
+        ifaces:new Set(r.ifaces||[]),tsMin:r.tsMin,tsMax:r.tsMax,issues:r.issues||[],mapping:r.mapping};}
+    S.imports=imp;
+    return S.ifaceIndex.size;
+  }
   // Decide which of the three report types a parsed file is, from its columns.
   // Distinguishing signals: multicast has a group column; utilization has rx+tx Mbps;
   // discards have discard/error columns. Falls back to a filename hint.
@@ -1396,7 +1478,7 @@ const Store=(function(){
     if(/util|traffic|link|bandwidth/.test(n))return "util";
     return null;
   }
-  return {S,ingest,matchStats,clearAll,allIfaces,allDevices,getDevice,getIface,fmtTs,ikey,preview,classify};
+  return {S,ingest,matchStats,clearAll,allIfaces,allDevices,getDevice,getIface,fmtTs,ikey,preview,classify,serialize,hydrate};
 })();
 /* ======================= Time Correlation / Bucketing ======================= */
 const TimeCorr=(function(){
@@ -2374,6 +2456,22 @@ const UI=(function(){
       if((e.ctrlKey||e.metaKey)&&e.key==="k"){e.preventDefault();gs.focus();}});
     UI.renderImport();updateSidebar();
     go("overview");
+    // opt-in: restore previously persisted dataset
+    if(Persist.enabled()){
+      Persist.load().then(snap=>{
+        if(snap&&snap.devices&&snap.devices.length&&!hasData()){
+          const n=Store.hydrate(snap);Analyze.finalize();state.sel={type:"all"};
+          reanalyze();toast("Restored "+n+" interfaces from your last session.","ok");
+        }
+      }).catch(()=>{});
+    }
+  }
+  let _saveTimer=null;
+  function saveData(){
+    if(!Persist.enabled())return;
+    clearTimeout(_saveTimer);
+    _saveTimer=setTimeout(()=>{ if(!hasData()){Persist.clear();return;}
+      Persist.save(Store.serialize()).catch(()=>{}); },400);
   }
   function hasData(){return Store.S.ifaceIndex.size>0;}
 
@@ -2388,7 +2486,7 @@ const UI=(function(){
   function baseView(v){return ["device","block","interface","mcgroup"].includes(v)?
     ({device:"devices",block:"blocks",interface:"interfaces",mcgroup:"multicast"}[v]):v;}
   function dispatch(view){
-    if(view!=="import"&&view!=="settings"&&!hasData()&&["overview","devices","blocks","interfaces","multicast","correlation","findings","heatmap","report"].includes(view)){
+    if(view!=="import"&&view!=="settings"&&!hasData()&&["overview","devices","blocks","interfaces","compare","multicast","correlation","findings","heatmap","report"].includes(view)){
       document.getElementById("view-"+view).innerHTML=emptyState();return;}
     switch(view){
       case "overview":UI.renderOverview();break;
@@ -2396,6 +2494,7 @@ const UI=(function(){
       case "devices":UI.renderDevices();break;
       case "blocks":UI.renderBlocks();break;
       case "interfaces":UI.renderInterfaces();break;
+      case "compare":UI.renderCompare();break;
       case "multicast":UI.renderMulticast();break;
       case "correlation":UI.renderCorrelation();break;
       case "findings":UI.renderFindings();break;
@@ -2512,18 +2611,25 @@ const UI=(function(){
   function info(text){return "<span class='info' onmouseenter=\"Tip.show(event.clientX,event.clientY,'"+U.esc(text).replace(/'/g,"&#39;")+"')\" onmouseleave='Tip.hide()'>i</span>";}
 
   function loadDemo(){try{Demo.gen();state.sel={type:"all"};document.getElementById("timeWindow").value="all";
-    reanalyze();go("overview");toast("Synthetic demo dataset loaded. <b>All data is fabricated for demonstration.</b>","ok");
+    reanalyze();go("overview");saveData();toast("Synthetic demo dataset loaded. <b>All data is fabricated for demonstration.</b>","ok");
   }catch(e){toast("Demo generation failed: "+e.message,"err");console.error(e);}}
   function resetApp(){modal("Reset Application","<p>This clears all imported data from this browser session. Local UI preferences, thresholds, switch models and tags are kept unless you also clear settings.</p>"
     +"<div style='margin-top:14px;display:flex;gap:8px;justify-content:flex-end'>"
     +"<button class='btn' onclick='UI.clearSettings()'>Also clear local settings</button>"
     +"<button class='btn primary' onclick='UI.doReset()'>Reset data</button></div>");}
-  function doReset(){Store.clearAll();searchIndex=[];closeModal();updateSidebar();UI.renderImport();go("import");toast("Application data cleared.","ok");}
-  function clearSettings(){Settings.resetAll();Store.clearAll();try{localStorage.removeItem("nxf_tags_v1");}catch(e){}
+  function doReset(){Store.clearAll();searchIndex=[];Persist.clear();closeModal();updateSidebar();UI.renderImport();go("import");toast("Application data cleared.","ok");}
+  function clearSettings(){Settings.resetAll();Store.clearAll();Persist.clear();try{localStorage.removeItem("nxf_tags_v1");}catch(e){}
     closeModal();updateSidebar();go("import");toast("Data and local settings cleared.","ok");}
+  function setPersist(on){
+    Settings.set("persistData",on);
+    if(on){ if(hasData()){Persist.save(Store.serialize()).then(()=>toast("Data persistence enabled — dataset saved locally.","ok"));}
+      else toast("Data persistence enabled — future imports will be saved locally.","ok"); }
+    else{ Persist.clear(); toast("Data persistence disabled — local copy cleared.","ok"); }
+    if(state.view==="settings")UI.renderSettings();
+  }
 
   return {init,go,reanalyze,toast,modal,closeModal,download,info,loadDemo,resetApp,doReset,clearSettings,
-    applyCustomRange,state,hasData,updateSidebar,buildSearchIndex,
+    applyCustomRange,state,hasData,updateSidebar,buildSearchIndex,saveData,applyTheme,setPersist,
     // render fns assigned below
   };
 })();
@@ -2552,15 +2658,21 @@ UI._pending={util:null,disc:null,mcast:null};
 UI.renderImport=function(){
   const el=document.getElementById("view-import");
   const im=Store.S.imports;
-  el.innerHTML=UI.h.page("Import Data","Drag &amp; drop .xlsx / .csv, or a .zip bundle from nexus_collect.py (auto-routed to the right card). Processing is 100% local — nothing is uploaded.",
+  el.innerHTML=UI.h.page("Import Data","Drag &amp; drop .xlsx / .csv, or a .zip bundle from nexus_collect.py (auto-routed). Multiple / mixed files at once are fine. Processing is 100% local — nothing is uploaded.",
     "<button class='btn' onclick=\"UI.loadDemo()\">Load Demo Data</button>")
+    +"<div class='dz' id='dz-auto' style='margin-bottom:14px'>"
+      +"<h3>⤓ Auto-import — drop any report(s) or a .zip here</h3>"
+      +"<div class='desc'>Detects Utilization / Discards / Multicast automatically. Select or drop <b>several files at once</b>.</div>"
+      +"<div class='drop'>Drop files here or <b>browse</b></div>"
+      +"<input type='file' id='file-auto' accept='.xlsx,.xls,.csv,.txt,.tsv,.zip' multiple>"
+    +"</div>"
     +"<div class='import-grid'>"
     +dz("util","1 · Utilization Report","Link utilization / traffic time-series","Hostname · IP · Interface · Receive Mbps · Transmit Mbps · Timestamp",im.util)
     +dz("disc","2 · Errors / Discards","Cumulative error &amp; discard counters","Caption · IP · Interface · RX/TX Discards · RX/TX Errors · Timestamp",im.disc)
     +dz("mcast","3 · Multicast Mapping","Optional — group / VLAN / feed mapping","Switch · Interface · Multicast Group · VLAN · Feed · Role",im.mcast&&im.mcast.rows?im.mcast:null)
     +"</div>"
     +validationPanel();
-  ["util","disc","mcast"].forEach(bindDz);
+  ["auto","util","disc","mcast"].forEach(bindDz);
 };
 function dz(type,title,desc,cols,rep){
   const done=rep&&rep.accepted;
@@ -2606,14 +2718,26 @@ async function handleFiles(type,fileList){
         if(!routed)UI.toast("No report files recognized inside "+U.esc(file.name),"err");
         continue;
       }
-      const pv=Store.preview(type,result);
+      // resolve target report type (explicit card, or auto-detect)
+      const labels={util:"Utilization",disc:"Errors/Discards",mcast:"Multicast"};
+      let target=type;
+      if(type==="auto"){
+        target=Store.classify(result,file.name);
+        if(!target){UI.toast("Could not classify <b>"+U.esc(file.name)+"</b> — drop it on a specific card","warn");continue;}
+      }
+      const pv=Store.preview(target,result);
       if(pv&&pv.missing&&pv.missing.length){
-        UI._pending[type]={result,fileName:file.name,pv};
-        openMapping(type,file.name,pv);
+        if(type==="auto"){ // auto mode: import best-effort rather than blocking on a mapping modal
+          Store.ingest(target,result,file.name);
+          UI.toast("Imported <b>"+U.esc(file.name)+"</b> → "+labels[target]+" (missing "+pv.missing.join(", ")+")","warn");
+          continue;
+        }
+        UI._pending[target]={result,fileName:file.name,pv};
+        openMapping(target,file.name,pv);
         continue;
       }
-      Store.ingest(type,result,file.name);
-      UI.toast("Imported <b>"+U.esc(file.name)+"</b>","ok");
+      Store.ingest(target,result,file.name);
+      UI.toast("Imported <b>"+U.esc(file.name)+"</b>"+(type==="auto"?(" → "+labels[target]):""),"ok");
     }catch(e){
       UI.toast("Failed to import "+U.esc(file.name)+": "+U.esc(e.message),"err");
       console.error(e);
@@ -2621,7 +2745,7 @@ async function handleFiles(type,fileList){
   }
   Analyze.finalize();
   UI.state.sel={type:"all"};document.getElementById("timeWindow").value="all";
-  UI.reanalyze();UI.renderImport();
+  UI.reanalyze();UI.renderImport();UI.saveData();
 }
 function openMapping(type,fileName,pv){
   const schema=ColumnMapper.SCHEMAS[type];
@@ -2643,7 +2767,7 @@ UI.applyMapping=function(type){
   document.querySelectorAll("#modalBody select[data-field]").forEach(s=>{if(s.value!=="")manualMap[s.dataset.field]=+s.value;});
   Store.ingest(type,p.result,p.fileName,manualMap);
   UI._pending[type]=null;UI.closeModal();
-  Analyze.finalize();UI.reanalyze();UI.renderImport();
+  Analyze.finalize();UI.reanalyze();UI.renderImport();UI.saveData();
   UI.toast("Imported <b>"+U.esc(p.fileName)+"</b> with manual mapping","ok");
 };
 function validationPanel(){
@@ -2890,7 +3014,7 @@ UI.deviceModelPick=function(devKey){
     +"<div style='text-align:right;margin-top:10px'><button class='btn primary' onclick=\"UI.applyDeviceModel('"+devKey+"')\">Apply</button></div>");
 };
 UI.applyDeviceModel=function(devKey){const dev=Store.S.devices.get(devKey);
-  dev.model=document.getElementById("dmSel").value;UI.closeModal();Analyze.finalize();UI.reanalyze();UI.go("device",{dev:devKey});};
+  dev.model=document.getElementById("dmSel").value;UI.closeModal();Analyze.finalize();UI.reanalyze();UI.saveData();UI.go("device",{dev:devKey});};
 /* ======================= UI: Buffer Blocks list ======================= */
 UI.renderBlocks=function(){
   const A=Analyze.current();const el=document.getElementById("view-blocks");
@@ -3063,7 +3187,8 @@ UI.renderInterface=function(devKey,iface){
   const m=it.metrics||{},w=it._win||{},c=it.counters||{};
   let html=UI.h.crumbs([{label:"Devices",act:"UI.go('devices')"},{label:it.device,act:"UI.go('device',{dev:'"+devKey+"'})"},
     it.block?{label:"Block "+it.block,act:"UI.go('block',{dev:'"+devKey+"',block:'"+it.block+"'})"}:{label:"—"},{label:it.iface}]);
-  html+=UI.h.page(it.iface+" — "+it.device,(it.description||"")+" · "+A.win.label,UI.h.chip(it.risk?it.risk.overall:"NORMAL"));
+  html+=UI.h.page(it.iface+" — "+it.device,(it.description||"")+" · "+A.win.label,
+    "<button class='btn' onclick=\"UI.compareInterface('"+devKey+"','"+iface+"')\">⇄ Compare</button> "+UI.h.chip(it.risk?it.risk.overall:"NORMAL"));
   // identity
   html+="<div class='split-info' style='grid-template-columns:repeat(4,1fr)'>"
     +si("IP",it.ip||"—")+si("Speed",U.mbps(it.speed)+(it.speedAssumed?" (assumed)":""))
@@ -3125,8 +3250,88 @@ function tagUI(it){
 }
 UI.toggleTag=function(devKey,iface,tag){UI.tags.toggle(devKey+"|"+iface,tag);
   const it=Store.S.ifaceIndex.get(Store.ikey(devKey,iface));if(it)it.tags=UI.tags.get(devKey+"|"+iface);
-  UI.buildSearchIndex();UI.renderInterface(devKey,iface);};
+  UI.buildSearchIndex();UI.saveData();UI.renderInterface(devKey,iface);};
 UI.addCustomTag=function(devKey,iface){const t=prompt("Custom tag:");if(t&&t.trim())UI.toggleTag(devKey,iface,t.trim().toUpperCase());};
+
+/* ======================= UI: Interface Compare ======================= */
+UI._cmp=[];              // list of ikeys (max 4)
+UI._cmpMetric="tx";      // 'tx' | 'rx'
+UI._cmpMarkers=true;     // overlay discard events
+UI.renderCompare=function(){
+  const A=Analyze.current();const el=document.getElementById("view-compare");
+  const all=Store.allIfaces();
+  // prune any selections no longer present
+  UI._cmp=UI._cmp.filter(k=>Store.S.ifaceIndex.has(k));
+  const palette=Chart.COLORS;
+  let opts="<option value=''>+ Add interface…</option>";
+  all.slice().sort((a,b)=>(a.device+a.iface).localeCompare(b.device+b.iface)).forEach(it=>{
+    const k=it.deviceKey+"|"+it.iface;if(UI._cmp.includes(k))return;
+    opts+="<option value='"+U.esc(k)+"'>"+U.esc(it.device+"  "+it.ifaceShort)+(it.block?"  ·B"+it.block:"")+"</option>";});
+  let html=UI.h.page("Interface Compare","Overlay up to 4 interfaces on one timeline · "+A.win.label);
+  html+="<div class='panel'><div class='pb'>";
+  html+="<div class='tbl-controls' style='align-items:center'>";
+  html+="<select class='cfg' onchange=\"UI.cmpAdd(this.value)\" style='max-width:320px'>"+opts+"</select>";
+  html+="<span style='width:12px'></span><span class='mini'>Metric:</span>";
+  html+="<span class='f"+(UI._cmpMetric==="tx"?" active":"")+"' onclick=\"UI.cmpMetric('tx')\">TX</span>";
+  html+="<span class='f"+(UI._cmpMetric==="rx"?" active":"")+"' onclick=\"UI.cmpMetric('rx')\">RX</span>";
+  html+="<label style='display:flex;gap:5px;align-items:center;margin-left:10px' class='mini'><input type='checkbox' "+(UI._cmpMarkers?"checked":"")+" onchange=\"UI.cmpToggleMarkers(this.checked)\"> discard events</label>";
+  html+="<span style='flex:1'></span>";
+  if(UI._cmp.length)html+="<button class='btn' onclick=\"UI.cmpClear()\">Clear all</button>";
+  html+="</div>";
+  // selected chips
+  html+="<div class='badgeset' style='margin:4px 0 10px'>";
+  UI._cmp.forEach((k,i)=>{const it=Store.S.ifaceIndex.get(k);
+    html+="<span class='tag-btn' style='border-left:3px solid "+palette[i%palette.length]+"'>"+U.esc(it.device.replace(/^.*-/,"")+" "+it.ifaceShort)
+      +" <span style='cursor:pointer;opacity:.7' onclick=\"UI.cmpRemove('"+U.esc(k)+"')\">×</span></span>";});
+  if(!UI._cmp.length)html+="<span class='mini'>Add interfaces to compare their traffic and discard behaviour side by side.</span>";
+  html+="</div>";
+  html+="<div class='chart-box'><canvas id='cmpChart'></canvas></div>";
+  html+="<div class='chart-legend'>"+UI._cmp.map((k,i)=>{const it=Store.S.ifaceIndex.get(k);
+    return "<span><span class='sw' style='background:"+palette[i%palette.length]+"'></span>"+U.esc(it.device.replace(/^.*-/,"")+" "+it.ifaceShort)+"</span>";}).join("")+"</div>";
+  html+="</div></div>";
+  // comparison table
+  if(UI._cmp.length){
+    html+=UI.h.panel("Side-by-side Metrics","<div id='cmpTbl'></div>");
+  }
+  el.innerHTML=html;
+  // draw overlay chart
+  const series=[];let markers=[];
+  UI._cmp.forEach((k,i)=>{const it=Store.S.ifaceIndex.get(k);const m=it.metrics;if(!m)return;
+    const col=palette[i%palette.length];
+    const pts=(m.series||[]).map(s=>[s.t.getTime(),(UI._cmpMetric==="rx"?s.rx:s.tx)||0]);
+    series.push({name:it.ifaceShort,color:col,axis:"l",points:pts,type:"line"});
+    if(UI._cmpMarkers&&it.counters){["td","rd"].forEach(f=>{it.counters[f].events.forEach(e=>{
+      if(e.delta>0&&Traffic.inWin(e.t,A.win.w0,A.win.w1,A.win.pred))markers.push({x:e.t.getTime(),label:it.ifaceShort+" disc Δ",value:e.delta,color:col});});});}
+  });
+  Chart.timeSeries(document.getElementById("cmpChart"),series,{height:300,lUnit:"mbps",markers,x0:A.win.w0,x1:A.win.w1});
+  if(UI._cmp.length){
+    const rows=UI._cmp.map(k=>{const it=Store.S.ifaceIndex.get(k);const m=it.metrics||{},w=it._win||{};
+      return {it,dev:it.device,iface:it.ifaceShort,block:it.block,speed:it.speed,
+        maxRx:m.maxRx,maxTx:m.maxTx,avgTx:m.avgTx,p95Tx:m.p95Tx,util:m.maxUtilPct,pa:m.peakToAvg,
+        disc:(w.rxDiscDelta||0)+(w.txDiscDelta||0),err:(w.rxErrDelta||0)+(w.txErrDelta||0)};});
+    Table.make(document.getElementById("cmpTbl"),{controls:false,pageSize:10,
+      onRowClick:r=>UI.go("interface",{dev:r.it.deviceKey,iface:r.it.iface}),rows,columns:[
+        {key:"dev",label:"Switch",cls:"txt"},{key:"iface",label:"Interface",render:r=>"<b>"+U.esc(r.iface)+"</b>"},
+        {key:"block",label:"Block",render:r=>r.block?UI.h.blockTag(r.block):"—"},
+        {key:"maxTx",label:"Peak TX",cls:"num",render:r=>U.mbps(r.maxTx)},
+        {key:"maxRx",label:"Peak RX",cls:"num",render:r=>U.mbps(r.maxRx)},
+        {key:"avgTx",label:"Avg TX",cls:"num",render:r=>U.mbps(r.avgTx)},
+        {key:"p95Tx",label:"P95 TX",cls:"num",render:r=>U.mbps(r.p95Tx)},
+        {key:"util",label:"Max Util%",cls:"num",render:r=>r.util!=null?U.pct(r.util):"—"},
+        {key:"pa",label:"Peak/Avg",cls:"num",render:r=>r.pa!=null?r.pa.toFixed(1)+"x":"—"},
+        {key:"disc",label:"Discard Δ",cls:"num",render:r=>r.disc?("<span style='color:var(--warn)'>"+U.n(r.disc)+"</span>"):"0"},
+        {key:"err",label:"Error Δ",cls:"num",render:r=>r.err?("<span style='color:var(--crit)'>"+U.n(r.err)+"</span>"):"0"}
+      ]});
+  }
+};
+UI.cmpAdd=function(k){if(!k)return;if(UI._cmp.length>=4){UI.toast("Compare supports up to 4 interfaces.","warn");return;}
+  if(!UI._cmp.includes(k))UI._cmp.push(k);UI.renderCompare();};
+UI.cmpRemove=function(k){UI._cmp=UI._cmp.filter(x=>x!==k);UI.renderCompare();};
+UI.cmpClear=function(){UI._cmp=[];UI.renderCompare();};
+UI.cmpMetric=function(m){UI._cmpMetric=m;UI.renderCompare();};
+UI.cmpToggleMarkers=function(on){UI._cmpMarkers=on;UI.renderCompare();};
+UI.compareInterface=function(devKey,iface){const k=devKey+"|"+iface;if(!UI._cmp.includes(k)){if(UI._cmp.length>=4)UI._cmp.shift();UI._cmp.push(k);}UI.go("compare");};
+
 /* ======================= UI: Multicast ======================= */
 UI._mcTab="groups";
 UI.renderMulticast=function(){
@@ -3430,7 +3635,8 @@ UI.renderSettings=function(){
     modelsEditor()+"<button class='btn' style='margin-top:8px' onclick=\"UI.addModel()\">+ Add Model</button>");
   // data/privacy
   html+=UI.h.panel("Data &amp; Privacy",
-    "<div class='form-row'><label>Persist uploaded data in browser "+UI.info("Off by default. Only UI prefs, thresholds, models and tags are stored locally.")+"</label><input type='checkbox' "+(s.persistData?"checked":"")+" disabled title='Session-only storage in this build'></div>"
+    "<div class='form-row'><label>Persist uploaded data in browser "+UI.info("Off by default. When on, the loaded dataset is saved locally (IndexedDB) and restored on next open. Nothing leaves this browser.")+"</label><input type='checkbox' "+(s.persistData?"checked":"")+" onchange=\"UI.setPersist(this.checked)\"></div>"
+    +"<div class='mini' style='padding:2px 0'>"+(s.persistData?"<span style='color:var(--ok)'>Enabled</span> — current dataset is stored locally and restored on next open.":"Disabled — data is kept only for this session.")+"</div>"
     +"<div class='mini' style='padding:6px 0'>Offline Analysis — no external calls, no telemetry, no analytics, no remote fonts. Data remains in this browser session.</div>"
     +"<div style='margin-top:8px'><button class='btn' onclick=\"UI.resetApp()\">Reset Application</button> <button class='btn' onclick=\"UI.clearSettings()\">Clear Local Settings</button></div>");
   el.innerHTML=html;
