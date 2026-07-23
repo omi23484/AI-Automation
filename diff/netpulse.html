@@ -289,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v28</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v29</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1879,13 +1879,17 @@ function view_upgrade(){
 function winEnd_(dataEnd){return dataEnd;}
 function view_reports(){
   const reports=[['exec','Executive Summary'],['capacity','Weekly Capacity Report'],['trend','Monthly Trend Report'],['busy','Top Busy Links'],['critical','Top Critical Links'],['idle','Idle Links'],['impact','Business Impact Report']];
-  const links=S.samples.length?[...A().ifs].sort((x,y)=>x.dev.localeCompare(y.dev)||x.intf.localeCompare(y.intf)):[];
+  // Rank the scope pickers by relevance — links that meet the upgrade trigger first,
+  // then busiest by p95 — so the link you actually want to report on is at the top and
+  // clearly flagged, instead of hidden alphabetically among quiet links.
+  const links=S.samples.length?[...A().ifs].sort((x,y)=>(y.upgradeNeeded-x.upgradeNeeded)||(y.p95-x.p95)||x.dev.localeCompare(y.dev)||x.intf.localeCompare(y.intf)):[];
+  const scopeLabel=r=>`${esc(r.dev)} ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''} · p95 ${(r.p95*100).toFixed(0)}%${r.upgradeNeeded?' · ⚠ upgrade':''}`;
   const ur=S.cfg.upgradeRule;
   return crumb([['Reports']])+`<div class="sec-title"><h2>Business Reports</h2><span class="sub">generated · grounded · exportable</span></div>
   <div class="panel pad" style="margin-bottom:16px;border:1px solid var(--stroke2)">
     <div class="sec-title"><h2>📋 Regulatory Capacity Report — SEBI / RBI</h2><span class="sub">formal, sign-off-ready capacity utilization &amp; augmentation report vs your regulatory threshold${S.cfg.institution?' · '+esc(S.cfg.institution):''}</span></div>
     <div class="flex" style="gap:12px">
-      <label class="fld" style="margin:0;min-width:300px"><span>Scope</span><select id="regScope" style="width:100%" ${links.length?'':'disabled'}><option value="all">All links</option>${links.map(r=>`<option value="${esc(r.ifid)}">${esc(r.dev)} ${esc(r.intf)}</option>`).join('')}</select></label>
+      <label class="fld" style="margin:0;min-width:340px"><span>Scope</span><select id="regScope" style="width:100%" ${links.length?'':'disabled'}><option value="all">All links (${links.length})</option>${links.map(r=>`<option value="${esc(r.ifid)}">${scopeLabel(r)}</option>`).join('')}</select></label>
       <button class="btn" style="margin-top:16px" ${links.length?'':'disabled'} onclick="genRegReport($('#regScope').value,'xlsx')">⤓ Excel</button>
       <button class="btn ghost" style="margin-top:16px" ${links.length?'':'disabled'} onclick="genRegReport($('#regScope').value,'pdf')">🖨 PDF</button>
       <button class="btn ghost" style="margin-top:16px" ${links.length?'':'disabled'} onclick="genRegReport($('#regScope').value,'html')">HTML</button>
@@ -1895,9 +1899,9 @@ function view_reports(){
   <div class="panel pad" style="margin-bottom:16px">
     <div class="sec-title"><h2>📊 Upgrade Policy Hits — Excel report</h2><span class="sub">customer-facing .xlsx: every timestamp the upgrade threshold was crossed, with the utilization at that moment</span></div>
     <div class="flex" style="gap:12px">
-      <label class="fld" style="margin:0;min-width:300px"><span>Scope</span><select id="upXlsxScope" style="width:100%" ${links.length?'':'disabled'}>
-        <option value="all">All links</option>
-        ${links.map(r=>`<option value="${esc(r.ifid)}">${esc(r.dev)} ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''}</option>`).join('')}
+      <label class="fld" style="margin:0;min-width:340px"><span>Scope</span><select id="upXlsxScope" style="width:100%" ${links.length?'':'disabled'}>
+        <option value="all">All links (${links.length})</option>
+        ${links.map(r=>`<option value="${esc(r.ifid)}">${scopeLabel(r)}</option>`).join('')}
       </select></label>
       <button class="btn" style="margin-top:16px" ${links.length?'':'disabled'} onclick="genUpgradePolicyXlsx($('#upXlsxScope').value)">⤓ Generate .xlsx</button>
       <span class="mini" style="margin-top:16px">policy: util &gt; ${ur.utilPct}%${ur.businessHoursOnly?' in business hours':''} for ${ur.days} day(s) — edit in Admin → Link upgrade policy · two sheets: Summary + Policy Hits</span>
