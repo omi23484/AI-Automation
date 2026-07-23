@@ -769,7 +769,36 @@ const Normalize=(function(){
     const isMc=o[0]>=224&&o[0]<=239;
     return {value:o.join("."),valid:isMc};
   }
-  return {iface,ifaceShort,device,deviceKey,num,speedMbps,ts,mcastGroup};
+  // Extract embedded metadata from rich "Interface Name" / "Full Name" columns seen in real
+  // SolarWinds-style exports, e.g.:
+  //   "Ethernet1/1 · *** bsepjtme11.bseindia.com | 000f.53b4.3f61 ***"          (server port)
+  //   "LF4 - Ethernet1/47 · Connected to PJT-EQX-EDX-ORD-SP2 | IP:10.6.2.228 | Interface: Et1/1" (uplink)
+  function parseRich(raw){
+    const out={description:null,peer:null,peerIp:null,peerIface:null,mac:null,roleGuess:null};
+    if(raw==null)return out;
+    const s=String(raw);
+    const mac=s.match(/\b([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})\b/);
+    if(mac)out.mac=mac[1].toLowerCase();
+    const peer=s.match(/connected to\s+([^\s|]+)/i);
+    if(peer){out.peer=peer[1];out.roleGuess=/sp\d*$|spine|core|eqx/i.test(peer[1])?"UPLINK":"UPLINK";}
+    const pip=s.match(/IP:\s*(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/i);
+    if(pip)out.peerIp=pip[1];
+    const pif=s.match(/Interface:\s*([A-Za-z0-9\/._-]+)/i);
+    if(pif)out.peerIface=pif[1];
+    // "*** hostname | mac ***" -> hostname is the connected node/description
+    const star=s.match(/\*\*\*\s*([^|*]+?)\s*(?:\||\*\*\*)/);
+    if(star){const host=star[1].trim();
+      if(host&&!/^[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}/.test(host)){out.description=host;
+        if(!out.peer&&/\.(com|net|local|in)$|bseindia/i.test(host))out.roleGuess="SERVER";}}
+    // fallback description: text after "· " that isn't a "Connected to"/star block
+    if(!out.description&&!out.peer){
+      const dot=s.split(/·|\s-\s/).map(x=>x.trim()).filter(Boolean);
+      const last=dot[dot.length-1];
+      if(last&&!/ethernet\d|^\*+$/i.test(last)&&last.length>2&&last!==s.trim())out.description=last.replace(/\*+/g,"").trim()||null;
+    }
+    return out;
+  }
+  return {iface,ifaceShort,device,deviceKey,num,speedMbps,ts,mcastGroup,parseRich};
 })();
 
 /* ======================= Column Mapper ======================= */
@@ -855,7 +884,7 @@ const Settings=(function(){
   };
   const DEFAULT_MODELS=[{
     id:"N3548P-XL", name:"Cisco Nexus 3548P-XL (N3K)", ports:48, portSpeedMbps:10000,
-    notes:"48 x 1/10G. Block membership & 6 MB shared-buffer-per-block are CONFIGURED ASSUMPTIONS, not verified hardware truth.",
+    notes:"48 x 1/10G. Blocks map to hardware buffer Pools A/B/C (16 ports each): 6 MB shared per pool, 18 MB total, each pool shared by its 16 ports only. These values are CONFIGURED ASSUMPTIONS, not verified hardware truth.",
     blocks:[
       {name:"A", ports:"1-4,13-16,25-28,37-40", bufferMB:6},
       {name:"B", ports:"5-8,17-20,29-32,41-44", bufferMB:6},
@@ -958,7 +987,8 @@ const Store=(function(){
     if(!it){
       it={device:dev.name,deviceKey:dev.key,ip:dev.ip,iface:ifaceNorm,ifaceRaw:ifaceRaw||ifaceNorm,
         ifaceShort:Normalize.ifaceShort(ifaceNorm),
-        description:null,peer:null,role:null,speed:null,speedAssumed:false,block:null,
+        description:null,peer:null,peerIp:null,peerIface:null,mac:null,role:null,roleDerived:false,
+        speed:null,speedAssumed:false,block:null,
         tags:[],mcastGroups:new Set(),vlan:null,feed:null,
         util:[],disc:[],metrics:null,counters:null,inUtil:false,inDisc:false,inMcast:false};
       S.ifaceIndex.set(k,it);dev.interfaces.set(ifaceNorm,it);
@@ -968,6 +998,16 @@ const Store=(function(){
   function trackTs(d){if(!d)return;const t=d.getTime();
     if(S.tsMin==null||t<S.tsMin)S.tsMin=t;if(S.tsMax==null||t>S.tsMax)S.tsMax=t;}
 
+  // merge parsed rich metadata into an interface without overwriting better existing values
+  function applyRich(it,r){
+    if(!r)return;
+    if(r.description&&!it.description)it.description=r.description;
+    if(r.peer&&!it.peer)it.peer=r.peer;
+    if(r.peerIp&&!it.peerIp)it.peerIp=r.peerIp;
+    if(r.peerIface&&!it.peerIface)it.peerIface=r.peerIface;
+    if(r.mac&&!it.mac)it.mac=r.mac;
+    if(r.roleGuess&&!it.role){it.role=r.roleGuess;it.roleDerived=true;}
+  }
   function newReport(){return {rows:0,accepted:0,switches:new Set(),ifaces:new Set(),
     tsMin:null,tsMax:null,issues:[],files:[]};}
   function addIssue(rep,type,message,detail){rep.issues.push({type,message,detail:detail||null});}
@@ -1019,6 +1059,8 @@ const Store=(function(){
       const dev=getDevice(devName,ip);
       const it=getIface(dev,ifaceNorm,ifaceRaw);
       rep.switches.add(dev.key);rep.ifaces.add(ikey(dev.key,ifaceNorm));
+      // extract embedded metadata from the rich interface-name column (utilization report)
+      if(type==="util"&&ifaceRaw&&String(ifaceRaw)!==ifaceNorm)applyRich(it,Normalize.parseRich(ifaceRaw));
 
       if(type==="util"){
         const t=Normalize.ts(cell("ts"));
@@ -1041,7 +1083,7 @@ const Store=(function(){
         if(!t){addIssue(rep,"invalid-timestamp","Row "+(r+1)+": invalid timestamp '"+cell("ts")+"'",{row:r+1});continue;}
         const rd=Normalize.num(cell("rxDiscards")),re=Normalize.num(cell("rxErrors"));
         const td=Normalize.num(cell("txDiscards")),te=Normalize.num(cell("txErrors"));
-        const fn=cell("fullname");if(fn&&!it.description)it.description=String(fn).trim();
+        const fn=cell("fullname");if(fn)applyRich(it,Normalize.parseRich(fn));
         const sig=ikey(dev.key,ifaceNorm)+"@"+t.getTime();
         if(seen.has(sig)){addIssue(rep,"duplicate","Row "+(r+1)+": duplicate discard sample "+ifaceNorm+" @ "+fmtTs(t),{row:r+1});}
         else seen.add(sig);
@@ -1685,6 +1727,12 @@ const Demo=(function(){
         it.speed=speed;
         const block=resolver.blockFor(iface);
         it.description=describe(sw.name,port,block);
+        // realistic embedded metadata mirroring the production reports
+        const mac="000f."+(0x53b0+port).toString(16)+"."+(0x4000+port*7).toString(16).slice(0,4);
+        if(port<=4){it.peer="PJT-EQX-EDX-ORD-SP"+(port<=2?1:2);it.peerIp="10.6.2."+(228+port);
+          it.peerIface="Ethernet1/"+port;it.role="UPLINK";it.roleDerived=true;}
+        else{it.mac=mac;it.description="bsepjt"+sw.name.split("-").pop().toLowerCase()+port+".bseindia.com";
+          if(!it.role){it.role="SERVER";it.roleDerived=true;}}
         cum[dev.key+"|"+iface]={td:Math.round(rnd(0,150)),rd:0,te:0,re:0};
         utilRep.switches.add(dev.key);utilRep.ifaces.add(dev.key+"|"+iface);
         discRep.switches.add(dev.key);discRep.ifaces.add(dev.key+"|"+iface);
@@ -2088,7 +2136,7 @@ const UI=(function(){
     Store.allIfaces().forEach(it=>{
       searchIndex.push({type:"Interface",label:it.device+" "+it.iface,sub:(it.description||"")+(it.block?(" · Block "+it.block):""),
         act:()=>go("interface",{dev:it.deviceKey,iface:it.iface}),
-        keys:[it.iface,it.ifaceShort,it.device,it.ip,it.description,it.peer,it.feed,it.vlan].concat(it.tags||[]).concat([...it.mcastGroups])});
+        keys:[it.iface,it.ifaceShort,it.device,it.ip,it.description,it.peer,it.peerIp,it.mac,it.feed,it.vlan].concat(it.tags||[]).concat([...it.mcastGroups])});
     });
     Store.S.groupIndex.forEach((m,g)=>searchIndex.push({type:"Multicast",label:g,sub:m.length+" interface(s)",act:()=>go("mcgroup",{group:g})}));
   }
@@ -2302,7 +2350,7 @@ UI.renderOverview=function(){
   const k=A.kpis;const el=document.getElementById("view-overview");
   let html=UI.h.page("Operations Overview",A.win.label,
     "<button class='btn' onclick=\"UI.go('findings')\">Findings</button> <button class='btn primary' onclick=\"UI.go('report')\">Generate Report</button>");
-  html+="<div class='assump'><span class='i'>▲</span> Buffer block membership and 6 MB/block shared-buffer size are <b>configured assumptions</b> for model "
+  html+="<div class='assump'><span class='i'>▲</span> Buffer block (Pool A/B/C) membership and the 6 MB/block shared-buffer size — 18 MB total, each pool shared by its 16 ports only — are <b>configured assumptions</b> for model "
     +U.esc((Store.allDevices()[0]||{}).model||"N3548P-XL")+", not verified hardware truth. "+UI.h.dl("assumed")+" values are labelled throughout.</div>";
   html+="<div class='kpi-grid'>"
     +UI.h.kpi("Switches",k.switches,"in dataset")
@@ -2664,8 +2712,10 @@ UI.renderInterface=function(devKey,iface){
   // identity
   html+="<div class='split-info' style='grid-template-columns:repeat(4,1fr)'>"
     +si("IP",it.ip||"—")+si("Speed",U.mbps(it.speed)+(it.speedAssumed?" (assumed)":""))
-    +si("Buffer Block",it.block?("Block "+it.block):"—")+si("Role",it.role||"—")
-    +si("Peer",it.peer||"—")+si("VLAN",it.vlan||"—")+si("Feed",it.feed||"—")
+    +si("Buffer Block",it.block?("Block "+it.block+" / Pool "+it.block):"—")
+    +si("Role",it.role?(U.esc(it.role)+(it.roleDerived?" <span class='mini'>(derived)</span>":"")):"—")
+    +si("Peer",it.peer?U.esc(it.peer):"—")+si("Peer IP / IF",(it.peerIp?U.esc(it.peerIp):"—")+(it.peerIface?" · "+U.esc(it.peerIface):""))
+    +si("MAC",it.mac?U.esc(it.mac):"—")+si("VLAN / Feed",(it.vlan?U.esc(it.vlan):"—")+(it.feed?" · "+U.esc(it.feed):""))
     +si("MC Groups",it.mcastGroups.size?[...it.mcastGroups].map(g=>"<a onclick=\"UI.go('mcgroup',{group:'"+g+"'})\">"+U.esc(g)+"</a>").join(", "):"—")
     +"</div>";
   // metrics
