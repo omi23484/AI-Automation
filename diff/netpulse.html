@@ -289,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v29</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v30</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1883,7 +1883,9 @@ function view_reports(){
   // then busiest by p95 — so the link you actually want to report on is at the top and
   // clearly flagged, instead of hidden alphabetically among quiet links.
   const links=S.samples.length?[...A().ifs].sort((x,y)=>(y.upgradeNeeded-x.upgradeNeeded)||(y.p95-x.p95)||x.dev.localeCompare(y.dev)||x.intf.localeCompare(y.intf)):[];
-  const scopeLabel=r=>`${esc(r.dev)} ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''} · p95 ${(r.p95*100).toFixed(0)}%${r.upgradeNeeded?' · ⚠ upgrade':''}`;
+  // Sample count is included so a tiny hostname-variant fragment (e.g. a link that also
+  // appears under its FQDN) is obviously a stub next to the real interface with thousands.
+  const scopeLabel=r=>`${esc(r.dev)} ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''} · ${r.count.toLocaleString()} samples · p95 ${(r.p95*100).toFixed(0)}%${r.upgradeNeeded?' · ⚠ upgrade':''}`;
   const ur=S.cfg.upgradeRule;
   return crumb([['Reports']])+`<div class="sec-title"><h2>Business Reports</h2><span class="sub">generated · grounded · exportable</span></div>
   <div class="panel pad" style="margin-bottom:16px;border:1px solid var(--stroke2)">
@@ -2074,6 +2076,15 @@ function genUpgradePolicyXlsx(scope){
   if(!S.samples.length){toast('No data yet');return;}
   const a=A();const list=scope==='all'?a.ifs:a.ifs.filter(r=>r.ifid===scope);
   if(!list.length){toast('Link not found');return;}
+  // Single-link export: if the SAME interface exists under a device-name variant
+  // (one hostname is a dotted prefix of the other — short name vs FQDN) that holds far
+  // more data, the user probably picked a fragment. Flag the busier twin in the report.
+  let siblingNote=null;
+  if(scope!=='all'){const r0=list[0];
+    const twin=a.ifs.filter(x=>x.ifid!==r0.ifid&&x.intf===r0.intf&&(x.dev.startsWith(r0.dev+'.')||r0.dev.startsWith(x.dev+'.'))&&x.count>Math.max(8,r0.count*2))
+      .sort((x,y)=>y.count-x.count)[0];
+    if(twin)siblingNote=`⚠ Likely wrong link selected. The same interface exists under a device-name variant “${twin.dev} ${twin.intf}” with ${twin.count.toLocaleString()} samples (p95 ${(twin.p95*100).toFixed(0)}%, ${twin.upgradeNeeded?'upgrade trigger MET':'no upgrade'}) — this export is the smaller “${r0.dev} ${r0.intf}” (${r0.count.toLocaleString()} samples). Re-export with the larger one selected, or use “All links”.`;
+  }
   const p2=n=>String(n).padStart(2,'0');
   const fmtTs=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())} ${tzLabel()}`;};
   const cStart=amin(list.map(r=>r.start)),cEnd=amax(list.map(r=>r.end));
@@ -2087,6 +2098,7 @@ function genUpgradePolicyXlsx(scope){
     [`Generated: ${fmtIST(Date.now())}`,'',`Scope: ${scope==='all'?'all links':list[0].dev+' '+list[0].intf}`],
     [`Coverage: ${fmtIST(cStart)}  to  ${fmtIST(cEnd)}  (${covDays} days, entire loaded history)`],
     ['Counts below cover the full loaded history; the live "Upgrade Recommended" verdict uses the rolling '+(S.cfg.upgradeRule.lookbackDays?S.cfg.upgradeRule.lookbackDays+'-day':'full-history')+' look-back window.'],
+    ...(siblingNote?[[siblingNote]]:[]),
     [],
     ['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)','Policy threshold %','Policy days','Business hours only','Days threshold hit','Total hits','Upgrade trigger met','Busy p95 %','Verdict']];
   const hits=[['Device','Interface','Site','Timestamp','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Business hours','Policy threshold %']];
@@ -2117,12 +2129,13 @@ function genUpgradePolicyXlsx(scope){
     summary.push([]); summary.push(['— No policy hits —',why]);
     if(scope!=='all')summary.push(['Tip','This is a single-link export. Choose “All links” in Reports → Upgrade Policy Hits to include links that did cross.']);
     hits.push(['— No policy hits —',why]);
+    if(siblingNote){summary.push([siblingNote]);hits.push([siblingNote]);}
   }
   const blob=xlsxBlob([{name:'Summary',rows:summary},{name:'Policy Hits',rows:hits}]);
   const fname=`NetPulse_Upgrade_Policy_${scope==='all'?'AllLinks':(list[0].dev+'_'+list[0].intf).replace(/\W+/g,'_')}_${new Date().toISOString().slice(0,10)}.xlsx`;
   dl(blob,fname);
   logAudit('report.export.xlsx',scope==='all'?'all links':scope,`${totalHits} policy hit rows`);
-  toast(totalHits?`📊 Excel report downloaded — ${totalHits.toLocaleString()} policy hit(s) across ${linksWithHits} link(s)`:`📊 Report downloaded — 0 hits: no link crossed ${list[0].upgradeRule.utilPct}%${list[0].upgradeRule.businessHoursOnly?' in business hours':''}${scope!=='all'?' (try All links)':''}`);
+  toast(siblingNote?`⚠ Exported the smaller “${list[0].dev} ${list[0].intf}” (${list[0].count.toLocaleString()} samples) — a device-name twin holds far more data. See the note atop the report and re-select.`:(totalHits?`📊 Excel report downloaded — ${totalHits.toLocaleString()} policy hit(s) across ${linksWithHits} link(s)`:`📊 Report downloaded — 0 hits: no link crossed ${list[0].upgradeRule.utilPct}%${list[0].upgradeRule.businessHoursOnly?' in business hours':''}${scope!=='all'?' (try All links)':''}`));
 }
 /* ===================== Regulatory Capacity Report (SEBI / RBI) =====================
    A formal, sign-off-ready capacity-utilization & augmentation report aligned with
