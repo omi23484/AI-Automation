@@ -75,7 +75,8 @@ button{font:inherit;cursor:pointer;color:var(--txt)}
 #brand .dot{width:12px;height:12px;border-radius:50%;background:radial-gradient(circle at 30% 30%,#7ee7ff,#38bdf8);box-shadow:0 0 14px var(--accent)}
 #brand b{font-size:16px;letter-spacing:.4px}
 #nav{grid-area:nav;overflow:auto;border-right:1px solid var(--stroke);padding:12px 10px;background:var(--chrome)}
-#main{grid-area:main;overflow:auto;padding:22px 26px 60px}
+#main{grid-area:main;overflow-y:auto;overflow-x:hidden;padding:22px 26px 60px;min-width:0}
+#main .grid>*{min-width:0}
 .navgrp{color:var(--muted2);font-size:10.5px;letter-spacing:1.4px;text-transform:uppercase;margin:14px 10px 6px;font-weight:700}
 .navitem{display:flex;align-items:center;gap:10px;padding:8px 11px;border-radius:10px;color:var(--muted);cursor:pointer;font-weight:550;font-size:13px;transition:.15s}
 .navitem:hover{background:var(--panel2);color:var(--txt)}
@@ -168,7 +169,7 @@ tbody tr:hover{background:var(--panel2)}
 
 /* Charts */
 .chart{position:relative}
-.chart svg{width:100%;display:block;overflow:visible;touch-action:none}
+.chart svg{width:100%;max-width:100%;display:block;overflow:hidden;touch-action:none}
 .chart svg.grabbing{cursor:grabbing}
 .chart text.ax{fill:var(--muted2)}
 .chart line.gl{stroke:var(--gridline)}
@@ -207,9 +208,10 @@ svg.donut .ax{fill:var(--muted2)}
 .btn.sm{padding:6px 11px;font-size:12.5px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 input[type=text],input[type=number],input[type=datetime-local],select,textarea{
-  background:var(--bg2);border:1px solid var(--stroke2);border-radius:8px;padding:8px 10px;color:var(--txt);font:inherit;outline:0}
+  background:var(--bg2);border:1px solid var(--stroke2);border-radius:8px;padding:8px 10px;color:var(--txt);font:inherit;outline:0;
+  width:100%;max-width:100%;min-width:0}
 input:focus,select:focus{border-color:var(--accent)}
-label.fld{display:block;margin:10px 0}
+label.fld{display:block;margin:10px 0;min-width:0}
 label.fld>span{display:block;color:var(--muted);font-size:11.5px;font-weight:600;margin-bottom:5px}
 .tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700}
 .sev-block{border-left:3px solid;padding:10px 14px;border-radius:8px;margin-bottom:10px;background:var(--panel2)}
@@ -300,7 +302,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v36</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v37</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1318,7 +1320,9 @@ function chartSVG(cfg,animate){
     evs+=`<circle class="${isSel?'evsel':''}" cx="${ex.toFixed(1)}" cy="${ry}" r="${rad}" fill="${e.color||'#fb923c'}" opacity="${isSel?1:0.8}" ${isSel?'stroke="var(--bg2)" stroke-width="1.6"':''}><title>${esc(e.label||'')}</title></circle>`;
   }
   const span=x1-x0;const fmtX=span<36e5*30?fmtDate:fmtDay;
-  const xlabs=[x0,(x0+x1)/2,x1].map(v=>`<text class="ax" x="${X(v)}" y="${h-8}" text-anchor="middle" font-size="9">${fmtX(v)}</text>`).join('');
+  // anchor the edge labels inward (start on the left, end on the right) so they never
+  // extend past the plot box — combined with svg overflow:hidden this stops the spill.
+  const xlabs=[[x0,'start'],[(x0+x1)/2,'middle'],[x1,'end']].map(([v,a])=>`<text class="ax" x="${X(v)}" y="${h-8}" text-anchor="${a}" font-size="9">${fmtX(v)}</text>`).join('');
   return `<svg viewBox="0 0 ${w} ${h}" ${animate?'':'data-nodraw="1"'}>${grid}${bhRects}${bands}${maint}${paths}${selLine}${evs}${xlabs}<rect x="${pad.l}" y="${pad.t}" width="${w-pad.l-pad.r}" height="${h-pad.t-pad.b}" fill="transparent"/><g class="hg"></g></svg>`;
 }
 function redrawChart(cfg){const el=document.querySelector(`.chart[data-chart="${cfg.id}"] svg`);if(el)el.outerHTML=chartSVG(cfg,false);}
@@ -1825,9 +1829,9 @@ function view_capacity(){
     <div class="act"><a onclick="genReport('capacity')">Generate Weekly Capacity Report →</a></div></div>
   <div class="panel pad"><div class="sec-title"><h2>Capacity forecast table</h2><span class="spacer"></span><span class="tabs" style="margin:0"><button class="${(S.cfg.forecastHours||'all')!=='bh'?'active':''}" onclick="setForecastHours('all')">All hours</button><button class="${S.cfg.forecastHours==='bh'?'active':''}" onclick="setForecastHours('bh')">Market hours</button></span></div>
   <div class="sub" style="margin:-4px 0 8px">${list.length} link(s) · ${(S.cfg.forecastMetric||'p95')} · ${(S.cfg.forecastDirection||'combined')==='split'?'TX/RX split':'combined'} · basis ${S.cfg.forecastHours==='bh'?'market hours':'all hours'} · Time→ columns show the mid estimate with the ${(S.cfg.forecastCI*100||80).toFixed(0)}% range below &nbsp; ${csvBtn('#main table','capacity_forecast.csv')}</div>
-  <table><thead><tr><th>Interface</th><th>Class</th><th>Impact</th><th>Current p95</th><th>Slope/mo</th><th>Time→80%</th><th>Time→90%</th><th>Time→95%</th><th>Upgrade window</th><th>Conf</th></tr></thead><tbody>
+  <div style="overflow-x:auto"><table style="min-width:820px"><thead><tr><th>Interface</th><th>Class</th><th>Impact</th><th>Current p95</th><th>Slope/mo</th><th>Time→80%</th><th>Time→90%</th><th>Time→95%</th><th>Upgrade window</th><th>Conf</th></tr></thead><tbody>
   ${list.slice(0,60).map(r=>{const f=r.forecast;const tt=v=>v!=null&&v>0&&v<3650?Math.round(v)+'d':(v!=null&&v<=0?'now':'—');const rg=(v,lo,hi)=>v!=null&&v>0&&v<3650&&lo!=null?`<div class="mini" style="font-size:9px">${tt(lo)}–${hi!=null&&hi<3650?Math.round(hi)+'d':'>1yr'}</div>`:'';const urgent=f.t90!=null&&f.t90<=90;return `<tr data-nav='${JSON.stringify({view:'intf',id:r.ifid})}'><td><b>${esc(r.dev)}</b> ${esc(r.intf)}</td><td><span class="chip">${r.cls}</span></td><td><span class="chip impact-${r.impact}">${r.impact}</span></td><td class="mono">${pct1(f.current)}</td><td class="mono ${f.slopePerDay>0?'up':'down'}">${(f.slopePerDay*30*100).toFixed(1)}%</td><td class="mono">${tt(f.t80)}${rg(f.t80,f.t80Lo,f.t80Hi)}</td><td class="mono" style="${urgent?'color:var(--critical);font-weight:700':''}">${tt(f.t90)}${rg(f.t90,f.t90Lo,f.t90Hi)}</td><td class="mono">${tt(f.t95)}${rg(f.t95,f.t95Lo,f.t95Hi)}</td><td class="mono">${f.window?f.window[0]+'–'+f.window[1]+'d':'—'}</td><td class="mono">${(f.conf*100).toFixed(0)}%</td></tr>`;}).join('')}
-  </tbody></table></div>`;
+  </tbody></table></div></div>`;
 }
 function view_trends(){
   if(!S.samples.length)return needData();
