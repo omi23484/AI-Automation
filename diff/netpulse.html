@@ -289,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v34</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v35</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -366,6 +366,7 @@ const DEFAULT_CFG={
   forecastHours:'all',     // #6 forecast basis: 'all' hours or 'bh' market-hours only
   forecastCI:0.8,          // #1 confidence level for the days-to-threshold band
   forecastMinDaySamples:3, // #5 drop days with fewer than this many samples from the trend
+  forecastWindowDays:180,  // project the trend + peak from the trailing N days (0 = all history)
   businessHours:{startHr:9,startMin:0,endHr:17,endMin:0,days:[1,2,3,4,5]},
   riskWeights:{peak:0.9,avg:0.7,trend:0.8,growth:0.7,violations:1.0,anomaly:0.6,impact:1.2},
   planHorizonDays:90, upgradeLeadDays:42,
@@ -375,7 +376,7 @@ const DEFAULT_CFG={
   upgradeRule:{utilPct:80, days:5, businessHoursOnly:true, lookbackDays:90, mode:'recommend'},
   // Compliance / regulatory (SEBI CSCRF & BCP-DR capacity, RBI IT/Cyber, CERT-In logging).
   // The threshold is configurable — set it to the value in your current applicable circular.
-  regThreshold:0.70, regRetentionDays:180, tz:'Asia/Kolkata',
+  regThreshold:0.75, regRetentionDays:180, tz:'Asia/Kolkata',
   mergeHostnames:false, // auto-merge a link split across a short hostname and its FQDN
   institution:'', reportPreparedBy:'', reportReviewedBy:'', reportApprovedBy:''
 };
@@ -970,9 +971,14 @@ function computeAnalytics(){
     const pus=s.map(x=>x.pu).filter(v=>v!=null&&v>=0&&v<=3);
     const pkP95=pus.length?percentile(pus,0.95):null,pkMax=pus.length?amax(pus):null;
     // #3 "peak" used to SIZE capacity — a selectable high percentile (robust to a single glitch,
-    // yet closer to true peak load than p95). Prefer the peak-columns; fall back to utilization.
+    // yet closer to true peak load than p95), measured over the trailing projection window
+    // (default 180 days) so it reflects the *recent* peak the way capacity rules intend.
     const pkB=S.cfg.peakBasis||'p999';const pkQ=pkB==='p99'?0.99:pkB==='max'?1:0.999;
-    const provisionPeak=pus.length?percentile(pus,pkQ):(utils.length?percentile(utils,pkQ):mx);
+    const fwDays=S.cfg.forecastWindowDays!=null?S.cfg.forecastWindowDays:180;
+    const fwStart=fwDays>0?s.at(-1).ts-fwDays*86400000:-Infinity;
+    const pusW=s.filter(x=>x.ts>=fwStart).map(x=>x.pu).filter(v=>v!=null&&v>=0&&v<=3);
+    const utilsW=s.filter(x=>x.ts>=fwStart).map(x=>x.util).filter(v=>v!=null&&v>=0&&v<=3);
+    const provisionPeak=pusW.length?percentile(pusW,pkQ):(utilsW.length?percentile(utilsW,pkQ):(pus.length?percentile(pus,pkQ):mx));
     // distribution (time-in-state)
     const dist={normal:0,warning:0,high:0,critical:0};let distN=0;
     for(const x of s){if(x.util==null||x.util<0||x.util>3)continue;dist[stateOfT(x.util,tForS(x))]++;distN++;}
@@ -1025,7 +1031,9 @@ function computeAnalytics(){
     const bhOnlyFc=(S.cfg.forecastHours==='bh');const minDay=S.cfg.forecastMinDaySamples||1;
     // #5 drop thin days (few samples → noisy daily figure) unless that leaves too little history.
     // #6 optionally restrict the basis to market hours only.
-    const dseries=(valFn)=>{const bd={};for(const x of s){if(bhOnlyFc&&!isBH(x.ts))continue;const v=valFn(x);if(v==null)continue;const d=new Date(x.ts);d.setHours(0,0,0,0);(bd[+d]=bd[+d]||[]).push(v);}
+    // Projection window: fit the trend to the trailing N days only (default 180) — matches the
+    // "project the peak from the last 180 days" basis, and keeps the trend recent.
+    const dseries=(valFn)=>{const bd={};for(const x of s){if(x.ts<fwStart)continue;if(bhOnlyFc&&!isBH(x.ts))continue;const v=valFn(x);if(v==null)continue;const d=new Date(x.ts);d.setHours(0,0,0,0);(bd[+d]=bd[+d]||[]).push(v);}
       const arr=Object.keys(bd).map(Number).sort((a,b)=>a-b).map(d=>({d,p95:percentile(bd[d],pctl),n:bd[d].length}));
       const filt=arr.filter(o=>o.n>=minDay);return filt.length>=5?filt:arr;};
     let daily,forecast,fnote=(fm!=='p95'?fm:'');
@@ -2094,6 +2102,9 @@ function view_admin(){
     <div class="grid g3" style="margin-top:8px">
       <label class="fld"><span>Peak basis for sizing</span><select id="fcPeak"><option value="p999" ${(S.cfg.peakBasis||'p999')==='p999'?'selected':''}>p99.9 (true sustained peak)</option><option value="p99" ${S.cfg.peakBasis==='p99'?'selected':''}>p99</option><option value="max" ${S.cfg.peakBasis==='max'?'selected':''}>max (single highest)</option></select></label>
       <label class="fld"><span>Confidence band (%)</span><input type="number" id="fcCI" value="${(S.cfg.forecastCI*100||80).toFixed(0)}" min="50" max="99"></label>
+      <label class="fld"><span>Projection window (days, 0=all)</span><input type="number" id="fcWin" value="${S.cfg.forecastWindowDays!=null?S.cfg.forecastWindowDays:180}" min="0"></label>
+    </div>
+    <div class="grid g3" style="margin-top:8px">
       <label class="fld"><span>Min samples per day</span><input type="number" id="fcMinDay" value="${S.cfg.forecastMinDaySamples||3}" min="1"></label>
     </div>
     <div class="mini" style="margin-bottom:10px">Metric = which daily level the trend is fit to. Split forecasts each direction and reports the one that saturates first. Provisioning sizes to N× the chosen <b>peak basis</b> (ceiling ${(100/(S.cfg.provisionFactor||1.5)).toFixed(0)}%). The trend is deseasonalized (7-day) and days-to-threshold is shown as a <b>${(S.cfg.forecastCI*100||80).toFixed(0)}% range</b>; thin days (&lt; min samples) are dropped. Market-hours vs all-hours basis is toggled on the forecast/capacity views.</div>
@@ -2334,6 +2345,7 @@ function genRegReport(scope,fmt){
   const D=regReportData(scope);const c=S.cfg;const bh=c.businessHours;
   const p2=n=>String(n).padStart(2,'0');const bhWin=`${p2(bh.startHr)}:${p2(bh.startMin||0)}–${p2(bh.endHr)}:${p2(bh.endMin||0)}`;
   const Tp=(D.T*100).toFixed(0);
+  const N=S.cfg.provisionFactor||1.5;
   logAudit('report.regulatory',scope==='all'?'all links':scope,fmt.toUpperCase());
   if(fmt==='xlsx'){
     const cover=[
@@ -2343,6 +2355,8 @@ function genRegReport(scope,fmt){
       ['Generated',fmtIST(Date.now())],
       ['Scope',scope==='all'?`All monitored links (${D.list.length})`:D.list[0].dev+' '+D.list[0].intf],
       ['Regulatory capacity threshold',`${Tp}% (configurable — set per applicable circular)`],
+      ['Provisioning target',`installed capacity ≥ ${N}× peak (${({p99:'p99',p999:'p99.9',max:'max'})[c.peakBasis||'p999']} basis)`],
+      ['Projection basis',`${(c.forecastWindowDays!=null?c.forecastWindowDays:180)>0?'trailing '+(c.forecastWindowDays!=null?c.forecastWindowDays:180)+' days':'all loaded history'}, ${(c.forecastCI*100||80).toFixed(0)}% confidence range`],
       ['Business / market hours',`${bhWin}, ${bh.days.map(d=>DOW[d]).join(' ')}`],
       ['Log retention basis',`${c.regRetentionDays} days (CERT-In)`],
       ['Total samples analysed',D.totalSamples],
@@ -2353,14 +2367,14 @@ function genRegReport(scope,fmt){
       ['Classification','Confidential — regulatory']
     ];
     const ciPct=(S.cfg.forecastCI*100||80).toFixed(0);
-    const summ=[['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)',`Peak %`,`p95 %`,`Avg %`,`% time > ${Tp}% (all)`,`% time > ${Tp}% (mkt hrs)`,`Days > ${Tp}%`,`Headroom to ${Tp}% (pp)`,`Headroom to 100% (pp)`,`Days to ${Tp}%`,`Days to ${Tp}% (${ciPct}% range)`,`Recommended capacity (${(S.cfg.provisionFactor||1.5)}×peak, Mbps)`,'Augmentation required','Verdict']];
-    const N=S.cfg.provisionFactor||1.5;
+    const summ=[['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)',`Peak %`,`p95 %`,`Avg %`,`% time > ${Tp}% (all)`,`% time > ${Tp}% (mkt hrs)`,`Days > ${Tp}%`,`Headroom to ${Tp}% (pp)`,`Headroom to 100% (pp)`,`Days to ${Tp}%`,`Days to ${Tp}% (${ciPct}% range)`,`Recommended capacity (${N}×peak, Mbps)`,`Meets ${N}× headroom`,'Augmentation required','Verdict']];
     for(const x of D.rows){const recMbps=x.r.speed?+((x.peak*x.r.speed*N)/1e6).toFixed(0):'';
+      const headroomOK=x.r.speed?(x.peak*N<=1?'YES':'NO — below '+N+'×'):'—';
       const f=x.r.forecast,dTo=sl=>f.current>=D.T?0:(sl>1e-5?(D.T-f.current)/sl:null);const tLo=dTo(f.slopeHi),tHi=dTo(f.slopeLo);
       const tRange=x.tReg==null?'no trend':(x.tReg<=0?'AT/OVER':(tLo!=null?`${Math.round(Math.max(0,tLo))}–${tHi!=null&&tHi<3650?Math.round(tHi):'>365'}`:'—'));
       summ.push([x.r.dev,x.r.intf,x.r.linkname||'',x.r.site,x.r.cls,x.r.impact,x.r.speed?+(x.r.speed/1e6).toFixed(0):'',
       +(x.peak*100).toFixed(1),+(x.p95*100).toFixed(1),+(x.avg*100).toFixed(1),+(x.pctOver*100).toFixed(2),+(x.mktPctOver*100).toFixed(2),x.breachDays,
-      +(x.headThr*100).toFixed(1),+(x.head100*100).toFixed(1),x.tReg==null?'no trend':(x.tReg<=0?'AT/OVER':Math.round(x.tReg)),tRange,recMbps,x.augment?'YES':'No',x.r.verdict.title]);}
+      +(x.headThr*100).toFixed(1),+(x.head100*100).toFixed(1),x.tReg==null?'no trend':(x.tReg<=0?'AT/OVER':Math.round(x.tReg)),tRange,recMbps,headroomOK,x.augment?'YES':'No',x.r.verdict.title]);}
     const breach=[['Device','Interface','Site','Timestamp','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Market hours',`Threshold %`]];
     let n=0,trunc=false;
     for(const x of D.rows){for(const s of x.r.samples){if(s.util==null||s.util<D.T)continue;if(n++>=50000){trunc=true;break;}
@@ -2557,6 +2571,7 @@ function saveForecastCfg(){S.cfg.forecastMetric=$('#fcMetric').value;S.cfg.forec
   if($('#fcPeak'))S.cfg.peakBasis=$('#fcPeak').value;
   if($('#fcCI'))S.cfg.forecastCI=clamp((+$('#fcCI').value||80)/100,0.5,0.99);
   if($('#fcMinDay'))S.cfg.forecastMinDaySamples=Math.max(1,+$('#fcMinDay').value|0);
+  if($('#fcWin'))S.cfg.forecastWindowDays=Math.max(0,+$('#fcWin').value|0);
   save('cfg');logAudit('config.forecast','',JSON.stringify({m:S.cfg.forecastMetric,d:S.cfg.forecastDirection,n:S.cfg.provisionFactor,peak:S.cfg.peakBasis,ci:S.cfg.forecastCI}));S.analytics=null;toast('Forecast settings saved — recomputed');render();}
 function setForecastHours(v){S.cfg.forecastHours=(v==='bh')?'bh':'all';save('cfg');logAudit('config.forecasthours','',S.cfg.forecastHours);S.analytics=null;render();}
 function saveClassThresholds(){const CL=['Core','Trading','Internet','WAN','Storage','Backup','Voice','Replication','Management','Customer'];const out={};
