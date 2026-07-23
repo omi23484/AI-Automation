@@ -99,6 +99,7 @@ When a poller exports the same interface under both a **short hostname** and its
 - The panel lists every host that appears under more than one name (canonical = the shortest name, with each variant's sample count). **Merge host(s) now** rewrites the stored data so each interface is a single link. The **watchlist, per-link overrides and RCA notes** are carried to the merged link; the canonical link's overrides win on any conflict.
 - **Detection rule (safe):** two names merge only when one is a **dotted prefix** of the other (`X` and `X.…`), so unrelated hosts never merge.
 - **Automatically merge new variants after each upload** — a toggle to re-run the merge on every commit, so re-introduced variants stay merged.
+- **Manual merge — any two devices**: pick a device to merge and the device name to keep, then **Merge devices**. Unlike auto-merge this has **no name-similarity guard** — it merges exactly the two you choose (use it after a rename, or for an alias the dotted-prefix rule won't catch). Interfaces of the same name combine; others move under the kept device; watchlist and per-link edits carry over.
 - Merging rewrites stored data and is **not auto-reversible** (re-upload to undo).
 
 ### 2.7 Data management
