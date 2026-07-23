@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pcap
+*.pcapng
+*.html
+!tcp-forensics-analyzer/**/templates/*.html
