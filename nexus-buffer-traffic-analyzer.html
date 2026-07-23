@@ -1107,6 +1107,15 @@ const Normalize=(function(){
     const isMc=o[0]>=224&&o[0]<=239;
     return {value:o.join("."),valid:isMc};
   }
+  function ipToInt(ip){const m=String(ip).match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/);
+    if(!m)return null;return (((+m[1])<<24)|((+m[2])<<16)|((+m[3])<<8)|(+m[4]))>>>0;}
+  // does an IPv4 address fall inside a CIDR like "224.0.0.0/24"
+  function ipInCidr(ip,cidr){
+    const parts=String(cidr).split("/");const base=ipToInt(parts[0]);const bits=parts.length>1?parseInt(parts[1],10):32;
+    const addr=ipToInt(ip);if(base==null||addr==null)return false;
+    const mask=bits===0?0:(0xFFFFFFFF<<(32-bits))>>>0;
+    return (addr&mask)===(base&mask);
+  }
   // Extract embedded metadata from rich "Interface Name" / "Full Name" columns seen in real
   // SolarWinds-style exports, e.g.:
   //   "Ethernet1/1 · *** bsepjtme11.bseindia.com | 000f.53b4.3f61 ***"          (server port)
@@ -1136,7 +1145,7 @@ const Normalize=(function(){
     }
     return out;
   }
-  return {iface,ifaceShort,device,deviceKey,num,speedMbps,ts,mcastGroup,parseRich};
+  return {iface,ifaceShort,device,deviceKey,num,speedMbps,ts,mcastGroup,parseRich,ipInCidr,ipToInt};
 })();
 
 /* ======================= Column Mapper ======================= */
@@ -1171,6 +1180,14 @@ const ColumnMapper=(function(){
       description:{syn:["description","desc","full name","fullname"]},
       feed:{syn:["feed name","feed","stream","market feed"]},
       role:{syn:["role","function","type","port role"]}
+    },
+    // optional: true per-(S,G) stream rate (from 'show ip mroute <g> count' / telemetry)
+    mrate:{
+      device:{syn:["switch","hostname","caption","node","device","name","host"]},
+      group:{syn:["group","multicast group","mcast group","group address","g","destination"],req:true},
+      source:{syn:["source","src","s","source address"]},
+      rate:{syn:["rate","mbps","bps","bits/sec","bits per second","bandwidth","pps","pkts/sec","packets/sec","bytes/sec","byte rate","kbps","gbps"],req:true},
+      ts:{syn:["timestamp","date time","datetime","poll time","time","date"]}
     }
   };
   function norm(h){return String(h==null?"":h).toLowerCase().replace(/[_\-]+/g," ").replace(/\s+/g," ").trim();}
@@ -1185,7 +1202,9 @@ const ColumnMapper=(function(){
         for(const s of syn){
           if(h===s){score=Math.max(score,100);}
           else if(h.replace(/\s/g,"")===s.replace(/\s/g,"")){score=Math.max(score,95);}
-          else if(h.indexOf(s)>=0||s.indexOf(h)>=0){score=Math.max(score,60+Math.min(s.length,h.length));}
+          // partial (substring) matching only for synonyms >=3 chars — short tokens like
+          // "s"/"g"/"rx" must match exactly, else they falsely grab any header containing them.
+          else if(s.length>=3&&(h.indexOf(s)>=0||s.indexOf(h)>=0)){score=Math.max(score,60+Math.min(s.length,h.length));}
         }
         if(score>bestScore){bestScore=score;bestIdx=i;}
       }
@@ -1212,17 +1231,20 @@ const Settings=(function(){
       burstRatio:{watch:2,warning:4,critical:8},          // peak / average
       p95Gap:{watch:1.5,warning:2.5,critical:4},          // max / p95
       blockConcentration:{watch:40,warning:60,critical:80}, // % of block discards from ports sharing block
-      mcastConcentration:{watch:40,warning:55,critical:70}  // % of a switch's mcast groups in one block
+      mcastConcentration:{watch:40,warning:55,critical:70}, // % of a switch's mcast groups in one block
+      blockUtil:{watch:50,warning:70,critical:85}           // peak simultaneous block load / aggregate active-port capacity
     },
     business:{days:[1,2,3,4,5],start:"09:00",end:"17:30"}, // Mon-Fri 09:00-17:30
     correlation:{toleranceSec:120, bucketSec:60},          // time-align tolerance & bucket size
     counter:{rolloverGuard:true, max32:4294967295, resetPolicy:"count-from-zero"},
+    ignoreMcast:["224.0.0.0/24","224.0.1.0/24"],           // link-local + internetwork-control blocks
     persistData:false,
     ui:{pageSize:25}
   };
   const DEFAULT_MODELS=[{
     id:"N3548P-XL", name:"Cisco Nexus 3548P-XL (N3K)", ports:48, portSpeedMbps:10000,
-    notes:"48 x 1/10G. Blocks map to hardware buffer Pools A/B/C (16 ports each): 6 MB shared per pool, 18 MB total, each pool shared by its 16 ports only. These values are CONFIGURED ASSUMPTIONS, not verified hardware truth.",
+    totalBufferMB:18, maxPortBufferMB:5,
+    notes:"48 x 1/10G. Per Cisco: 18 MB shared packet buffer, dynamically allocated, up to ~5 MB per port, 8 egress queues (unicast/multicast QoS groups). Blocks A/B/C model the pool grouping (16 ports each, ~6 MB/pool). These are CONFIGURED ASSUMPTIONS, not verified hardware truth.",
     blocks:[
       {name:"A", ports:"1-4,13-16,25-28,37-40", bufferMB:6},
       {name:"B", ports:"5-8,17-20,29-32,41-44", bufferMB:6},
@@ -1342,8 +1364,9 @@ const Store=(function(){
     devices:new Map(),           // deviceKey -> device
     ifaceIndex:new Map(),        // deviceKey|iface -> iface obj
     groupIndex:new Map(),        // group -> [{device,iface}]
-    imports:{util:null,disc:null,mcast:null},
-    files:{util:[],disc:[],mcast:[]},
+    mrate:new Map(),             // group -> {rateMbps, pps, sources:Set} measured per-(S,G) stream rate
+    imports:{util:null,disc:null,mcast:null,mrate:null},
+    files:{util:[],disc:[],mcast:[],mrate:[]},
     tsMin:null, tsMax:null,
     demo:false,
     modelId:null
@@ -1402,6 +1425,20 @@ const Store=(function(){
     return best;
   }
 
+  // Parse a rate value + its column header into Mbps. Handles Mbps/Gbps/kbps/bps and
+  // bytes/sec; pps cannot convert to Mbps (returns null so it is flagged, not misused).
+  function parseRateMbps(raw,header){
+    if(raw==null||raw==="")return null;
+    const num=Normalize.num(raw);if(num==null)return null;
+    const ctx=((""+raw)+" "+(header||"")).toLowerCase();
+    if(/pps|pkt|packet/.test(ctx))return null;             // packets/sec — cannot infer bandwidth
+    if(/gbps|gbit|gb\/s/.test(ctx))return num*1000;
+    if(/mbps|mbit|mb\/s/.test(ctx))return num;
+    if(/kbps|kbit|kb\/s/.test(ctx))return num/1000;
+    if(/bytes?\/?s|bps of bytes|byte rate/.test(ctx))return num*8/1e6;
+    if(/bps|bits?\/?s|bit rate/.test(ctx))return num/1e6;   // bits/sec
+    return num;                                            // bare number -> assume Mbps
+  }
   function ingest(type,parseResult,fileName,manualMap){
     const rep=S.imports[type]||newReport();
     rep.files.push(fileName);
@@ -1426,6 +1463,19 @@ const Store=(function(){
       const row=rows[r];if(!row||row.every(x=>x==null||x===""))continue;
       rep.rows++;
       const cell=(f)=>{const idx=map[f];return idx==null?null:row[idx];};
+      // ---- optional per-(S,G) measured stream rate: no interface, one row per (S,G) ----
+      if(type==="mrate"){
+        const g=Normalize.mcastGroup(cell("group"));
+        if(!g.value){addIssue(rep,"malformed-group","Row "+(r+1)+": missing group",{row:r+1});continue;}
+        const rateHdr=(rep.mapping&&rep.mapping.header&&map.rate!=null)?String(rep.mapping.header[map.rate]||""):"";
+        const rateMbps=parseRateMbps(cell("rate"),rateHdr);
+        if(rateMbps==null){addIssue(rep,"invalid-numeric","Row "+(r+1)+": rate not parseable: '"+cell("rate")+"'",{row:r+1});continue;}
+        const src=cell("source");
+        let e=S.mrate.get(g.value);if(!e){e={rateMbps:0,sources:new Set()};S.mrate.set(g.value,e);}
+        e.rateMbps=Math.max(e.rateMbps,rateMbps);        // peak measured stream rate for the group
+        if(src)e.sources.add(String(src).trim());
+        rep.accepted++;continue;
+      }
       const devName=Normalize.device(cell("device"));
       const ifaceRaw=cell("iface");
       const ifaceNorm=Normalize.iface(ifaceRaw);
@@ -1500,8 +1550,8 @@ const Store=(function(){
     return {utilCount:utilIf.size,discCount:discIf.size,matched:matched.length,
       discOnly,utilOnly};
   }
-  function clearAll(){S.devices.clear();S.ifaceIndex.clear();S.groupIndex.clear();
-    S.imports={util:null,disc:null,mcast:null};S.files={util:[],disc:[],mcast:[]};
+  function clearAll(){S.devices.clear();S.ifaceIndex.clear();S.groupIndex.clear();S.mrate.clear();
+    S.imports={util:null,disc:null,mcast:null,mrate:null};S.files={util:[],disc:[],mcast:[],mrate:[]};
     S.tsMin=null;S.tsMax=null;S.demo=false;}
   function allIfaces(){return [...S.ifaceIndex.values()];}
   function allDevices(){return [...S.devices.values()];}
@@ -1526,10 +1576,11 @@ const Store=(function(){
       devices.push({k:d.key,n:d.name,ip:d.ip,m:d.model,ifs});
     });
     const groups=[];S.groupIndex.forEach((v,g)=>groups.push([g,v]));
+    const mrate=[];S.mrate.forEach((v,g)=>mrate.push([g,{rateMbps:v.rateMbps,sources:[...(v.sources||[])]}]));
     const imp={};["util","disc","mcast"].forEach(t=>{const r=S.imports[t];if(r)imp[t]={rows:r.rows,accepted:r.accepted,
       files:r.files,switches:[...r.switches],ifaces:[...r.ifaces],tsMin:r.tsMin,tsMax:r.tsMax,
       issues:(r.issues||[]).slice(0,400),mapping:r.mapping};});
-    return {v:1,demo:S.demo,tsMin:S.tsMin,tsMax:S.tsMax,files:S.files,devices,groups,imports:imp,savedAt:Date.now()};
+    return {v:1,demo:S.demo,tsMin:S.tsMin,tsMax:S.tsMax,files:S.files,devices,groups,mrate,imports:imp,savedAt:Date.now()};
   }
   function hydrate(snap){
     clearAll();
@@ -1552,17 +1603,21 @@ const Store=(function(){
       imp[t]={rows:r.rows,accepted:r.accepted,files:r.files||[],switches:new Set(r.switches||[]),
         ifaces:new Set(r.ifaces||[]),tsMin:r.tsMin,tsMax:r.tsMax,issues:r.issues||[],mapping:r.mapping};}
     S.imports=imp;
+    (snap.mrate||[]).forEach(([g,v])=>S.mrate.set(g,{rateMbps:v.rateMbps,sources:new Set(v.sources||[])}));
     return S.ifaceIndex.size;
   }
   // Decide which of the three report types a parsed file is, from its columns.
   // Distinguishing signals: multicast has a group column; utilization has rx+tx Mbps;
   // discards have discard/error columns. Falls back to a filename hint.
   function classify(parseResult,fileName){
-    const uv=preview("util",parseResult), dv=preview("disc",parseResult), mv=preview("mcast",parseResult);
-    if(mv&&mv.map.group!=null&&(!uv||uv.map.rxMbps==null))return "mcast";
+    const uv=preview("util",parseResult), dv=preview("disc",parseResult), mv=preview("mcast",parseResult), rv=preview("mrate",parseResult);
+    // per-(S,G) rate report: has group + rate but NO interface column
+    if(rv&&rv.map.group!=null&&rv.map.rate!=null&&(!mv||mv.map.iface==null)&&(!uv||uv.map.rxMbps==null))return "mrate";
+    if(mv&&mv.map.group!=null&&mv.map.iface!=null&&(!uv||uv.map.rxMbps==null))return "mcast";
     if(uv&&uv.map.rxMbps!=null&&uv.map.txMbps!=null)return "util";
     if(dv&&(dv.map.rxDiscards!=null||dv.map.txDiscards!=null||dv.map.rxErrors!=null||dv.map.txErrors!=null))return "disc";
     const n=(fileName||"").toLowerCase();
+    if(/mroute|s,?g|\bsg\b|group.?rate|mcast.?rate/.test(n))return "mrate";
     if(/multicast|mcast|igmp|group/.test(n))return "mcast";
     if(/discard|error/.test(n))return "disc";
     if(/util|traffic|link|bandwidth/.test(n))return "util";
@@ -1766,7 +1821,14 @@ const Blocks=(function(){
         totalDiscDelta, totalErrDelta,
         topDisc, topRx, topTx,
         mcGroups, mcGroupCount:mcGroups.size, mcIfaces,
-        discEvents:discEvents.sort((a,b)=>a.t-b.t)
+        discEvents:discEvents.sort((a,b)=>a.t-b.t),
+        // ---- buffer-capacity model (all derived from CONFIGURED assumptions + measured load) ----
+        speedMbps:resolver.speed,
+        aggCapacityMbps:(activePorts||members.length)*resolver.speed,        // aggregate egress line-rate of active ports
+        utilPct:((activePorts||members.length)*resolver.speed)?peakTx.v/((activePorts||members.length)*resolver.speed)*100:null,
+        maxPortBufferMB:(resolver.model&&resolver.model.maxPortBufferMB)||null,
+        // how long the pool's shared buffer can absorb a full single-port-line-rate overload before dropping
+        burstAbsorbMs:(info.bufferMB&&resolver.speed)?(info.bufferMB*8/resolver.speed*1000):null
       };
     }
     return result;
@@ -1807,9 +1869,13 @@ const Biz=(function(){
 /* ======================= Multicast Analyzer ======================= */
 const Multicast=(function(){
   function loaded(){return Store.S.groupIndex.size>0;}
+  // groups in configured ignore ranges (link-local / internetwork-control) are excluded
+  function ignoreNets(){return (Settings.get().ignoreMcast||[]);}
+  function isIgnored(group){const nets=ignoreNets();for(const c of nets)if(Normalize.ipInCidr(group,c))return true;return false;}
   function groups(win){
     const out=[];
     Store.S.groupIndex.forEach((members,g)=>{
+      if(isIgnored(g))return;
       const switches=new Set(),blocks=new Set(),vlans=new Set(),feeds=new Set();
       let ifaceObjs=[],ifWithDisc=0;const perTx=[];
       members.forEach(m=>{
@@ -1830,8 +1896,10 @@ const Multicast=(function(){
       perTx.sort((a,b)=>a-b);
       const busiestTx=perTx.length?perTx[perTx.length-1]:0;
       const medianTx=perTx.length?perTx[Math.floor((perTx.length-1)/2)]:0;
+      const mr=Store.S.mrate.get(g);
       out.push({group:g,valid:Normalize.mcastGroup(g).valid,switches,blocks,vlans,feeds,
         ifaces:ifaceObjs,ifaceCount:ifaceObjs.length,busiestTx,medianTx,ifWithDisc,
+        measuredRateMbps:mr?mr.rateMbps:null,measuredSources:mr?[...(mr.sources||[])]:[],
         affectedBlocks:blocks.size});
     });
     return out.sort((a,b)=>b.ifaceCount-a.ifaceCount);
@@ -1844,8 +1912,10 @@ const Multicast=(function(){
     device.interfaces.forEach(it=>{
       if(!it.mcastGroups.size||!it.block)return;
       const b=perBlock[it.block];if(!b)return;
+      const groups=[...it.mcastGroups].filter(g=>!isIgnored(g));
+      if(!groups.length)return;
       b.ifaces++;
-      it.mcastGroups.forEach(g=>{b.groups.add(g);
+      groups.forEach(g=>{b.groups.add(g);
         groupBlockCount[g]=groupBlockCount[g]||{};groupBlockCount[g][it.block]=(groupBlockCount[g][it.block]||0)+1;});
       if(it.metrics)b.traffic+=(it.metrics.maxTx||0);
       if(it.counters){b.discardDelta+=CounterEngine.windowDelta(it.counters.td,win.w0,win.w1,win.pred).delta
@@ -1860,7 +1930,8 @@ const Multicast=(function(){
       if(share>maxShare){maxShare=share;maxBlock=bn;}});
     return {perBlock,totalGroups,maxShare,maxBlock};
   }
-  return {loaded,groups,concentration};
+  function activeGroupCount(){let n=0;Store.S.groupIndex.forEach((m,g)=>{if(!isIgnored(g))n++;});return n;}
+  return {loaded,groups,concentration,isIgnored,activeGroupCount};
 })();
 
 /* ======================= Risk Engine ======================= */
@@ -1913,7 +1984,11 @@ const Risk=(function(){
       var enoughGroups=totalG>=MIN_GROUPS;}
     dims.mcastConc={value:mcShare,level:(mcShare&&enoughGroups)?sev(mcShare,t.mcastConcentration):"NORMAL",
       reason:enoughGroups?("Block holds "+fmtPct(mcShare)+" of this switch's "+(conc?conc.totalGroups:0)+" multicast groups"):"Too few multicast groups ("+((conc&&conc.totalGroups)||0)+") to assess concentration"};
-    const overall=worst(dims.discard.level,dims.error.level,dims.bufferConc.level,dims.mcastConc.level);
+    // buffer-load pressure: how close the block's peak simultaneous egress is to its aggregate line-rate.
+    // The shared pool only absorbs sustained oversubscription for ~burstAbsorbMs, so high load = buffer risk.
+    dims.bufferLoad={value:br.utilPct,level:br.utilPct!=null?sev(br.utilPct,t.blockUtil):"NORMAL",
+      reason:br.utilPct!=null?("Peak simultaneous block egress "+fmtPct(br.utilPct)+" of aggregate active-port capacity ("+(br.activePorts||0)+"×"+Math.round((br.speedMbps||0)/1000)+"G). Pool absorbs a full-rate burst for ~"+(br.burstAbsorbMs!=null?br.burstAbsorbMs.toFixed(1):"?")+" ms before dropping."):"Block egress capacity unknown"};
+    const overall=worst(dims.discard.level,dims.error.level,dims.bufferConc.level,dims.mcastConc.level,dims.bufferLoad.level);
     return {overall,dims};
   }
   function fmt(n){return n==null?"—":Math.round(n).toLocaleString();}
@@ -2151,7 +2226,7 @@ const Analyze=(function(){
     }));
     return {switches,ifaces,active,discGrow,withErr,
       affectedBlocks:affectedBlocks.size,critBlocks:critBlocks.size,
-      mcGroups:Store.S.groupIndex.size, period:A.win.label};
+      mcGroups:Multicast.activeGroupCount(), period:A.win.label};
   }
   function current(){return A;}
   return {finalize,run,current,windowFor};
@@ -2791,13 +2866,14 @@ UI.renderImport=function(){
       +"<div class='drop'>Drop files here or <b>browse</b></div>"
       +"<input type='file' id='file-auto' accept='.xlsx,.xls,.csv,.txt,.tsv,.zip' multiple>"
     +"</div>"
-    +"<div class='import-grid'>"
+    +"<div class='import-grid' style='grid-template-columns:repeat(4,1fr)'>"
     +dz("util","1 · Utilization Report","Link utilization / traffic time-series","Hostname · IP · Interface · Receive Mbps · Transmit Mbps · Timestamp",im.util)
     +dz("disc","2 · Errors / Discards","Cumulative error &amp; discard counters","Caption · IP · Interface · RX/TX Discards · RX/TX Errors · Timestamp",im.disc)
     +dz("mcast","3 · Multicast Mapping","Optional — group / VLAN / feed mapping","Switch · Interface · Multicast Group · VLAN · Feed · Role",im.mcast&&im.mcast.rows?im.mcast:null)
+    +dz("mrate","4 · Multicast Rates","Optional — TRUE per-(S,G) stream bandwidth","Group · Source · Rate (Mbps/bps/Gbps) — from 'show ip mroute &lt;g&gt; count' / telemetry",im.mrate&&im.mrate.rows?im.mrate:null)
     +"</div>"
     +validationPanel();
-  ["auto","util","disc","mcast"].forEach(bindDz);
+  ["auto","util","disc","mcast","mrate"].forEach(bindDz);
 };
 function dz(type,title,desc,cols,rep){
   const done=rep&&rep.accepted;
@@ -2827,7 +2903,7 @@ async function handleFiles(type,fileList){
       const result=await FileParser.parse(file);
       // ZIP bundle (e.g. nexus_collect.py output): auto-route each member to its report type
       if(result&&result.bundle){
-        const labels={util:"Utilization",disc:"Errors/Discards",mcast:"Multicast"};
+        const labels={util:"Utilization",disc:"Errors/Discards",mcast:"Multicast",mrate:"Multicast Rates"};
         let routed=0;
         for(const mem of result.members){
           const t=Store.classify(mem.result,mem.name);
@@ -2844,7 +2920,7 @@ async function handleFiles(type,fileList){
         continue;
       }
       // resolve target report type (explicit card, or auto-detect)
-      const labels={util:"Utilization",disc:"Errors/Discards",mcast:"Multicast"};
+      const labels={util:"Utilization",disc:"Errors/Discards",mcast:"Multicast",mrate:"Multicast Rates"};
       let target=type;
       if(type==="auto"){
         target=Store.classify(result,file.name);
@@ -3187,8 +3263,23 @@ UI.renderBlock=function(devKey,bn){
     +UI.h.kpi("Discard Δ",U.n(br.totalDiscDelta),"aggregate new drops",br.totalDiscDelta?"warn":"ok")
     +UI.h.kpi("Error Δ",U.n(br.totalErrDelta),"aggregate new errors",br.totalErrDelta?"warn":"ok")
     +UI.h.kpi("MC Groups",br.mcGroupCount,br.mcIfaces+" interfaces")
-    +UI.h.kpi("Buffer",(br.bufferMB||"?")+" MB","configured "+UI.h.dl("assumed"))
+    +UI.h.kpi("Block Load",br.utilPct!=null?U.pct(br.utilPct):"—","of "+(br.activePorts||0)+"×"+Math.round((br.speedMbps||0)/1000)+"G egress",r&&r.dims&&r.dims.bufferLoad&&r.dims.bufferLoad.level!=="NORMAL"?"warn":"","Peak simultaneous block TX ÷ aggregate line-rate of active ports. High load stresses the shared pool.")
     +"</div>";
+  // buffer capacity & load
+  const bl=r&&r.dims&&r.dims.bufferLoad;
+  html+=UI.h.panel("Buffer Capacity &amp; Load "+UI.h.chip(bl?bl.level:"NORMAL")+" "+UI.info("Buffer figures are CONFIGURED ASSUMPTIONS. Polling cannot measure buffer occupancy directly; these relate measured load to the pool's theoretical burst-absorption capacity."),
+    "<div class='split-info' style='grid-template-columns:repeat(4,1fr)'>"
+    +si("Configured pool buffer",(br.bufferMB||"?")+" MB "+UI.h.dl("assumed"))
+    +si("Max per-port buffer",(br.maxPortBufferMB?br.maxPortBufferMB+" MB":"—")+" "+UI.h.dl("assumed"))
+    +si("Aggregate egress capacity",U.gbps(br.aggCapacityMbps)+" ("+(br.activePorts||0)+" active × "+Math.round((br.speedMbps||0)/1000)+"G)")
+    +si("Peak simultaneous block TX",U.gbps(br.peakTx.v)+(br.peakTx.t?(" @ "+U.ts(br.peakTx.t)):""))
+    +si("Block load "+UI.h.dl("derived"),br.utilPct!=null?U.pct(br.utilPct):"—")
+    +si("Burst absorption "+UI.h.dl("derived"),br.burstAbsorbMs!=null?("~"+br.burstAbsorbMs.toFixed(1)+" ms @ line rate"):"—")
+    +si("Ports w/ discard growth",br.portsWithDisc+" of "+br.activePorts)
+    +si("Aggregate discard Δ",U.n(br.totalDiscDelta))
+    +"</div>"
+    +"<div class='mini' style='margin-top:8px'>"+(bl&&bl.level!=="NORMAL"?"<span style='color:var(--warn)'>▲ "+U.esc(bl.reason)+"</span>":U.esc(bl?bl.reason:""))
+    +" — a "+(br.bufferMB||"?")+" MB pool holds only ~"+(br.burstAbsorbMs!=null?br.burstAbsorbMs.toFixed(1):"?")+" ms of a full 10G overload, so sustained high block load with discard growth points to shared-pool exhaustion.</div>");
   // timeline
   html+=UI.h.panel("Simultaneous Block Load Timeline "+UI.info("Aggregate RX/TX computed per time bucket ("+Settings.get().correlation.bucketSec+"s). Vertical markers = discard/error delta events."),
     "<div class='chart-box'><canvas id='blkChart'></canvas></div>"
@@ -3463,7 +3554,7 @@ UI.renderMulticast=function(){
   const A=Analyze.current();const el=document.getElementById("view-multicast");
   const tabs=["groups","switch","buffer","interfaces","traffic","discard"];
   const labels={groups:"Groups",switch:"Switch Distribution",buffer:"Buffer Distribution",interfaces:"Interfaces",traffic:"Traffic",discard:"Discard Correlation"};
-  let html=UI.h.page("Multicast Analysis",Multicast.loaded()?(Store.S.groupIndex.size+" groups mapped · "+A.win.label):"Mapping not loaded — architecture ready");
+  let html=UI.h.page("Multicast Analysis",Multicast.loaded()?(Multicast.activeGroupCount()+" groups mapped ("+Store.S.groupIndex.size+" incl. filtered) · "+A.win.label):"Mapping not loaded — architecture ready");
   if(!Multicast.loaded()){
     html+="<div class='panel'><div class='pb'><div class='empty-state'><div class='big'>⧉</div>"
       +"<h2>Multicast mapping not loaded</h2>"
@@ -3572,7 +3663,9 @@ UI.renderMcGroup=function(group){
   html+="<div class='kpi-grid'>"
     +UI.h.kpi("Switches",g.switches.size,"")+UI.h.kpi("Interfaces",g.ifaceCount,"fan-out")
     +UI.h.kpi("Blocks",g.affectedBlocks,"distinct switch/block")
-    +UI.h.kpi("Busiest Carrying IF",U.mbps(g.busiestTx),busiestIf?(busiestIf.device.replace(/^.*-/,"")+" "+busiestIf.ifaceShort):"","","Peak TX of the single busiest port carrying this group (≤ link speed). This is the port's TOTAL egress, not this group's own stream — multicast replicates one stream to many ports, so summing per-port rates is invalid.")
+    +(g.measuredRateMbps!=null
+      ?UI.h.kpi("Measured Stream Rate",U.mbps(g.measuredRateMbps),(g.measuredSources.length?g.measuredSources.length+" source(s)":"")+" "+UI.h.dl("raw"),"ok","True per-(S,G) rate from imported mroute/telemetry counters — the actual group bandwidth, independent of replication.")
+      :UI.h.kpi("Busiest Carrying IF",U.mbps(g.busiestTx),busiestIf?(busiestIf.device.replace(/^.*-/,"")+" "+busiestIf.ifaceShort):"","","Peak TX of the single busiest port carrying this group (≤ link speed). This is the port's TOTAL egress, not this group's own stream. Import per-(S,G) rates for true group bandwidth."))
     +UI.h.kpi("Median Facing IF TX",U.mbps(g.medianTx),"rough stream proxy","","Median of per-port peak TX across carrying interfaces — a rough proxy for the replicated stream rate. True per-group rate needs per-(S,G) counters.")
     +UI.h.kpi("IFs w/ Discards",g.ifWithDisc,"of "+g.ifaceCount,g.ifWithDisc?"warn":"ok")
     +"</div>";
@@ -3764,6 +3857,7 @@ UI.renderSettings=function(){
   tb+=thrRow("P95→Max gap","thresholds.p95Gap",t.p95Gap);
   tb+=thrRow("Buffer concentration %","thresholds.blockConcentration",t.blockConcentration);
   tb+=thrRow("Multicast concentration %","thresholds.mcastConcentration",t.mcastConcentration);
+  tb+=thrRow("Block load % (buffer pressure)","thresholds.blockUtil",t.blockUtil);
   html+=UI.h.panel("Risk Thresholds "+UI.info("Values are the WATCH / WARNING / CRITICAL boundaries. Never hidden — the metric that triggers a severity is always shown."),
     "<div class='tbl-wrap'><table class='dt'><thead><tr><th>Dimension</th><th>Watch</th><th>Warning</th><th>Critical</th></tr></thead><tbody>"+tb+"</tbody></table></div>");
   // business hours
@@ -3778,7 +3872,8 @@ UI.renderSettings=function(){
     +"<div class='form-row'><label>Time bucket size (sec) "+UI.info("Bucket width for simultaneous block-load aggregation.")+"</label><input type='number' value='"+s.correlation.bucketSec+"' onchange=\"UI.setSetting('correlation.bucketSec','int',this.value)\"></div>"
     +"<div class='form-row'><label>Counter rollover guard</label><input type='checkbox' "+(s.counter.rolloverGuard?"checked":"")+" onchange=\"UI.setSetting('counter.rolloverGuard','bool',this.checked)\"></div>"
     +"<div class='form-row'><label>Reset policy</label><select class='cfg' onchange=\"UI.setSetting('counter.resetPolicy','str',this.value)\"><option value='count-from-zero' "+(s.counter.resetPolicy==="count-from-zero"?"selected":"")+">Count from zero (delta = current)</option><option value='ignore' "+(s.counter.resetPolicy==="ignore"?"selected":"")+">Ignore (delta = 0)</option></select></div>"
-    +"<div class='form-row'><label>Table page size</label><input type='number' value='"+s.ui.pageSize+"' onchange=\"UI.setSetting('ui.pageSize','int',this.value)\"></div>");
+    +"<div class='form-row'><label>Table page size</label><input type='number' value='"+s.ui.pageSize+"' onchange=\"UI.setSetting('ui.pageSize','int',this.value)\"></div>"
+    +"<div class='form-row'><label>Ignore multicast networks "+UI.info("Comma-separated CIDRs excluded from multicast analysis. Defaults filter link-local (224.0.0.0/24) and internetwork-control (224.0.1.0/24) groups.")+"</label><input type='text' class='cfg' style='max-width:320px' value='"+U.esc((s.ignoreMcast||[]).join(", "))+"' onchange=\"UI.setIgnoreMcast(this.value)\"></div>");
   // models
   html+=UI.h.panel("Switch Models / Buffer Mapping "+UI.info("Buffer block membership and buffer size are CONFIGURED ASSUMPTIONS, not verified hardware truth."),
     modelsEditor()+"<button class='btn' style='margin-top:8px' onclick=\"UI.addModel()\">+ Add Model</button>");
@@ -3815,6 +3910,11 @@ UI.setSetting=function(path,type,val){
   if(path.startsWith("correlation")||path.startsWith("counter")||path.startsWith("thresholds")||path.startsWith("business")){Analyze.finalize();UI.reanalyze();}
   else UI.reanalyze();
 };
+UI.setIgnoreMcast=function(val){
+  const list=String(val).split(",").map(x=>x.trim()).filter(x=>/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(x));
+  Settings.set("ignoreMcast",list);UI.reanalyze();UI.renderSettings();
+  UI.toast("Multicast ignore list updated ("+list.length+" range(s)).","ok");
+};
 UI.toggleBizDay=function(i){const s=Settings.get();const arr=s.business.days;const idx=arr.indexOf(i);
   if(idx>=0)arr.splice(idx,1);else arr.push(i);Settings.set("business.days",arr);UI.renderSettings();UI.reanalyze();};
 UI.setModel=function(mi,field,val){const m=Settings.get().models[mi];m[field]=parseInt(val,10)||m[field];Settings.saveModels();Analyze.finalize();UI.reanalyze();UI.renderSettings();};
@@ -3847,7 +3947,7 @@ const Report=(function(){
     if(Store.S.imports.disc)items.push("Discard/error counters are cumulative; all discard figures are deltas (last − first within window) with reset/rollover handling, not raw counter totals.");
     items.push("Buffer block membership and "+(Store.allDevices()[0]?Store.S.devices.values().next().value.model:"model")+" shared-buffer size (6 MB/block) are configured assumptions, not verified hardware truth.");
     if(!Multicast.loaded())items.push("Multicast mapping was not provided; multicast concentration analysis is unavailable.");
-    else items.push(Store.S.groupIndex.size+" multicast groups mapped across "+countMcIfaces()+" interfaces.");
+    else items.push(Multicast.activeGroupCount()+" multicast groups analysed ("+Store.S.groupIndex.size+" mapped; link-local/control groups filtered) across "+countMcIfaces()+" interfaces.");
     const ms=A.matchStats;
     if(ms&&ms.discOnly.length)items.push(ms.discOnly.length+" interface(s) present in the discard report could not be correlated to the utilization report.");
     if(ms&&ms.utilOnly.length)items.push(ms.utilOnly.length+" interface(s) present in the utilization report have no discard samples.");
