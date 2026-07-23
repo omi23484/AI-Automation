@@ -464,44 +464,93 @@ const Inflate=(function(){
       ensure(length);for(i=offs;i<offs+length;++i)d.dest[d.destlen++]=d.dest[i];}}}
 })();
 
-/* ======================= ZIP reader (central directory) ======================= */
+/* ======================= Raw DEFLATE (browser-native primary + JS fallback) =======================
+   Uses the browser's DecompressionStream('deflate-raw') when available — this is a
+   built-in, fully offline, spec-correct decoder that handles every DEFLATE block type
+   and multi-block stream that a producer like Excel's own ZIP writer might emit. Falls
+   back to the embedded pure-JS Inflate only when DecompressionStream is unavailable. */
+async function inflateRawAsync(bytes){
+  if(typeof DecompressionStream!=="undefined"){
+    try{
+      const ds=new DecompressionStream("deflate-raw");
+      const stream=new Blob([bytes]).stream().pipeThrough(ds);
+      const ab=await new Response(stream).arrayBuffer();
+      return new Uint8Array(ab);
+    }catch(e){ /* fall through to pure-JS inflate */ }
+  }
+  return Inflate(bytes);
+}
+
+/* ======================= ZIP reader (central directory, ZIP64-aware) ======================= */
 const Zip=(function(){
   function u16(b,o){return b[o]|(b[o+1]<<8);}
   function u32(b,o){return (b[o]|(b[o+1]<<8)|(b[o+2]<<16)|(b[o+3]<<24))>>>0;}
+  function u64(b,o){ // little-endian 64-bit -> JS number (safe up to 2^53)
+    const lo=u32(b,o), hi=u32(b,o+4);return hi*4294967296+lo;}
   function findEOCD(b){ // scan backward for End Of Central Directory 0x06054b50
-    for(let i=b.length-22;i>=0;i--){
-      if(b[i]===0x50&&b[i+1]===0x4b&&b[i+2]===0x05&&b[i+3]===0x06)return i;
+    const min=Math.max(0,b.length-22-65535); // EOCD is within last 64KB (+comment)
+    for(let i=b.length-22;i>=min;i--){
+      if(b[i]===0x50&&b[i+1]===0x4b&&b[i+2]===0x05&&b[i+3]===0x06){
+        // validate: the CD offset it points to should carry a CD signature, else keep scanning
+        const off=u32(b,i+16), cnt=u16(b,i+10);
+        if(off===0xFFFFFFFF||cnt===0xFFFF)return i; // ZIP64 — resolve later
+        if(off<=b.length-4 && b[off]===0x50&&b[off+1]===0x4b&&b[off+2]===0x01&&b[off+3]===0x02)return i;
+      }
     }
-    throw new Error("Not a valid ZIP/XLSX (EOCD not found)");
+    throw new Error("Not a valid .xlsx/.zip file (central directory not found)");
   }
   function read(buf){
     const b=new Uint8Array(buf);
     const eocd=findEOCD(b);
-    const cdCount=u16(b,eocd+10), cdOff=u32(b,eocd+16);
-    const files={};let p=cdOff;
-    for(let n=0;n<cdCount;n++){
-      if(u32(b,p)!==0x02014b50)break;
+    let cdCount=u16(b,eocd+10), cdOff=u32(b,eocd+16);
+    // ---- ZIP64: resolve real counts/offset when the classic fields are maxed out ----
+    if(cdOff===0xFFFFFFFF||cdCount===0xFFFF){
+      // locate ZIP64 EOCD locator (0x07064b50), 20 bytes before the classic EOCD
+      let loc=eocd-20;
+      if(loc>=0 && u32(b,loc)===0x07064b50){
+        const z64=u64(b,loc+8); // offset of ZIP64 EOCD record
+        if(u32(b,z64)===0x06064b50){cdCount=u64(b,z64+32);cdOff=u64(b,z64+48);}
+      }
+      if(cdOff===0xFFFFFFFF)throw new Error("Unsupported ZIP64 layout in workbook");
+    }
+    const files={};let p=cdOff, guard=0;
+    while(guard++<200000){
+      if(p+46>b.length||u32(b,p)!==0x02014b50)break;
       const method=u16(b,p+10);
-      const compSize=u32(b,p+20), uncompSize=u32(b,p+24);
+      let compSize=u32(b,p+20), uncompSize=u32(b,p+24);
       const nameLen=u16(b,p+28), extraLen=u16(b,p+30), commLen=u16(b,p+32);
-      const lho=u32(b,p+42);
+      let lho=u32(b,p+42);
       const name=strFrom(b,p+46,nameLen);
-      // local header to find true data offset
+      // parse ZIP64 extra field (0x0001) for maxed-out sizes/offset
+      if(compSize===0xFFFFFFFF||uncompSize===0xFFFFFFFF||lho===0xFFFFFFFF){
+        let ep=p+46+nameLen, eEnd=ep+extraLen;
+        while(ep+4<=eEnd){const tag=u16(b,ep), dsz=u16(b,ep+2);let q=ep+4;
+          if(tag===0x0001){
+            if(uncompSize===0xFFFFFFFF){uncompSize=u64(b,q);q+=8;}
+            if(compSize===0xFFFFFFFF){compSize=u64(b,q);q+=8;}
+            if(lho===0xFFFFFFFF){lho=u64(b,q);q+=8;}
+          }
+          ep+=4+dsz;
+        }
+      }
+      // read the LOCAL header's own name/extra lengths (can differ from central)
       const lNameLen=u16(b,lho+26), lExtraLen=u16(b,lho+28);
       const dataOff=lho+30+lNameLen+lExtraLen;
-      const comp=b.subarray(dataOff,dataOff+compSize);
-      files[name]={method,compSize,uncompSize,comp};
+      files[name]={method,compSize,uncompSize,dataOff,b};
       p+=46+nameLen+extraLen+commLen;
+    }
+    async function bytes(n){
+      const f=files[n];if(!f)return null;
+      const comp=f.b.subarray(f.dataOff,f.dataOff+f.compSize);
+      if(f.method===0)return comp;
+      if(f.method===8)return await inflateRawAsync(comp);
+      throw new Error("Unsupported ZIP compression method "+f.method+" in "+n);
     }
     return {
       files,
       has:(n)=>!!files[n],
-      text:(n)=>{const f=files[n];if(!f)return null;
-        let out;
-        if(f.method===0)out=f.comp;
-        else if(f.method===8)out=Inflate(f.comp);
-        else throw new Error("ZIP: unsupported compression method "+f.method);
-        return utf8(out);}
+      names:()=>Object.keys(files),
+      text:async(n)=>{const by=await bytes(n);return by==null?null:utf8(by);}
     };
   }
   function strFrom(b,o,len){let s="";for(let i=0;i<len;i++)s+=String.fromCharCode(b[o+i]);return s;}
@@ -598,32 +647,35 @@ const Xlsx=(function(){
     }
     return rows;
   }
-  function parse(buf){
+  async function parse(buf){
     const zip=Zip.read(buf);
     if(!zip.has("xl/workbook.xml"))throw new Error("Not a valid XLSX workbook (missing xl/workbook.xml)");
-    const shared=parseSharedStrings(zip.text("xl/sharedStrings.xml"));
-    const isDateStyle=parseStyles(zip.text("xl/styles.xml"));
+    const shared=parseSharedStrings(await zip.text("xl/sharedStrings.xml"));
+    const isDateStyle=parseStyles(await zip.text("xl/styles.xml"));
     // map sheet name -> file
-    const wb=zip.text("xl/workbook.xml")||"";
-    const rels=zip.text("xl/_rels/workbook.xml.rels")||"";
+    const wb=(await zip.text("xl/workbook.xml"))||"";
+    const rels=(await zip.text("xl/_rels/workbook.xml.rels"))||"";
     const relMap={};let rm;
     const relRe=/<Relationship\b[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g;
     while((rm=relRe.exec(rels))){relMap[rm[1]]=rm[2];}
     const sheets=[];let sm;
     const shRe=/<sheet\b[^>]*name="([^"]*)"[^>]*r:id="([^"]+)"[^>]*\/?>|<sheet\b[^>]*r:id="([^"]+)"[^>]*name="([^"]*)"[^>]*\/?>/g;
-    let anyMatched=false;
+    const sheetDefs=[];
     while((sm=shRe.exec(wb))){
-      anyMatched=true;
       const name=decodeEntities(sm[1]||sm[4]||"Sheet"), rid=sm[2]||sm[3];
       let target=relMap[rid];if(!target)continue;
       if(target.charAt(0)==="/")target=target.slice(1);else target="xl/"+target;
       target=target.replace("xl/xl/","xl/");
-      const sx=zip.text(target)||zip.text("xl/"+target.replace(/^.*worksheets/,"worksheets"));
-      if(sx)sheets.push({name,rows:parseSheet(sx,shared,isDateStyle)});
+      sheetDefs.push({name,target});
     }
-    if(!anyMatched){ // fallback: scan for worksheet files directly
-      for(let i=1;i<=20;i++){const f="xl/worksheets/sheet"+i+".xml";
-        if(zip.has(f))sheets.push({name:"Sheet"+i,rows:parseSheet(zip.text(f),shared,isDateStyle)});}
+    for(const sd of sheetDefs){
+      let sx=await zip.text(sd.target);
+      if(!sx)sx=await zip.text("xl/"+sd.target.replace(/^.*worksheets/,"worksheets"));
+      if(sx)sheets.push({name:sd.name,rows:parseSheet(sx,shared,isDateStyle)});
+    }
+    if(!sheets.length){ // fallback: scan for worksheet files directly
+      for(let i=1;i<=50;i++){const f="xl/worksheets/sheet"+i+".xml";
+        if(zip.has(f)){const sx=await zip.text(f);if(sx)sheets.push({name:"Sheet"+i,rows:parseSheet(sx,shared,isDateStyle)});}}
     }
     if(!sheets.length)throw new Error("No worksheets found in workbook");
     return {sheets};
@@ -680,7 +732,7 @@ const FileParser=(function(){
     }
     const buf=await readArrayBuffer(file);
     const b=new Uint8Array(buf);
-    if(b[0]===0x50&&b[1]===0x4b){return Xlsx.parse(buf);} // PK.. zip => xlsx
+    if(b[0]===0x50&&b[1]===0x4b){return await Xlsx.parse(buf);} // PK.. zip => xlsx
     if(b[0]===0xD0&&b[1]===0xCF&&b[2]===0x11&&b[3]===0xE0){
       throw new Error("Legacy .xls (BIFF/OLE) is not supported in offline mode. Please re-save as .xlsx or .csv and re-upload.");
     }
