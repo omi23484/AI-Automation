@@ -1,0 +1,9 @@
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# Generated report bundles from nexus_collect.py
+nexus_reports_*.zip
+
+# OS / editor cruft
+.DS_Store
