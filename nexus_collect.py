@@ -170,18 +170,6 @@ def _canon_iface(name):
     return "Ethernet" + m.group(1) if m else name
 
 
-def _short_host(name):
-    """Strip a DNS domain so the hostname matches SolarWinds' short names.
-    'PJT-EDX-ORD-LF9.BSELTD' -> 'PJT-EDX-ORD-LF9'. IPs are left intact."""
-    if not name:
-        return name
-    name = name.strip()
-    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", name):   # IPv4 -> keep
-        return name
-    first = name.split(".")[0]
-    return first if re.search(r"[A-Za-z]", first) else name
-
-
 def is_ignored_mcast(group, ignore_nets):
     try:
         addr = ipaddress.ip_address(group)
@@ -241,9 +229,9 @@ def collect_device(ip, username, password, secret, timeout, samples, interval, v
         try:
             hn = conn.send_command(_guard_show("show hostname")).strip().splitlines()
             if hn:
-                out["hostname"] = _short_host(hn[-1].strip())
+                out["hostname"] = hn[-1].strip()
         except Exception:
-            out["hostname"] = _short_host(conn.base_prompt or ip)
+            out["hostname"] = conn.base_prompt or ip
 
         # multicast + neighbors: once per device
         try:
