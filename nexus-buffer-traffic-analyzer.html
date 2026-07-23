@@ -536,7 +536,8 @@ const Zip=(function(){
       // read the LOCAL header's own name/extra lengths (can differ from central)
       const lNameLen=u16(b,lho+26), lExtraLen=u16(b,lho+28);
       const dataOff=lho+30+lNameLen+lExtraLen;
-      files[name]={method,compSize,uncompSize,dataOff,b};
+      const normName=name.replace(/\\/g,"/").replace(/^\.?\//,""); // canonicalize separators / leading slash
+      files[normName]={method,compSize,uncompSize,dataOff,b};
       p+=46+nameLen+extraLen+commLen;
     }
     async function bytes(n){
@@ -652,33 +653,52 @@ const Xlsx=(function(){
     if(!zip.has("xl/workbook.xml"))throw new Error("Not a valid XLSX workbook (missing xl/workbook.xml)");
     const shared=parseSharedStrings(await zip.text("xl/sharedStrings.xml"));
     const isDateStyle=parseStyles(await zip.text("xl/styles.xml"));
-    // map sheet name -> file
+    // map sheet name -> file (attribute-order-independent parsing)
     const wb=(await zip.text("xl/workbook.xml"))||"";
     const rels=(await zip.text("xl/_rels/workbook.xml.rels"))||"";
-    const relMap={};let rm;
-    const relRe=/<Relationship\b[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"/g;
-    while((rm=relRe.exec(rels))){relMap[rm[1]]=rm[2];}
-    const sheets=[];let sm;
-    const shRe=/<sheet\b[^>]*name="([^"]*)"[^>]*r:id="([^"]+)"[^>]*\/?>|<sheet\b[^>]*r:id="([^"]+)"[^>]*name="([^"]*)"[^>]*\/?>/g;
-    const sheetDefs=[];
-    while((sm=shRe.exec(wb))){
-      const name=decodeEntities(sm[1]||sm[4]||"Sheet"), rid=sm[2]||sm[3];
-      let target=relMap[rid];if(!target)continue;
-      if(target.charAt(0)==="/")target=target.slice(1);else target="xl/"+target;
-      target=target.replace("xl/xl/","xl/");
-      sheetDefs.push({name,target});
+    const relMap={};
+    (rels.match(/<Relationship\b[^>]*\/?>/g)||[]).forEach(el=>{
+      const id=(el.match(/\bId="([^"]+)"/)||[])[1];
+      const tgt=(el.match(/\bTarget="([^"]*)"/)||[])[1];
+      if(id&&tgt)relMap[id]=tgt;
+    });
+    const sheets=[];
+    const seen=new Set();
+    function resolveTarget(t){ // normalize a rels Target to a zip entry path under xl/
+      if(!t)return null;
+      if(t.charAt(0)==="/")return t.slice(1);
+      return ("xl/"+t).replace(/xl\/xl\//,"xl/").replace(/\/\.\//g,"/");
     }
-    for(const sd of sheetDefs){
+    // 1) ordered by <sheet> declarations in workbook.xml
+    (wb.match(/<sheet\b[^>]*\/?>/g)||[]).forEach(el=>{
+      const name=decodeEntities((el.match(/\bname="([^"]*)"/)||[])[1]||"Sheet");
+      const rid=(el.match(/\br:id="([^"]+)"/)||el.match(/[\w]+:id="([^"]+)"/)||el.match(/\bid="([^"]+)"/)||[])[1];
+      const target=rid?resolveTarget(relMap[rid]):null;
+      sheets.push({name,target,rows:null});
+    });
+    for(const sd of sheets){
+      if(!sd.target)continue;
       let sx=await zip.text(sd.target);
       if(!sx)sx=await zip.text("xl/"+sd.target.replace(/^.*worksheets/,"worksheets"));
-      if(sx)sheets.push({name:sd.name,rows:parseSheet(sx,shared,isDateStyle)});
+      if(sx){sd.rows=parseSheet(sx,shared,isDateStyle);seen.add(sd.target);}
     }
-    if(!sheets.length){ // fallback: scan for worksheet files directly
-      for(let i=1;i<=50;i++){const f="xl/worksheets/sheet"+i+".xml";
-        if(zip.has(f)){const sx=await zip.text(f);if(sx)sheets.push({name:"Sheet"+i,rows:parseSheet(sx,shared,isDateStyle)});}}
+    let out=sheets.filter(s=>s.rows);
+    // 2) fallback: enumerate ANY worksheet entries actually present in the zip
+    if(!out.length){
+      const wsEntries=zip.names().filter(n=>/worksheets\/[^\/]+\.xml$/i.test(n)).sort();
+      let i=0;
+      for(const f of wsEntries){
+        if(seen.has(f))continue;
+        const sx=await zip.text(f);
+        if(sx){const nm=(sheets[i]&&sheets[i].name)||f.replace(/^.*\//,"").replace(/\.xml$/i,"");
+          out.push({name:nm,rows:parseSheet(sx,shared,isDateStyle)});i++;}
+      }
     }
-    if(!sheets.length)throw new Error("No worksheets found in workbook");
-    return {sheets};
+    if(!out.length){
+      const present=zip.names().filter(n=>/worksheet|sheet/i.test(n)).slice(0,8).join(", ");
+      throw new Error("No worksheet data found. Entries seen: "+(present||zip.names().slice(0,8).join(", ")||"none"));
+    }
+    return {sheets:out.map(s=>({name:s.name,rows:s.rows}))};
   }
   return {parse,serialToDate};
 })();
