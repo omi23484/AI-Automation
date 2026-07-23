@@ -289,7 +289,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v32</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v33</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1337,6 +1337,10 @@ function donut(dist){
   segs.forEach(([k,v])=>{const len=v*C;arcs+=`<circle r="${R}" cx="70" cy="70" fill="none" stroke="${stateColor(k)}" stroke-width="18" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`;off+=len;});
   return `<svg class="donut" viewBox="0 0 140 140" width="140" height="140">${arcs}<text class="dt" x="70" y="66" text-anchor="middle" font-size="15" font-weight="700">${(dist.normal*100).toFixed(0)}%</text><text class="ax" x="70" y="82" text-anchor="middle" font-size="9">NORMAL</text></svg>`;
 }
+function toRGBA(col,a){col=(col||'').trim();
+  if(col[0]==='#'){let h=col.slice(1);if(h.length===3)h=h.split('').map(c=>c+c).join('');const n=parseInt(h,16);return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`;}
+  const m=col.match(/rgba?\(([^)]+)\)/i);if(m){const p=m[1].split(',').map(s=>parseFloat(s));return `rgba(${p[0]||0},${p[1]||0},${p[2]||0},${a})`;}
+  return col;}
 function heatmap(heat,t,tOffP,speed){
   const bhc=S.cfg.businessHours;
   const hasOff=!!(tOffP&&(tOffP.warn!==t.warn||tOffP.high!==t.high||tOffP.crit!==t.crit));
@@ -1357,10 +1361,14 @@ function heatmap(heat,t,tOffP,speed){
       const tb=isB?t:tOff;
       const st=v==null?'nodata':stateOfT(v,tb);const c=v==null?'rgba(120,150,200,.06)':stateColor(st);
       const info=v==null?'':`${DOW[d]} ${p2(h)}:00–${p2((h+1)%24)}:00 · ${isB?'business hours':'off-hours'} · avg utilization ${pct1(v)}${speed?` (~${fmtBps(v*speed)})`:''} · ${st} band — ${isB?'business':'off-hours'} limits ${Math.round(tb.warn*100)}/${Math.round(tb.high*100)}/${Math.round(tb.crit*100)}%`;
-      cells+=`<div class="cell" ${v!=null?`data-info="${esc(info)}"`:''} title="${v==null?`${DOW[d]} ${p2(h)}:00 — no data`:esc(info)}" style="background:${c};opacity:${v==null?1:0.35+clamp(v,0,1)*0.65}${isB?';box-shadow:inset 0 0 0 1px rgba(56,189,248,.45)':''};cursor:${v!=null?'pointer':'default'}"></div>`;}}
+      // Alpha baked into the background (not `opacity`) so the value text stays crisp;
+      // number uses the theme text colour + a soft halo → readable on every band, both themes.
+      const bg=v==null?'rgba(120,150,200,.06)':toRGBA(c,0.4+clamp(v,0,1)*0.6);
+      const num=v==null?'':`<span style="font-size:7px;font-weight:700;line-height:1;color:var(--txt);text-shadow:0 1px 1px rgba(0,0,0,.45),0 0 2px rgba(0,0,0,.35)">${Math.round(clamp(v,0,3)*100)}</span>`;
+      cells+=`<div class="cell" ${v!=null?`data-info="${esc(info)}"`:''} title="${v==null?`${DOW[d]} ${p2(h)}:00 — no data`:esc(info)}" style="display:flex;align-items:center;justify-content:center;background:${bg}${isB?';box-shadow:inset 0 0 0 1px rgba(56,189,248,.55)':''};cursor:${v!=null?'pointer':'default'}">${num}</div>`;}}
   return `<div class="heatwrap"><div class="heat">${tl}${strip}${cells}</div>
   <div class="heattip mini" style="display:none;margin-top:7px;padding:7px 10px;border:1px solid var(--stroke2);border-radius:8px;background:var(--panel2);color:var(--txt)"></div>
-  <div class="mini" style="margin-top:6px"><i style="display:inline-block;width:9px;height:9px;border:1px solid rgba(56,189,248,.7);border-radius:2px;vertical-align:-1px"></i> outlined = business hours ${bhc.startHr}:00–${bhc.endHr}:00 (limits ${Math.round(t.warn*100)}/${Math.round(t.high*100)}/${Math.round(t.crit*100)}%)${hasOff?` · off-hours limits ${Math.round(tOff.warn*100)}/${Math.round(tOff.high*100)}/${Math.round(tOff.crit*100)}%`:''} · click a cell for exact numbers</div></div>`;
+  <div class="mini" style="margin-top:6px"><i style="display:inline-block;width:9px;height:9px;border:1px solid rgba(56,189,248,.7);border-radius:2px;vertical-align:-1px"></i> outlined = business hours ${bhc.startHr}:00–${bhc.endHr}:00 (limits ${Math.round(t.warn*100)}/${Math.round(t.high*100)}/${Math.round(t.crit*100)}%)${hasOff?` · off-hours limits ${Math.round(tOff.warn*100)}/${Math.round(tOff.high*100)}/${Math.round(tOff.crit*100)}%`:''} · numbers = avg utilization % · click a cell for the full breakdown</div></div>`;
 }
 function calHeat(daily,t){
   if(!daily.length)return'<div class="mini">No data</div>';
@@ -1563,6 +1571,22 @@ function bhInsight(b,r){
   if(r.bhDays)parts.push(`High/critical levels were hit on ${r.bhDays} business day(s) in this window.`);
   return parts.join(' ');
 }
+// Plain-language reason each anomaly was flagged — what the detector saw and why it
+// clears the bar (baseline expected value, size of the jump, and the guard thresholds).
+function anomalyWhy(an){
+  if(an.type==='Traffic spike'){
+    const exp=an.exp!=null?pct1(an.exp):'its usual level';
+    const jump=an.jump!=null?`+${(an.jump*100).toFixed(0)}pp`:'a large step';
+    return `Utilization hit <b>${pct1(an.util)}</b> here, but the typical load for this same <b>weekday &amp; hour</b> is only about <b>${exp}</b> (from this link’s own history). That’s ${jump}${an.z!=null?`, <b>${an.z.toFixed(1)}σ</b> above its normal spread`:''} — past the ≥3.2σ and ≥8&nbsp;pp bar the detector requires, so it reads as an unusual spike, not just the normal busy period.`;
+  }
+  if(an.type==='Weekend traffic on business link'){
+    return `Weekend load runs about <b>${pct1(an.util)}</b> (median) on a link that should be quiet on weekends${an.exp!=null?` — vs a weekday median of ~${pct1(an.exp)}`:''}. Unusual for a business link: confirm an intended backup/replication job, or reclassify the link.`;
+  }
+  if(an.type==='RX/TX imbalance'){
+    return `Receive and transmit are persistently lopsided — the busier direction is about <b>${an.ratio!=null?an.ratio.toFixed(1)+'×':'several ×'}</b> the quieter one (median across samples that have both directions, &gt; 6×). Typical of asymmetric routing, one-way flows, or a SPAN/mirror port.`;
+  }
+  return `Flagged against this link’s own baseline.`;
+}
 function focusAnomalyIntf(idx){
   const detail=$('#anomDetailIntf');
   const cfg=CHARTS[S.intfChartId];
@@ -1696,12 +1720,26 @@ function view_intf(){
         ${Object.entries(r.risk.factors).map(([k,v])=>`<div class="flex" style="margin-bottom:7px"><span style="width:90px" class="small">${k}</span><span class="track" style="flex:1;height:6px;border-radius:4px;background:rgba(120,150,200,.15);overflow:hidden"><i style="display:block;height:100%;width:${clamp(v,0,1)*100}%;background:linear-gradient(90deg,#38bdf8,#f43f5e)"></i></span></div>`).join('')}
         <div class="mini" style="margin-top:8px">× ${r.risk.impactMul} business-impact multiplier (${r.impact})</div>
       </div>
-      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Anomalies</h2><span class="sub">${r.anomalies.length||'none'}</span></div>
-        <select id="anomSelIntf" onchange="focusAnomalyIntf(this.value)" style="width:100%" ${r.anomalies.length?'':'disabled'}>
-          <option value="">${r.anomalies.length?'Select an anomaly to locate it on the chart…':'No anomalies vs baseline'}</option>
+      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Upgrade watch</h2><span class="sub">${S.watch.includes(r.ifid)?'✓ watching':'not watched'}</span></div>
+        ${(()=>{const uh=upgradeHits(r,r.start,r.end);const ur=r.upgradeRule;return `
+        <div class="mini" style="margin-bottom:8px">Policy: util &gt; <b>${ur.utilPct}%</b>${ur.businessHoursOnly?' in business hours':''} on <b>${ur.days}</b> distinct day(s), anywhere in the dataset.</div>
+        <div class="flex" style="gap:18px;margin-bottom:10px">
+          <div><div class="small" style="color:var(--muted)">Threshold hits</div><div class="mono" style="font-size:19px">${uh.hits.toLocaleString()}</div></div>
+          <div><div class="small" style="color:var(--muted)">Days hit</div><div class="mono" style="font-size:19px;color:${uh.met?'var(--critical)':'inherit'}">${uh.days}<span class="small" style="color:var(--muted)">/${ur.days}</span></div></div>
+          <div><div class="small" style="color:var(--muted)">Peak util</div><div class="mono" style="font-size:19px">${pct1(r.pkP95!=null?Math.max(r.pkP95,r.mx):r.mx)}</div></div>
+        </div>
+        <div style="margin-bottom:10px">${uh.met?`<span class="chip" style="color:var(--critical);border-color:var(--critical)">⚠ Upgrade trigger MET</span> <span class="mini">— crossed on ${uh.days} day(s), last ${uh.last?fmtDate(uh.last):'—'}</span>`:(uh.hits?`<span class="mini">Crossed on ${uh.days} day(s) so far — below the ${ur.days}-day trigger. Last ${uh.last?fmtDate(uh.last):'—'}.</span>`:`<span class="mini">No threshold crossings across the dataset.</span>`)}</div>`;})()}
+        <button class="btn sm ${S.watch.includes(r.ifid)?'ghost':''}" onclick="${S.watch.includes(r.ifid)?`watchRemove('${r.ifid}')`:`watchAdd('${r.ifid}')`}">${S.watch.includes(r.ifid)?'✓ Watching — remove':'➕ Add to Upgrade Watch'}</button>
+        <a class="mini" onclick="go('upgrade')" style="margin-left:12px;cursor:pointer;color:var(--accent)">open Upgrade Watch →</a>
+      </div>
+      <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Anomalies</h2><span class="sub">${r.anomalies.length||'none'}${r.anomalies.length?' · why each was flagged':''}</span></div>
+        ${r.anomalies.length?`<select id="anomSelIntf" onchange="focusAnomalyIntf(this.value)" style="width:100%;margin-bottom:10px">
+          <option value="">Select to locate one on the chart above…</option>
           ${S.intfAnomalies.map((an,i)=>`<option value="${i}">${fmtDate(an.ts)} · ${an.type}</option>`).join('')}
         </select>
-        <div id="anomDetailIntf" style="margin-top:10px"></div>
+        ${S.intfAnomalies.map((an,i)=>`<div class="ai" style="margin:0 0 8px;cursor:pointer" onclick="focusAnomalyIntf('${i}')" title="Click to mark it on the chart"><div class="h"><span style="color:${ANOM_COLOR[an.type]||'#fb923c'}">▲</span> ${esc(an.type)}<span class="spacer"></span><span class="mini" style="font-weight:400">${fmtDate(an.ts)}</span></div><p class="mini" style="font-size:12px;line-height:1.5">${anomalyWhy(an)}</p></div>`).join('')}`
+        :'<div class="mini">No anomalies vs this link’s own baseline.</div>'}
+        <div id="anomDetailIntf" style="margin-top:6px"></div>
       </div>
       <div class="panel pad"><div class="sec-title"><h2>Timeline</h2></div>
         <div class="tl">${events.map(e=>`<div class="ev ${e.k}"><div class="tm">${fmtDate(e.ts)}</div><div>${e.txt}</div></div>`).join('')||'<div class="mini">No events.</div>'}</div>

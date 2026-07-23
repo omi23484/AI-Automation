@@ -139,8 +139,10 @@ When a poller exports the same interface under both a **short hostname** and its
 | **⤓ Export HTML** | Downloads a self-contained printable report of this link. |
 | **🖨 Export PDF** | Opens the print dialog → choose "Save as PDF". |
 | **Traffic & Utilization chart** | Transmit/Received (+Peak) with threshold bands and maintenance shading. **Hover** for exact values (% and bandwidth); **scroll** to zoom; **drag** to pan; **double-click** to reset; `+ / − / ⟲` buttons. |
-| **Utilization rhythm (day × hour heatmap)** | Shows *when* the link is busy. |
+| **Utilization rhythm (day × hour heatmap)** | Shows *when* the link is busy. **Each cell prints its average utilization %** (colour = band, business hours outlined); **click** a cell for the full breakdown (exact %, bandwidth, band and the limits applied). |
 | **State distribution (donut)** | % of time in Normal/Warning/High/Critical, with an AI explanation. |
+| **Upgrade watch** | Shows, **across the whole dataset**, how many times this link crossed the upgrade threshold, on how many distinct days vs the trigger, its peak utilization, and whether the **trigger is MET**. **➕ Add to Upgrade Watch** puts the link on the watchlist right from here (or removes it); **open Upgrade Watch →** jumps to the dashboard. |
+| **Anomalies** | Lists every anomaly flagged against the link's own baseline, each with a plain-language **"why it was flagged"** — the expected level for that weekday+hour, the size of the jump, and the σ/threshold it cleared. Pick one (dropdown) or click a card to mark it on the traffic chart. |
 | **Capacity forecast** | 30/60/90/180-day projection, days-to-80/90/95%, recommended upgrade window, confidence. |
 | **◆ AI summary — Technical \| Simple toggle** | *Technical* = engineer detail (p95, MoM, model). *Simple* = jargon-free management language. Choice is remembered (see §6). |
 | **Link settings** | Per-link class/impact/thresholds/speed/site/tags (see §3). |
