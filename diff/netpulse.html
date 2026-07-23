@@ -1,7 +1,18 @@
 <!doctype html>
 <html lang="en">
+<!-- ============================================================================
+     OFFLINE INVARIANT — DO NOT BREAK.
+     NetPulse is a single, fully self-contained file. It must run with the network
+     cable pulled out, forever. NEVER add: external <script src>/<link>, web fonts
+     (Google Fonts etc.), CDN URLs, @import, url(http…), fetch()/XHR/WebSocket, or
+     any remote asset. Everything is inline; storage is IndexedDB; fonts are system
+     stacks; icons are unicode glyphs. The Content-Security-Policy below is enforced
+     by the browser and BLOCKS every network connection, so an accidental external
+     reference simply fails instead of quietly phoning home. Keep it that way.
+     ============================================================================ -->
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NetPulse — Network Analytics & Capacity Planning</title>
 <style>
@@ -289,7 +300,7 @@ line.selline{animation:fadeIn .3s ease both}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v35</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v36</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
