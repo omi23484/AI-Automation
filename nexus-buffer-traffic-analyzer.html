@@ -20,6 +20,7 @@
   --frontpanel:#0a0d13; --port-bg:#111722; --tooltip-bg:#05080e; --verdict-bg:#0d1521; --toast-bg:#0a1018;
   --assump-bg:#1a1508; --assump-bd:#3a2f10; --assump-fg:#d8c98a;
   --chart-grid:#1b2433; --chart-axis:#5d6a7e; --chart-frame:#2530425a; --chart-raxis:#8a6a3c;
+  --shadow:0 6px 20px rgba(0,0,0,.35); --shadow-sm:0 3px 10px rgba(0,0,0,.28); --glow:0 0 0 1px;
   color-scheme:dark;
 }
 /* ---------------- LIGHT THEME ---------------- */
@@ -32,6 +33,7 @@
   --frontpanel:#e9edf4; --port-bg:#ffffff; --tooltip-bg:#0b1220; --verdict-bg:#eef3fb; --toast-bg:#ffffff;
   --assump-bg:#fdf6e3; --assump-bd:#ecdca6; --assump-fg:#8a6d0b;
   --chart-grid:#e2e8f1; --chart-axis:#6a7688; --chart-frame:#d3dae5; --chart-raxis:#9a7a3c;
+  --shadow:0 8px 24px rgba(60,80,120,.14); --shadow-sm:0 3px 10px rgba(60,80,120,.10);
   color-scheme:light;
 }
 /* Light-mode overrides for surfaces that use tinted dark backgrounds */
@@ -225,8 +227,8 @@ canvas{display:block;width:100%}
 .finding .fh{display:flex;align-items:center;gap:10px;padding:11px 14px;cursor:pointer}
 .finding .fh .ttl{font-weight:650;font-size:13.5px}
 .finding .fh .meta{color:var(--txt3);font-size:11.5px;margin-left:auto;display:flex;gap:8px;align-items:center}
-.finding .fb{padding:0 14px 14px;border-top:1px solid var(--border);display:none}
-.finding.open .fb{display:block}
+.finding .fb{padding:0 14px;border-top:1px solid transparent}
+.finding.open .fb{border-top-color:var(--border)}
 .finding .fdesc{color:var(--txt2);font-size:12.5px;margin:10px 0}
 .evidence{background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:10px 12px;margin-top:10px}
 .evidence h4{font-size:11px;color:var(--txt3);text-transform:uppercase;letter-spacing:.6px;margin-bottom:7px}
@@ -288,6 +290,113 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
 hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0}
 .tag-btn{background:#182238;border:1px solid var(--border2);color:var(--accent2);border-radius:10px;padding:2px 9px;font-size:10.5px;cursor:pointer}
 .tag-btn.add{background:transparent;color:var(--txt3)}
+
+/* ============================================================
+   MOTION LAYER — fluid transitions, entrances & micro-interactions
+   ============================================================ */
+@keyframes nxRise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes nxFade{from{opacity:0}to{opacity:1}}
+@keyframes nxPop{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:scale(1)}}
+@keyframes nxSlideDown{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+@keyframes nxPulse{0%{box-shadow:0 0 0 0 rgba(240,80,60,.55)}70%{box-shadow:0 0 0 6px rgba(240,80,60,0)}100%{box-shadow:0 0 0 0 rgba(240,80,60,0)}}
+@keyframes nxSheen{0%{background-position:-200% 0}100%{background-position:200% 0}}
+@keyframes nxSpin{to{transform:rotate(360deg)}}
+
+/* view transition */
+.view.active{animation:nxFade .22s ease}
+.view.active .page-h{animation:nxSlideDown .32s ease both}
+
+/* global smooth transitions (kept cheap: transform/opacity/colour) */
+a,.btn,.f,.chip,.tag-btn,select,input,.dot-s,.info,.crumbs a,#sidebar .nav a,.finding .fh,.heat td,.si,.port{
+  transition:background-color .18s ease,border-color .18s ease,color .18s ease,transform .16s ease,box-shadow .18s ease,opacity .18s ease}
+
+/* KPI cards: staggered entrance + hover lift */
+.kpi{animation:nxRise .42s cubic-bezier(.22,.7,.3,1) both;transition:transform .18s ease,box-shadow .2s ease,border-color .18s ease;will-change:transform}
+.kpi:hover{transform:translateY(-3px);box-shadow:var(--shadow);border-color:var(--border2)}
+.kpi .v{transition:color .2s ease}
+.kpi-grid .kpi:nth-child(1){animation-delay:.00s}.kpi-grid .kpi:nth-child(2){animation-delay:.04s}
+.kpi-grid .kpi:nth-child(3){animation-delay:.08s}.kpi-grid .kpi:nth-child(4){animation-delay:.12s}
+.kpi-grid .kpi:nth-child(5){animation-delay:.16s}.kpi-grid .kpi:nth-child(6){animation-delay:.20s}
+.kpi-grid .kpi:nth-child(7){animation-delay:.24s}.kpi-grid .kpi:nth-child(8){animation-delay:.28s}
+.kpi-grid .kpi:nth-child(9){animation-delay:.32s}
+
+/* panels: gentle entrance + hover elevation */
+.panel{animation:nxRise .4s cubic-bezier(.22,.7,.3,1) both;transition:box-shadow .2s ease,border-color .2s ease}
+.panel:hover{box-shadow:var(--shadow-sm);border-color:var(--border2)}
+.grid2>div:nth-child(2) .panel,.grid3>div:nth-child(2) .panel{animation-delay:.05s}
+.grid3>div:nth-child(3) .panel{animation-delay:.1s}
+.finding{animation:nxRise .34s ease both}
+
+/* buttons */
+.btn{transition:background-color .15s,border-color .15s,color .15s,transform .1s ease,box-shadow .15s}
+.btn:hover{transform:translateY(-1px)}
+.btn:active{transform:translateY(1px) scale(.98)}
+.btn.primary:hover{box-shadow:0 4px 16px rgba(61,139,255,.4)}
+
+/* sidebar nav */
+#sidebar .nav a{position:relative}
+#sidebar .nav a:hover{transform:translateX(2px)}
+#sidebar .nav a .ic{transition:transform .18s ease}
+#sidebar .nav a:hover .ic{transform:scale(1.15)}
+
+/* table rows */
+table.dt tbody tr{transition:background-color .12s ease}
+table.dt tr.clickable:hover{transform:none}
+
+/* ports: hover + critical pulse */
+.port{transition:transform .13s ease,box-shadow .15s ease,border-color .15s ease,opacity .18s ease}
+.port.st-CRITICAL .ind{animation:nxPulse 1.9s ease-out infinite}
+.port:hover{transform:translateY(-3px) scale(1.08);box-shadow:var(--shadow-sm);z-index:6}
+
+/* chips / status dots */
+.chip{transition:transform .14s ease,filter .14s ease}
+.chip.tag:hover,.tag-btn:hover{transform:translateY(-1px);filter:brightness(1.12)}
+.privacy .dot{animation:nxPulse 2.6s ease-out infinite}
+
+/* findings smooth expand/collapse */
+.finding .fb{max-height:0;overflow:hidden;opacity:0;padding-top:0;padding-bottom:0;
+  transition:max-height .38s cubic-bezier(.4,0,.2,1),opacity .3s ease,padding .3s ease}
+.finding.open .fb{max-height:2600px;opacity:1;padding-top:0;padding-bottom:14px}
+.finding .fh .ttl,.finding .fh .meta{transition:color .15s}
+.finding .fh:hover .ttl{color:#fff}
+:root[data-theme="light"] .finding .fh:hover .ttl{color:var(--accent)}
+
+/* KPI number colour flash handled in JS count-up */
+
+/* search dropdown / modal / toast */
+#searchResults{animation:nxSlideDown .16s ease}
+#searchResults .it{transition:background-color .12s,padding-left .12s}
+#searchResults .it:hover{padding-left:16px}
+.modal-bg{transition:opacity .2s ease}
+.modal{animation:nxPop .24s cubic-bezier(.22,.9,.3,1)}
+.toast{animation:nxPop .26s cubic-bezier(.22,.9,.3,1)}
+
+/* heatmap cells */
+.heat td{transition:transform .14s ease,outline-color .14s ease,box-shadow .15s ease}
+.heat td:hover{transform:scale(1.06);box-shadow:var(--shadow-sm)}
+
+/* import dropzones */
+.dz{transition:border-color .18s ease,background-color .18s ease,transform .16s ease,box-shadow .18s ease}
+.dz:hover{transform:translateY(-2px);box-shadow:var(--shadow-sm)}
+.dz.over{transform:scale(1.01)}
+.dz .drop b{transition:color .15s}
+
+/* progress/distribution bars grow-in */
+.growx{transform-origin:left center;animation:nxGrowX .7s cubic-bezier(.22,.7,.3,1) both}
+@keyframes nxGrowX{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+
+/* theme toggle spin on click feel */
+#themeToggle{transition:transform .3s ease}
+#themeToggle:hover{transform:rotate(18deg) scale(1.05)}
+
+/* shimmer utility (loading) */
+.shimmer{background:linear-gradient(90deg,transparent,rgba(255,255,255,.06),transparent);background-size:200% 100%;animation:nxSheen 1.2s linear infinite}
+
+/* respect user preference — disable all motion */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important;scroll-behavior:auto !important}
+  .finding .fb{transition:none}
+}
 @media print{
   #brand,#topbar,#sidebar{display:none}
   #app{display:block;height:auto}
@@ -2002,6 +2111,8 @@ const Chart=(function(){
     const ctx=canvas.getContext("2d");ctx.setTransform(dpr,0,0,dpr,0,0);
     return {ctx,w,h};
   }
+  function prefersReduced(){return typeof matchMedia!=="undefined"&&matchMedia("(prefers-reduced-motion: reduce)").matches;}
+  function easeOut(t){return 1-Math.pow(1-t,3);}
   // series: [{name,color,axis:'l'|'r',points:[[xms,y]],type}]
   // markers: [{x:ms,label,color,value}]
   function timeSeries(canvas,series,opts){
@@ -2009,13 +2120,12 @@ const Chart=(function(){
     const {ctx,w,h}=setup(canvas,H);
     const padL=54,padR=opts.rightAxis?54:14,padT=10,padB=26;
     const plotW=w-padL-padR,plotH=h-padT-padB;
-    ctx.clearRect(0,0,w,h);
     // x domain
     let xs=[],lVals=[],rVals=[];
     series.forEach(s=>s.points.forEach(p=>{xs.push(p[0]);if(s.axis==="r")rVals.push(p[1]);else lVals.push(p[1]);}));
     (opts.markers||[]).forEach(m=>xs.push(m.x));
     const tc=TC();
-    if(!xs.length){ctx.fillStyle=tc.axis;ctx.font="12px sans-serif";ctx.fillText("No data in window",padL,padT+plotH/2);return;}
+    if(!xs.length){ctx.clearRect(0,0,w,h);ctx.fillStyle=tc.axis;ctx.font="12px sans-serif";ctx.fillText("No data in window",padL,padT+plotH/2);return;}
     let x0=opts.x0!=null?opts.x0:Math.min(...xs), x1=opts.x1!=null?opts.x1:Math.max(...xs);
     if(x0===x1)x1=x0+1;
     let lMax=Math.max(0.001,...lVals,opts.lMin||0), rMax=Math.max(0.001,...rVals);
@@ -2023,42 +2133,57 @@ const Chart=(function(){
     const X=t=>padL+(t-x0)/(x1-x0)*plotW;
     const YL=v=>padT+plotH-(v/lMax)*plotH;
     const YR=v=>padT+plotH-(v/rMax)*plotH;
-    // grid + y labels (left)
-    ctx.strokeStyle=tc.grid;ctx.fillStyle=tc.axis;ctx.font="10px "+MONO();ctx.lineWidth=1;
-    for(let i=0;i<=4;i++){const y=padT+plotH*i/4;const v=lMax*(1-i/4);
-      ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(w-padR,y);ctx.stroke();
-      ctx.fillStyle=tc.axis;ctx.textAlign="right";ctx.fillText(fmtY(v,opts.lUnit),padL-6,y+3);}
-    if(opts.rightAxis){ctx.fillStyle=tc.raxis;ctx.textAlign="left";
-      for(let i=0;i<=4;i++){const y=padT+plotH*i/4;const v=rMax*(1-i/4);
-        ctx.fillText(fmtY(v,opts.rUnit),w-padR+4,y+3);}}
-    // x labels
-    ctx.fillStyle=tc.axis;ctx.textAlign="center";
-    for(let i=0;i<=5;i++){const t=x0+(x1-x0)*i/5;const px=X(t);
-      ctx.fillText(U.ts(t),px,h-8);}
-    // markers (event overlays) - vertical lines
-    (opts.markers||[]).forEach(m=>{const px=X(m.x);const mcol=rc(m.color||"#f0503c");
-      ctx.strokeStyle=mcol+"55";ctx.lineWidth=1;ctx.setLineDash([3,3]);
-      ctx.beginPath();ctx.moveTo(px,padT);ctx.lineTo(px,padT+plotH);ctx.stroke();ctx.setLineDash([]);
-      ctx.fillStyle=mcol;ctx.beginPath();ctx.arc(px,padT+4,3,0,7);ctx.fill();});
-    // series
-    series.forEach(s=>{if(s.hidden)return;const Y=s.axis==="r"?YR:YL;const scol=rc(s.color||"#3d8bff");
-      if(!s.points.length)return;
-      if(s.type==="area"){ctx.beginPath();ctx.moveTo(X(s.points[0][0]),Y(0));
-        s.points.forEach(p=>ctx.lineTo(X(p[0]),Y(p[1])));
-        ctx.lineTo(X(s.points[s.points.length-1][0]),Y(0));ctx.closePath();
-        ctx.fillStyle=scol+"22";ctx.fill();}
-      if(s.type==="bars"){ctx.fillStyle=scol;
-        const bw=Math.max(2,plotW/Math.max(20,s.points.length)*0.6);
-        s.points.forEach(p=>{if(p[1]<=0)return;const px=X(p[0]);const py=Y(p[1]);
-          ctx.fillRect(px-bw/2,py,bw,padT+plotH-py);});return;}
-      ctx.beginPath();ctx.strokeStyle=scol;ctx.lineWidth=s.width||1.6;
-      s.points.forEach((p,i)=>{const px=X(p[0]),py=Y(p[1]);if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);});
-      ctx.stroke();});
-    // frame
-    ctx.strokeStyle=tc.frame;ctx.strokeRect(padL,padT,plotW,plotH);
-    // interaction
-    canvas._chart={series,X,YL,YR,x0,x1,lMax,rMax,padL,padR,padT,padB,plotW,plotH,w,h,opts,markers:opts.markers||[]};
+    const base=padT+plotH; // baseline for grow-up reveal
+    function paint(prog){
+      ctx.clearRect(0,0,w,h);
+      // grid + y labels (left)
+      ctx.strokeStyle=tc.grid;ctx.fillStyle=tc.axis;ctx.font="10px "+MONO();ctx.lineWidth=1;
+      for(let i=0;i<=4;i++){const y=padT+plotH*i/4;const v=lMax*(1-i/4);
+        ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(w-padR,y);ctx.stroke();
+        ctx.fillStyle=tc.axis;ctx.textAlign="right";ctx.fillText(fmtY(v,opts.lUnit),padL-6,y+3);}
+      if(opts.rightAxis){ctx.fillStyle=tc.raxis;ctx.textAlign="left";
+        for(let i=0;i<=4;i++){const y=padT+plotH*i/4;const v=rMax*(1-i/4);
+          ctx.fillText(fmtY(v,opts.rUnit),w-padR+4,y+3);}}
+      // x labels
+      ctx.fillStyle=tc.axis;ctx.textAlign="center";
+      for(let i=0;i<=5;i++){const t=x0+(x1-x0)*i/5;const px=X(t);ctx.fillText(U.ts(t),px,h-8);}
+      // series (grow up from baseline as prog 0->1)
+      const gy=(y)=>base-(base-y)*prog;
+      series.forEach(s=>{if(s.hidden||!s.points.length)return;const Y0=s.axis==="r"?YR:YL;const Y=v=>gy(Y0(v));const scol=rc(s.color||"#3d8bff");
+        if(s.type==="area"){ctx.beginPath();ctx.moveTo(X(s.points[0][0]),base);
+          s.points.forEach(p=>ctx.lineTo(X(p[0]),Y(p[1])));
+          ctx.lineTo(X(s.points[s.points.length-1][0]),base);ctx.closePath();
+          ctx.fillStyle=scol+"22";ctx.fill();}
+        if(s.type==="bars"){ctx.fillStyle=scol;
+          const bw=Math.max(2,plotW/Math.max(20,s.points.length)*0.6);
+          s.points.forEach(p=>{if(p[1]<=0)return;const px=X(p[0]);const py=Y(p[1]);ctx.fillRect(px-bw/2,py,bw,base-py);});return;}
+        ctx.beginPath();ctx.strokeStyle=scol;ctx.lineWidth=s.width||1.6;
+        s.points.forEach((p,i)=>{const px=X(p[0]),py=Y(p[1]);if(i===0)ctx.moveTo(px,py);else ctx.lineTo(px,py);});
+        ctx.stroke();});
+      // markers fade in
+      if(prog>0.15){ctx.globalAlpha=Math.min(1,(prog-0.15)/0.85);
+        (opts.markers||[]).forEach(m=>{const px=X(m.x);const mcol=rc(m.color||"#f0503c");
+          ctx.strokeStyle=mcol+"55";ctx.lineWidth=1;ctx.setLineDash([3,3]);
+          ctx.beginPath();ctx.moveTo(px,padT);ctx.lineTo(px,padT+plotH);ctx.stroke();ctx.setLineDash([]);
+          ctx.fillStyle=mcol;ctx.beginPath();ctx.arc(px,padT+4,3,0,7);ctx.fill();});
+        ctx.globalAlpha=1;}
+      // frame
+      ctx.strokeStyle=tc.frame;ctx.strokeRect(padL,padT,plotW,plotH);
+      canvas._chart={series,X,YL,YR,x0,x1,lMax,rMax,padL,padR,padT,padB,plotW,plotH,w,h,opts,markers:opts.markers||[]};
+    }
+    runAnim(canvas,paint,opts);
     attachHover(canvas);
+  }
+  // Animation driver: eased grow-in, guarded for reduced-motion / no-rAF environments.
+  function runAnim(canvas,paint,opts){
+    if(canvas._anim&&typeof cancelAnimationFrame!=="undefined"){cancelAnimationFrame(canvas._anim);canvas._anim=null;}
+    if(opts.animate===false||prefersReduced()||typeof requestAnimationFrame==="undefined"){paint(1);return;}
+    const dur=opts.animDur||520, now0=(typeof performance!=="undefined"?performance.now():Date.now());
+    (function loop(now){
+      const t=Math.min(1,((now||now0)-now0)/dur);
+      paint(easeOut(t));
+      if(t<1)canvas._anim=requestAnimationFrame(loop);else canvas._anim=null;
+    })(now0);
   }
   function attachHover(canvas){
     if(canvas._hoverBound)return;canvas._hoverBound=true;
@@ -2081,20 +2206,25 @@ const Chart=(function(){
   function nearestT(c,t){let best=t,bg=Infinity;c.series.forEach(s=>s.points.forEach(p=>{const g=Math.abs(p[0]-t);if(g<bg){bg=g;best=p[0];}}));return best;}
   function barH(canvas,items,opts){ // horizontal bars
     opts=opts||{};const H=opts.height||(items.length*24+16);
-    const {ctx,w,h}=setup(canvas,H);ctx.clearRect(0,0,w,h);
+    const {ctx,w,h}=setup(canvas,H);
     const tc=TC();
-    if(!items.length){ctx.fillStyle=tc.axis;ctx.font="12px sans-serif";ctx.fillText("No data",10,20);return;}
+    if(!items.length){ctx.clearRect(0,0,w,h);ctx.fillStyle=tc.axis;ctx.font="12px sans-serif";ctx.fillText("No data",10,20);return;}
     const max=Math.max(...items.map(i=>i.value),0.001);
     const labelW=opts.labelW||150,barX=labelW+8,barW=w-barX-70;
     const rowH=Math.min(24,(h-8)/items.length);
-    ctx.font="11px "+MONO();
-    items.forEach((it,i)=>{const y=8+i*rowH;
-      ctx.fillStyle=tc.txt;ctx.textAlign="left";
-      ctx.fillText(clip(it.label,22),4,y+rowH*0.6);
-      const bw=Math.max(1,it.value/max*barW);
-      ctx.fillStyle=rc(it.color||"#3d8bff");ctx.fillRect(barX,y+2,bw,rowH-6);
-      ctx.fillStyle=tc.txt2;ctx.textAlign="left";
-      ctx.fillText(opts.fmt?opts.fmt(it.value):U.n(it.value),barX+bw+5,y+rowH*0.6);});
+    function paint(prog){
+      ctx.clearRect(0,0,w,h);ctx.font="11px "+MONO();
+      items.forEach((it,i)=>{const y=8+i*rowH;
+        ctx.fillStyle=tc.txt;ctx.textAlign="left";
+        ctx.fillText(clip(it.label,22),4,y+rowH*0.6);
+        const full=Math.max(1,it.value/max*barW);const bw=full*prog;
+        ctx.fillStyle=rc(it.color||"#3d8bff");ctx.fillRect(barX,y+2,bw,rowH-6);
+        ctx.fillStyle=tc.txt2;ctx.textAlign="left";
+        ctx.globalAlpha=prog;
+        ctx.fillText(opts.fmt?opts.fmt(it.value):U.n(it.value),barX+full+5,y+rowH*0.6);
+        ctx.globalAlpha=1;});
+    }
+    runAnim(canvas,paint,opts);
     canvas._bars={items,rowH,barX,onClick:opts.onClick};
     if(opts.onClick&&!canvas._barBound){canvas._barBound=true;
       canvas.style.cursor="pointer";
@@ -2277,6 +2407,24 @@ const UI=(function(){
       case "interface":UI.renderInterface(state.params.dev,state.params.iface);break;
       case "mcgroup":UI.renderMcGroup(state.params.group);break;
     }
+    animateCounters();
+  }
+  // Count-up animation for integer KPI values (skips units/decimals; respects reduced-motion).
+  function animateCounters(){
+    if(typeof requestAnimationFrame==="undefined")return;
+    if(typeof matchMedia!=="undefined"&&matchMedia("(prefers-reduced-motion: reduce)").matches)return;
+    const el=document.getElementById("view-"+state.view);if(!el)return;
+    el.querySelectorAll(".kpi .v").forEach(node=>{
+      const raw=(node.textContent||"").trim();
+      if(!/^\d{1,3}(,\d{3})*$|^\d+$/.test(raw))return;   // pure integer only
+      const target=parseInt(raw.replace(/,/g,""),10);
+      if(!isFinite(target)||target<=0||target>100000000)return;
+      const dur=Math.min(900,300+target.toString().length*140), t0=performance.now();
+      function tick(now){let p=Math.min(1,(now-t0)/dur);p=1-Math.pow(1-p,3);
+        node.textContent=Math.round(target*p).toLocaleString();
+        if(p<1)requestAnimationFrame(tick);else node.textContent=target.toLocaleString();}
+      requestAnimationFrame(tick);
+    });
   }
   function emptyState(){return "<div class='empty-state'><div class='big'>▤</div>"
     +"<h2>No data loaded</h2><p style='margin:8px 0 16px'>Import a utilization and/or discard report, or load the synthetic demo dataset.</p>"
@@ -3030,7 +3178,7 @@ UI.mcRenderTab=function(){
       h+="<div style='margin-top:8px'>";
       dv.resolver.blockNames.forEach(bn=>{const b=c.perBlock[bn];const share=c.totalGroups?b.groupCount/c.totalGroups*100:0;
         h+="<div style='display:flex;align-items:center;gap:8px;margin:4px 0'>"+UI.h.blockTag(bn)
-          +"<div style='flex:1;background:var(--bg);border-radius:4px;height:16px;overflow:hidden'><div style='height:100%;width:"+share+"%;background:"+blockColor(bn)+"'></div></div>"
+          +"<div style='flex:1;background:var(--bg);border-radius:4px;height:16px;overflow:hidden'><div class='growx' style='height:100%;width:"+share+"%;background:"+blockColor(bn)+"'></div></div>"
           +"<span class='mini' style='width:120px'>"+b.groupCount+" grp · "+b.ifaces+" IF · Δ"+U.n(b.discardDelta)+"</span></div>";});
       h+="</div>";
       if(c.maxShare>=Settings.get().thresholds.mcastConcentration.warning)
@@ -3099,7 +3247,7 @@ UI.renderMcGroup=function(group){
   let dist="<div style='margin-bottom:6px'>";
   Object.keys(blkDist).sort().forEach(bn=>{const share=total?blkDist[bn]/total*100:0;
     dist+="<div style='display:flex;align-items:center;gap:8px;margin:4px 0'>"+UI.h.blockTag(bn)
-      +"<div style='flex:1;background:var(--bg);border-radius:4px;height:16px;overflow:hidden'><div style='height:100%;width:"+share+"%;background:"+blockColor(bn)+"'></div></div>"
+      +"<div style='flex:1;background:var(--bg);border-radius:4px;height:16px;overflow:hidden'><div class='growx' style='height:100%;width:"+share+"%;background:"+blockColor(bn)+"'></div></div>"
       +"<span class='mini' style='width:90px'>"+blkDist[bn]+" IF ("+U.pct(share)+")</span></div>";});
   dist+="</div>";
   const maxShare=Math.max(0,...Object.values(blkDist).map(v=>v/total*100));
