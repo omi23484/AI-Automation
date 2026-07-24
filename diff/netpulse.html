@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v51</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v52</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -439,7 +439,7 @@ const DEFAULT_CFG={
   // Samples are NEVER dropped; they are kept in analytics, charts and policy hits, and
   // the user is asked to verify/override the capacity. Editable in Admin.
   flagUtilAbove:1.0,
-  // Compliance / regulatory (SEBI CSCRF & BCP-DR capacity, RBI IT/Cyber, CERT-In logging).
+  // Compliance / regulatory capacity, retention and logging — configure per your applicable regulations.
   // The threshold is configurable — set it to the value in your current applicable circular.
   regThreshold:0.75, regRetentionDays:180, tz:'Asia/Kolkata',
   // How to interpret timestamps in uploaded files: 'aswritten' = the times already match
@@ -982,7 +982,7 @@ function isBH(ts){const d=new Date(ts),bh=S.cfg.businessHours;if(!bh.days.includ
 
 /* ---- Device-name variant merge --------------------------------------------
    The same interface can arrive under a short hostname AND its FQDN (e.g.
-   "PJ-CORP.BSELTD" and "PJ-CORP.BSELTD.DOMAIN"), splitting one link into two.
+   "CORE-SW-1.acme" and "CORE-SW-1.acme.example.com"), splitting one link into two.
    Family rule: device A and B are the same host when one name is a dotted-prefix
    of the other (B === A + ".…"). Union-find keeps the SHORTEST name canonical. */
 function splitIfid(k){const i=k.indexOf('|');return [k.slice(0,i),k.slice(i+1)];}
@@ -1813,6 +1813,11 @@ function view_intf(){
     <div class="reason">${r.verdict.reason}</div>
     <div class="act">▸ ${r.verdict.action} <span class="conf">· confidence ${(r.verdict.confidence*100).toFixed(0)}% · ${r.verdict.comparison}</span></div>
     <div style="margin-top:10px" class="flex"><button class="btn sm ghost" onclick="askRCA('${r.ifid}')">🔍 Explain (RCA)</button><button class="btn sm ghost" onclick="genReport('intf','${r.ifid}')">▦ Add to report</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','html')">⤓ Export HTML</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','pdf')">🖨 Export PDF</button><button class="btn sm ghost" onclick="genUpgradePolicyXlsx('${r.ifid}')">📊 Policy hits .xlsx</button></div>
+    <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--stroke)" class="flex" title="Submission-ready PDF: last 6 months, Warning &amp; Critical exceedance counts + full timestamped detail">
+      <span class="small" style="font-weight:700;align-self:center">📄 Threshold PDF (last 6 mo)</span>
+      <label class="fld" style="margin:0"><span>Hours</span><select id="brHours"><option value="all">All hours</option><option value="bh">Market hours only</option><option value="off">Non-market hours only</option></select></label>
+      <button class="btn sm" style="align-self:center" onclick="genBreachReport('${r.ifid}',($('#brHours')||{}).value||'all')">Export PDF report →</button>
+    </div>
   </div>
   <div class="panel pad" style="margin-bottom:16px"><div class="flex" style="gap:14px;align-items:flex-end">
     <span class="small" style="font-weight:700;padding-bottom:9px">⧩ Filter</span>
@@ -2267,7 +2272,7 @@ function view_reports(){
   const ur=S.cfg.upgradeRule;
   return crumb([['Reports']])+`<div class="sec-title"><h2>Business Reports</h2><span class="sub">generated · grounded · exportable</span></div>
   <div class="panel pad" style="margin-bottom:16px;border:1px solid var(--stroke2)">
-    <div class="sec-title"><h2>📋 Regulatory Capacity Report — SEBI / RBI</h2><span class="sub">formal, sign-off-ready capacity utilization &amp; augmentation report vs your regulatory threshold${S.cfg.institution?' · '+esc(S.cfg.institution):''}</span></div>
+    <div class="sec-title"><h2>📋 Regulatory Capacity Report</h2><span class="sub">formal, sign-off-ready capacity utilization &amp; augmentation report vs your regulatory threshold${S.cfg.institution?' · '+esc(S.cfg.institution):''}</span></div>
     <div class="flex" style="gap:12px">
       <label class="fld" style="margin:0;min-width:340px"><span>Scope</span><select id="regScope" style="width:100%" ${links.length?'':'disabled'}><option value="all">All links (${links.length})</option>${links.map(r=>`<option value="${esc(r.ifid)}">${scopeLabel(r)}</option>`).join('')}</select></label>
       <button class="btn" style="margin-top:16px" ${links.length?'':'disabled'} onclick="genRegReport($('#regScope').value,'xlsx')">⤓ Excel</button>
@@ -2371,9 +2376,9 @@ function view_admin(){
     <td><span class="chip impact-${im}">${im}</span></td></tr>`;}).join('')}
   </tbody></table></div>
   <button class="btn" style="margin-top:12px" onclick="saveClassThresholds()">Save class bands</button></div>
-  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Compliance &amp; regulatory (SEBI / RBI / CERT-In)</h2><span class="sub">used by the Regulatory Capacity Report</span></div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Compliance &amp; regulatory</h2><span class="sub">used by the Regulatory Capacity Report</span></div>
     <div class="grid g2">
-      <label class="fld"><span>Institution / entity name</span><input type="text" id="regInst" value="${esc(S.cfg.institution||'')}" placeholder="e.g. BSE Ltd — Network Operations"></label>
+      <label class="fld"><span>Institution / entity name</span><input type="text" id="regInst" value="${esc(S.cfg.institution||'')}" placeholder="e.g. Your Organization — Network Operations"></label>
       <label class="fld"><span>Regulatory capacity threshold (%)</span><input type="number" id="regThr" value="${(S.cfg.regThreshold*100).toFixed(0)}"></label>
     </div>
     <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:8px">
@@ -2383,7 +2388,7 @@ function view_admin(){
     </div>
     <div class="grid g2">
       <label class="fld"><span>Log retention basis (days)</span><input type="number" id="regRet" value="${S.cfg.regRetentionDays}"></label>
-      <div class="fld"><span>Market / business hours</span><div class="flex"><span class="chip">${String(S.cfg.businessHours.startHr).padStart(2,'0')}:${String(S.cfg.businessHours.startMin||0).padStart(2,'0')}–${String(S.cfg.businessHours.endHr).padStart(2,'0')}:${String(S.cfg.businessHours.endMin||0).padStart(2,'0')}</span><button class="btn sm ghost" onclick="setMarketHours()">Set BSE/NSE market hours (09:15–15:30)</button></div></div>
+      <div class="fld"><span>Market / business hours</span><div class="flex"><span class="chip">${String(S.cfg.businessHours.startHr).padStart(2,'0')}:${String(S.cfg.businessHours.startMin||0).padStart(2,'0')}–${String(S.cfg.businessHours.endHr).padStart(2,'0')}:${String(S.cfg.businessHours.endMin||0).padStart(2,'0')}</span><button class="btn sm ghost" onclick="setMarketHours()">Preset: 09:15–15:30</button></div></div>
     </div>
     <div class="mini" style="margin-bottom:10px">The threshold and format must be validated by your compliance team against the current applicable circulars — NetPulse provides the data and structure.</div>
     <button class="btn" onclick="saveCompliance()">Save compliance settings</button>
@@ -2577,14 +2582,13 @@ function genUpgradePolicyXlsx(scope){
   logAudit('report.export.xlsx',scope==='all'?'all links':scope,`${totalHits} threshold crossings`);
   toast(siblingNote?`⚠ Exported the smaller “${list[0].dev} ${list[0].intf}” (${list[0].count.toLocaleString()} samples) — a device-name twin holds far more data. See the note atop the report and re-select.`:(totalHits?`📊 Excel report downloaded — ${totalHits.toLocaleString()} threshold crossing(s) (market + non-market) across ${linksWithHits} link(s)`:`📊 Report downloaded — 0 crossings: no link crossed ${list[0].upgradeRule.utilPct}% in any hours${scope!=='all'?' (try All links)':''}`));
 }
-/* ===================== Regulatory Capacity Report (SEBI / RBI) =====================
-   A formal, sign-off-ready capacity-utilization & augmentation report aligned with
-   common expectations for Market Infrastructure Institutions and regulated entities:
-   peak-based utilization vs a configured regulatory threshold, headroom, time-in-
-   breach (market hours), augmentation trigger & projected breach date, data-integrity
-   / retention statement, methodology, and a compliance-framework mapping. The exact
-   threshold and format must be validated by the compliance team against the current
-   applicable SEBI CSCRF / BCP-DR, RBI IT/Cyber and CERT-In circulars. ================ */
+/* ===================== Regulatory Capacity Report =================================
+   A formal, sign-off-ready capacity-utilization & augmentation report for regulated
+   entities: peak-based utilization vs a configured regulatory threshold, headroom,
+   time-in-breach (market hours), augmentation trigger & projected breach date,
+   data-integrity / retention statement, methodology, and a compliance-framework
+   mapping. The exact threshold and format must be validated by the compliance team
+   against the current applicable regulatory circulars. =========================== */
 function timeToLevel(f,L){if(f.current>=L)return 0;return f.slopePerDay>1e-5?(L-f.current)/f.slopePerDay:null;}
 function regReportData(scope){
   const a=A();const list=scope==='all'?[...a.ifs]:a.ifs.filter(r=>r.ifid===scope);
@@ -2631,7 +2635,7 @@ function genRegReport(scope,fmt){
       ['Provisioning target',`installed capacity ≥ ${N}× peak (${({p99:'p99',p999:'p99.9',max:'max'})[c.peakBasis||'p999']} basis)`],
       ['Projection basis',`${(c.forecastWindowDays!=null?c.forecastWindowDays:180)>0?'trailing '+(c.forecastWindowDays!=null?c.forecastWindowDays:180)+' days':'all loaded history'}, ${(c.forecastCI*100||80).toFixed(0)}% confidence range`],
       ['Business / market hours',`${bhWin}, ${bh.days.map(d=>DOW[d]).join(' ')}`],
-      ['Log retention basis',`${c.regRetentionDays} days (CERT-In)`],
+      ['Log retention basis',`${c.regRetentionDays} days`],
       ['Total samples analysed',D.totalSamples],
       ['Links at/above threshold (p95)',D.breaching],
       ['Links requiring augmentation',D.augCount],
@@ -2663,11 +2667,11 @@ function genRegReport(scope,fmt){
       ['Market hours',`${bhWin} on business days — the window in which utilization is most material for a trading system.`],
       ['Days to threshold','Projected days until p95 reaches the threshold at the current trend (robust regression on daily p95).'],
       ['Augmentation required',`Flagged when p95 ≥ ${Tp}% or projected to reach it within 180 days.`],
-      [],['Regulatory alignment (indicative — validate against current circulars)'],
-      ['SEBI CSCRF / BCP-DR','Capacity monitoring & augmentation for Market Infrastructure Institutions; peak utilization kept within limits with headroom.'],
-      ['RBI IT/Cyber guidance','Capacity management, monitoring and reporting as part of IT operations & resilience.'],
-      ['CERT-In directions','Log enablement and 180-day retention; synchronized time source.'],
-      [],['Disclaimer','NetPulse provides the underlying data and structure. The threshold value and report format must be validated by the compliance team against the current applicable SEBI/RBI/CERT-In circulars.']];
+      [],['Regulatory alignment (indicative — validate against your current circulars)'],
+      ['Capacity monitoring & augmentation','Peak utilization kept within configured limits with headroom for growth.'],
+      ['IT operations & resilience','Capacity management, monitoring and reporting as part of IT operations & resilience.'],
+      ['Logging & retention','Log enablement and configurable retention; synchronized time source.'],
+      [],['Disclaimer','NetPulse provides the underlying data and structure. The threshold value and report format must be validated by the compliance team against the current applicable regulatory circulars.']];
     const blob=xlsxBlob([{name:'Cover',rows:cover},{name:'Capacity Summary',rows:summ},{name:'Threshold Breaches',rows:breach},{name:'Definitions',rows:defs}]);
     dl(blob,`Regulatory_Capacity_Report_${scope==='all'?'AllLinks':(D.list[0].dev+'_'+D.list[0].intf).replace(/\W+/g,'_')}_${new Date().toISOString().slice(0,10)}.xlsx`);
     toast('📋 Regulatory Excel report downloaded');return;
@@ -2694,17 +2698,17 @@ function genRegReport(scope,fmt){
   ${kv('Regulatory capacity threshold',`<b>${Tp}%</b> (configured — validate per applicable circular)`)}
   ${kv('Business / market hours',`${bhWin}, ${bh.days.map(d=>DOW[d]).join(' ')}`)}
   ${kv('Samples analysed',D.totalSamples.toLocaleString())}
-  ${kv('Log retention basis',`${c.regRetentionDays} days (CERT-In)`)}</table>
+  ${kv('Log retention basis',`${c.regRetentionDays} days`)}</table>
   <div class="callout"><b>Executive position:</b> ${D.breaching} of ${D.list.length} link(s) operate at or above the ${Tp}% capacity threshold (p95 basis); <b>${D.augCount}</b> require capacity augmentation ${D.augCount?'and should be scheduled per BCP/DR provisioning norms':'— all links within limits'}.</div>
   <h2>1. Capacity utilization by link (p95 basis, market hours)</h2>
   <table><thead><tr><th>#</th><th>Link</th><th>Class</th><th>Impact</th><th>Capacity (Mbps)</th><th>Peak %</th><th>p95 %</th><th>Avg %</th><th>% time &gt;${Tp}% (mkt)</th><th>Headroom to ${Tp}% (pp)</th><th>Days to ${Tp}%</th><th>Augment</th></tr></thead><tbody>${summRows}</tbody></table>
   <h2>2. Data integrity &amp; retention</h2>
-  <table><tbody>${kv('Data source','Interface polling records ingested into NetPulse (append-only; original files retained).')}${kv('Coverage',`${fmtIST(D.dataStart)} – ${fmtIST(D.dataEnd)}`)}${kv('Samples',D.totalSamples.toLocaleString())}${kv('Maintenance windows','Excluded from utilization, SLA and trend where declared.')}${kv('Audit trail','Every upload, threshold/policy change, export and edit is recorded in an append-only audit log.')}${kv('Retention',`${c.regRetentionDays}-day rolling retention basis (CERT-In).`)}</tbody></table>
+  <table><tbody>${kv('Data source','Interface polling records ingested into NetPulse (append-only; original files retained).')}${kv('Coverage',`${fmtIST(D.dataStart)} – ${fmtIST(D.dataEnd)}`)}${kv('Samples',D.totalSamples.toLocaleString())}${kv('Maintenance windows','Excluded from utilization, SLA and trend where declared.')}${kv('Audit trail','Every upload, threshold/policy change, export and edit is recorded in an append-only audit log.')}${kv('Retention',`${c.regRetentionDays}-day rolling retention basis.`)}</tbody></table>
   <h2>3. Methodology &amp; definitions</h2>
   <table><tbody>${kv('Utilization','Traffic ÷ capacity, worse of Transmit / Receive per sample.')}${kv('p95','95th-percentile utilization (sustained busy level) — the capacity-assessment basis.')}${kv('Peak','Highest observed utilization (peak columns where present).')}${kv('Regulatory threshold',`Configured capacity ceiling (${Tp}%); sustained operation at/above requires augmentation.`)}${kv('Days to threshold','Robust-trend projection of daily p95 to the threshold.')}</tbody></table>
   <h2>4. Regulatory alignment</h2>
-  <table><tbody>${kv('SEBI CSCRF / BCP-DR','Capacity monitoring &amp; augmentation for Market Infrastructure Institutions; peak utilization within limits with headroom.')}${kv('RBI IT / Cyber guidance','Capacity management, monitoring and reporting within IT operations &amp; resilience.')}${kv('CERT-In directions','Log enablement, 180-day retention, synchronized time source.')}</tbody></table>
-  <div class="disc"><b>Disclaimer:</b> NetPulse provides the underlying data and report structure. The threshold value and the report format must be validated by the institution's compliance function against the current applicable SEBI / RBI / CERT-In circulars. This document is a management aid, not a certification of compliance.</div>
+  <table><tbody>${kv('Capacity monitoring &amp; augmentation','Peak utilization kept within configured limits with headroom for growth.')}${kv('IT operations &amp; resilience','Capacity management, monitoring and reporting within IT operations &amp; resilience.')}${kv('Logging &amp; retention','Log enablement, configurable retention, synchronized time source.')}</tbody></table>
+  <div class="disc"><b>Disclaimer:</b> NetPulse provides the underlying data and report structure. The threshold value and the report format must be validated by the institution's compliance function against the current applicable regulatory circulars. This document is a management aid, not a certification of compliance.</div>
   <h2>5. Sign-off</h2>
   <div class="signrow"><div class="sign">Prepared by<br><br>${esc(c.reportPreparedBy)||'________________'}<br><span class="mut">Name / Date</span></div><div class="sign">Reviewed by<br><br>${esc(c.reportReviewedBy)||'________________'}<br><span class="mut">Name / Date</span></div><div class="sign">Approved by<br><br>${esc(c.reportApprovedBy)||'________________'}<br><span class="mut">Name / Date</span></div></div>
   </body></html>`;
@@ -2809,6 +2813,124 @@ function exportLink(id,fmt){
   if(fmt==='html'){dl(new Blob([html],{type:'text/html'}),base+'_netpulse.html');toast('HTML report downloaded');}
   else{const w=window.open('','_blank');if(!w){toast('Allow pop-ups to export PDF');return;}w.document.write(html);w.document.close();
     w.onload=()=>{setTimeout(()=>{w.focus();w.print();},250);};toast('Opening print dialog — choose “Save as PDF”');}
+}
+/* ---- Threshold Breach Report (submission-grade PDF via print) ------------------
+   Per link, last 6 months: counts and full timestamped detail of every sample at or
+   above the Warning and Critical thresholds, filterable to market / non-market / all
+   hours. Professional light-theme layout with cover, parameters, summary, per-day
+   table, detailed breach log and sign-off block. ------------------------------- */
+function genBreachReport(id,hours){
+  const r=A().ifs.find(x=>x.ifid===id);if(!r){toast('Link not found');return;}
+  const html=breachReportHTML(r,hours||'all');
+  const w=window.open('','_blank');if(!w){toast('Allow pop-ups to export the PDF');return;}
+  w.document.write(html);w.document.close();
+  w.onload=()=>{setTimeout(()=>{w.focus();w.print();},350);};
+  logAudit('link.breachreport',id,'hours='+(hours||'all'));
+  toast('Opening print dialog — choose “Save as PDF”');
+}
+function breachReportHTML(r,hours){
+  const DAY=86400000, winDays=183;                       // last 6 months
+  const winEnd=r.end, winStart=Math.max(r.start, winEnd-winDays*DAY);
+  const covDays=Math.max(1,Math.round((winEnd-winStart)/DAY));
+  const hoursLbl={all:'All hours (market + non-market)',bh:'Market hours only',off:'Non-market hours only'}[hours]||'All hours';
+  const hourOk=x=>hours==='bh'?isBH(x.ts):hours==='off'?!isBH(x.ts):true;
+  const thFor=x=>isBH(x.ts)?r.th:(r.thOff||r.th);
+  const p2=n=>String(n).padStart(2,'0');
+  const fmtT=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;};
+  const fmtD=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`;};
+  const hm=ts=>{const d=new Date(ts);return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;};
+  const samples=r.samples.filter(x=>x.util!=null&&x.ts>=winStart&&x.ts<=winEnd&&hourOk(x));
+  const breaches=[]; let cW=0,cH=0,cC=0; const dW=new Set(),dC=new Set(); let peak=0,peakTs=null; const byDay={};
+  let mWarn=0,mCrit=0,nWarn=0,nCrit=0;   // market vs non-market splits (warning-plus / critical)
+  for(const x of samples){const t=thFor(x);const st=stateOfT(x.util,t);const bh=isBH(x.ts);
+    if(x.util>peak){peak=x.util;peakTs=x.ts;}
+    if(st==='normal')continue;
+    const dk=fmtD(x.ts);const o=byDay[dk]=byDay[dk]||{w:0,h:0,c:0,peak:0,peakTs:null,first:x.ts,last:x.ts};
+    if(st==='warning')cW++; else if(st==='high')cH++; else if(st==='critical'){cC++;dC.add(dk);}
+    dW.add(dk);
+    if(bh){mWarn++; if(st==='critical')mCrit++;} else {nWarn++; if(st==='critical')nCrit++;}
+    if(st==='warning')o.w++; else if(st==='high')o.h++; else o.c++;
+    if(x.util>o.peak){o.peak=x.util;o.peakTs=x.ts;} if(x.ts<o.first)o.first=x.ts; if(x.ts>o.last)o.last=x.ts;
+    breaches.push({ts:x.ts,util:x.util,tx:x.tx,rx:x.rx,st,bh});
+  }
+  const warnPlus=cW+cH+cC;
+  const th=r.th, tho=r.thOff;
+  const BAND={warning:{c:'#b45309',l:'Warning'},high:{c:'#c2410c',l:'High'},critical:{c:'#e11d48',l:'Critical'}};
+  const cap=r.speed?fmtBps(r.speed):'—';
+  const inst=S.cfg.institution||'Network Operations';
+  // trend chart: daily p95 within window, with threshold guide lines
+  let chart='';{const dd=r.daily.filter(d=>d.d>=winStart&&d.d<=winEnd);
+    if(dd.length>1){const w=760,h=150,pad=30;const ys=dd.map(d=>d.p95);const y1=Math.max(th.crit*1.1,amax(ys)*1.12,0.01);
+      const X=i=>pad+i/(dd.length-1)*(w-pad*2),Y=v=>h-pad-(v/y1)*(h-pad*2);
+      const line=dd.map((d,i)=>(i?'L':'M')+X(i).toFixed(1)+' '+Y(d.p95).toFixed(1)).join(' ');
+      const gl=(v,c,lab)=>v<=y1?`<line x1="${pad}" x2="${w-pad}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="${c}" stroke-dasharray="4 3" stroke-width="1"/><text x="${w-pad}" y="${(Y(v)-3).toFixed(1)}" font-size="9" fill="${c}" text-anchor="end">${lab} ${(v*100).toFixed(0)}%</text>`:'';
+      chart=`<svg width="${w}" height="${h}" style="max-width:100%"><rect width="${w}" height="${h}" fill="#f8fafc" stroke="#e5eaf1"/>${gl(th.warn,'#b45309','Warn')}${gl(th.high,'#c2410c','High')}${gl(th.crit,'#e11d48','Crit')}<path d="${line}" fill="none" stroke="#0369a1" stroke-width="1.8"/><text x="${pad}" y="15" font-size="10" fill="#64748b">Daily busy-period utilization (p95) — last 6 months</text></svg>`;}}
+  const kv=(k,v)=>`<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`;
+  const MAXDET=3000; const detail=breaches.slice(0,MAXDET);
+  const dayRows=Object.keys(byDay).sort().map(dk=>{const o=byDay[dk];
+    return `<tr><td>${dk}</td><td class="num">${o.w||''}</td><td class="num">${o.h||''}</td><td class="num" style="color:#e11d48;font-weight:700">${o.c||''}</td><td class="num">${(o.peak*100).toFixed(1)}%</td><td>${hm(o.peakTs)}</td><td>${hm(o.first)}–${hm(o.last)}</td></tr>`;}).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Threshold Report — ${esc(r.dev)} ${esc(r.intf)}</title>
+  <style>
+  @page{margin:15mm;@bottom-center{content:"${esc(inst)} · Confidential · Link Utilization Threshold Report · Page " counter(page) " of " counter(pages)}}
+  *{box-sizing:border-box} body{font:12px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#152238;margin:0;padding:0}
+  .wrap{max-width:900px;margin:0 auto;padding:18px}
+  h1{font-size:20px;margin:0} h2{font-size:14px;margin:22px 0 8px;border-bottom:2px solid #0369a1;padding-bottom:4px;color:#0f2740}
+  .sub{color:#64748b} .top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0f2740;padding-bottom:10px}
+  .brand{font-weight:800;letter-spacing:.5px;color:#0f2740;font-size:13px;text-transform:uppercase}
+  .chip{display:inline-block;background:#eef2f8;color:#44546e;border-radius:5px;padding:1px 8px;font-size:10.5px;font-weight:700;margin:0 4px 4px 0}
+  table{border-collapse:collapse;width:100%} .kv td.k{color:#64748b;padding:3px 14px 3px 0;white-space:nowrap;vertical-align:top} .kv td.v{font-weight:600;padding:3px 0}
+  .cards{display:flex;gap:12px;margin:8px 0}
+  .card{flex:1;border:1px solid #e5eaf1;border-radius:9px;padding:12px 14px;background:#f8fafc}
+  .card .n{font-size:26px;font-weight:800;line-height:1.1} .card .t{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:.5px}
+  .grid{border:1px solid #dfe6ee;border-radius:8px;overflow:hidden}
+  .grid table th{background:#0f2740;color:#fff;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;padding:6px 8px;text-align:left}
+  .grid table td{padding:4px 8px;border-top:1px solid #eef2f7;font-size:11px} .num{text-align:right;font-variant-numeric:tabular-nums}
+  .grid table tr:nth-child(even) td{background:#fafcfe}
+  .pill{display:inline-block;padding:0 7px;border-radius:9px;font-size:10px;font-weight:800;color:#fff}
+  .legend span{margin-right:14px;font-size:11px} .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:4px}
+  .sign{display:flex;gap:30px;margin-top:30px} .sign div{flex:1;border-top:1px solid #8895a7;padding-top:5px;font-size:11px;color:#64748b}
+  .foot{color:#94a3b8;font-size:9.5px;margin-top:16px;border-top:1px solid #e5eaf1;padding-top:6px}
+  </style></head><body><div class="wrap">
+  <div class="top"><div><div class="brand">${esc(inst)}</div><h1>Link Utilization Threshold Report</h1>
+    <div class="sub" style="font-size:12px;margin-top:2px">${esc(r.dev)} · ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''}</div></div>
+    <div style="text-align:right;font-size:11px;color:#64748b">Generated<br><b style="color:#152238">${fmtT(Date.now())} ${tzLabel()}</b></div></div>
+  <div style="margin-top:8px">${(r.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}<span class="chip">${r.cls}</span><span class="chip">${r.impact} impact</span><span class="chip">Site ${esc(r.site)}</span><span class="chip">Capacity ${cap}</span>${r.ip?`<span class="chip">${esc(r.ip)}</span>`:''}</div>
+
+  <h2>Reporting parameters</h2>
+  <table class="kv">
+  ${kv('Reporting window','Last 6 months — '+fmtD(winStart)+' to '+fmtD(winEnd)+' ('+covDays+' days)')}
+  ${kv('Hours basis','<b>'+hoursLbl+'</b>')}
+  ${kv('Market-hours window',`${p2(S.cfg.businessHours.startHr)}:${p2(S.cfg.businessHours.startMin||0)}–${p2(S.cfg.businessHours.endHr)}:${p2(S.cfg.businessHours.endMin||0)}, ${S.cfg.businessHours.days.map(d=>DOW[d]).join(' ')}`)}
+  ${kv('Thresholds (market hrs)',`Warning ≥ <b style="color:#b45309">${(th.warn*100).toFixed(0)}%</b> · High ≥ <b style="color:#c2410c">${(th.high*100).toFixed(0)}%</b> · Critical ≥ <b style="color:#e11d48">${(th.crit*100).toFixed(0)}%</b>`)}
+  ${tho?kv('Thresholds (non-market hrs)',`Warning ≥ ${(tho.warn*100).toFixed(0)}% · High ≥ ${(tho.high*100).toFixed(0)}% · Critical ≥ ${(tho.crit*100).toFixed(0)}%`):''}
+  ${kv('Samples evaluated',samples.length.toLocaleString()+' (utilization = busier direction, max of Transmit/Receive)')}
+  </table>
+
+  <h2>Summary — threshold exceedances (last 6 months)</h2>
+  <div class="cards">
+    <div class="card"><div class="n" style="color:#b45309">${warnPlus.toLocaleString()}</div><div class="t">At/above Warning (≥${(th.warn*100).toFixed(0)}%)</div><div class="sub" style="font-size:10.5px;margin-top:3px">on ${dW.size} distinct day(s)</div></div>
+    <div class="card"><div class="n" style="color:#e11d48">${cC.toLocaleString()}</div><div class="t">At/above Critical (≥${(th.crit*100).toFixed(0)}%)</div><div class="sub" style="font-size:10.5px;margin-top:3px">on ${dC.size} distinct day(s)</div></div>
+    <div class="card"><div class="n" style="color:#0f2740">${(peak*100).toFixed(1)}%</div><div class="t">Peak utilization</div><div class="sub" style="font-size:10.5px;margin-top:3px">${peakTs?fmtT(peakTs):'—'}</div></div>
+  </div>
+  <div class="legend" style="margin:6px 0 4px"><span><i style="background:#b45309"></i>Warning band (${(th.warn*100).toFixed(0)}–${(th.high*100).toFixed(0)}%): <b>${cW.toLocaleString()}</b></span><span><i style="background:#c2410c"></i>High band (${(th.high*100).toFixed(0)}–${(th.crit*100).toFixed(0)}%): <b>${cH.toLocaleString()}</b></span><span><i style="background:#e11d48"></i>Critical band (≥${(th.crit*100).toFixed(0)}%): <b>${cC.toLocaleString()}</b></span></div>
+  ${hours==='all'?`<div class="grid" style="margin-top:8px;max-width:460px"><table><thead><tr><th>Hours basis</th><th class="num">At/above Warning</th><th class="num">At/above Critical</th></tr></thead><tbody>
+    <tr><td>Market hours</td><td class="num">${mWarn.toLocaleString()}</td><td class="num" style="color:#e11d48">${mCrit.toLocaleString()}</td></tr>
+    <tr><td>Non-market hours</td><td class="num">${nWarn.toLocaleString()}</td><td class="num" style="color:#e11d48">${nCrit.toLocaleString()}</td></tr>
+    <tr style="font-weight:800"><td>Total</td><td class="num">${warnPlus.toLocaleString()}</td><td class="num" style="color:#e11d48">${cC.toLocaleString()}</td></tr>
+  </tbody></table></div>`:''}
+  ${chart}
+
+  <h2>Per-day exceedance summary</h2>
+  ${dayRows?`<div class="grid"><table><thead><tr><th>Date</th><th class="num">Warning</th><th class="num">High</th><th class="num">Critical</th><th class="num">Peak</th><th>Peak time</th><th>First–Last</th></tr></thead><tbody>${dayRows}</tbody></table></div>`:'<div class="card">No samples reached the Warning threshold in this window.</div>'}
+
+  <h2>Detailed exceedance log${detail.length<breaches.length?` (first ${MAXDET.toLocaleString()} of ${breaches.length.toLocaleString()})`:` (${breaches.length.toLocaleString()} entries)`}</h2>
+  ${detail.length?`<div class="grid"><table><thead><tr><th>#</th><th>Timestamp</th><th>Band</th><th class="num">Utilization</th><th class="num">Transmit</th><th class="num">Receive</th><th>Period</th></tr></thead><tbody>
+  ${detail.map((x,i)=>`<tr><td class="num">${i+1}</td><td>${fmtT(x.ts)}</td><td><span class="pill" style="background:${BAND[x.st].c}">${BAND[x.st].l}</span></td><td class="num">${(x.util*100).toFixed(2)}%</td><td class="num">${x.tx!=null?fmtBps(x.tx):'—'}</td><td class="num">${x.rx!=null?fmtBps(x.rx):'—'}</td><td>${x.bh?'Market':'Non-market'}</td></tr>`).join('')}
+  </tbody></table></div>${detail.length<breaches.length?`<div class="sub" style="font-size:10.5px;margin-top:5px">Log truncated for print. The complete row-level evidence is available via the “Policy hits .xlsx” / “Download processed data” export.</div>`:''}`:'<div class="card">No exceedances to list for the selected hours basis.</div>'}
+
+  <div class="sign"><div>Prepared by<br><b style="color:#152238">${esc(S.cfg.reportPreparedBy||'')}</b></div><div>Reviewed by<br><b style="color:#152238">${esc(S.cfg.reportReviewedBy||'')}</b></div><div>Approved by<br><b style="color:#152238">${esc(S.cfg.reportApprovedBy||'')}</b></div></div>
+  <div class="foot">Generated by NetPulse · Utilization is measured per sample against the capacity in force at that time (busier of Transmit/Receive). Timestamps shown in ${tzLabel()}. This report covers the trailing 6-month window; the underlying dataset spans ${fmtD(r.start)} to ${fmtD(r.end)}. Maintenance windows are excluded from analytics.</div>
+  </div></body></html>`;
 }
 function rcaCause(r){const f=r.forecast;if(f.growthMoM>0.1&&r.bhDays>=3)return'Organic business-hour demand growth';if(r.anomalies.some(a=>a.type.includes('Weekend')))return'Newly scheduled off-hours job (backup/replication) or misclassification';if(r.anomalies.some(a=>a.type.includes('imbalance')))return'Asymmetric routing / unidirectional flow';if(r.mx>0.9)return'Localized burst / elephant flow';return'Elevated utilization consistent with steady load';}
 
