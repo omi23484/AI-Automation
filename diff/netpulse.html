@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v38</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v39</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1819,7 +1819,16 @@ function view_intf(){
           <div><div class="small" style="color:var(--muted)">Days hit</div><div class="mono" style="font-size:19px;color:${uh.met?'var(--critical)':'inherit'}">${uh.days}<span class="small" style="color:var(--muted)">/${ur.days}</span></div></div>
           <div><div class="small" style="color:var(--muted)">Peak util</div><div class="mono" style="font-size:19px">${pct1(r.pkP95!=null?Math.max(r.pkP95,r.mx):r.mx)}</div></div>
         </div>
-        <div style="margin-bottom:10px">${uh.met?`<span class="chip" style="color:var(--critical);border-color:var(--critical)">⚠ Upgrade trigger MET</span> <span class="mini">— crossed on ${uh.days} day(s), last ${uh.last?fmtDate(uh.last):'—'}</span>`:(uh.hits?`<span class="mini">Crossed on ${uh.days} day(s) so far — below the ${ur.days}-day trigger. Last ${uh.last?fmtDate(uh.last):'—'}.</span>`:`<span class="mini">No threshold crossings across the dataset.</span>`)}</div>`;})()}
+        <div style="margin-bottom:10px">${uh.met?`<span class="chip" style="color:var(--critical);border-color:var(--critical)">⚠ Upgrade trigger MET</span> <span class="mini">— crossed on ${uh.days} day(s), last ${uh.last?fmtDate(uh.last):'—'}</span>`:(uh.hits?`<span class="mini">Crossed on ${uh.days} day(s) so far — below the ${ur.days}-day trigger. Last ${uh.last?fmtDate(uh.last):'—'}.</span>`:`<span class="mini">No threshold crossings across the dataset.</span>`)}</div>
+        ${(()=>{const mh=monthlyPolicy(r);if(mh.length<2)return '';const mx=Math.max(1,...mh.map(o=>o.hits));const gaps=mh.filter(o=>o.samples===0).length;
+          return `<div class="mini" style="margin:2px 0 5px;color:var(--muted)">Policy hits by month — confirm recent months carry data &amp; crossings${gaps?` · <b style="color:var(--warning)">${gaps} month(s) with no data</b>`:''}</div>
+          <div style="display:flex;gap:3px;align-items:flex-end;overflow-x:auto;padding-bottom:3px">
+          ${mh.map(o=>{const h=o.samples?Math.max(3,Math.round(o.hits/mx*38)):3;const col=o.samples===0?'rgba(120,150,200,.16)':o.hits?stateColor('critical'):'rgba(120,150,200,.4)';
+            return `<div title="${o.key} — ${o.samples?o.samples.toLocaleString()+' samples · '+o.hits+' hit(s) · '+o.days+' day(s) · peak '+pct1(o.peak):'no data uploaded for this month'}" style="display:flex;flex-direction:column;align-items:center;gap:3px;min-width:24px">
+            <div style="height:40px;display:flex;align-items:flex-end"><div style="width:13px;height:${h}px;border-radius:3px 3px 0 0;background:${col}"></div></div>
+            <div style="font-size:9px;color:var(--muted);white-space:nowrap">${o.key.slice(2).replace('-','/')}</div></div>`;}).join('')}
+          </div>
+          <div class="mini" style="margin-top:3px;color:var(--muted)"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${stateColor('critical')};vertical-align:-1px"></span> hits &nbsp; <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:rgba(120,150,200,.4);vertical-align:-1px"></span> data, no hits &nbsp; <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:rgba(120,150,200,.16);vertical-align:-1px"></span> no data</div>`;})()}`;})()}
         <button class="btn sm ${S.watch.includes(r.ifid)?'ghost':''}" onclick="${S.watch.includes(r.ifid)?`watchRemove('${r.ifid}')`:`watchAdd('${r.ifid}')`}">${S.watch.includes(r.ifid)?'✓ Watching — remove':'➕ Add to Upgrade Watch'}</button>
         <a class="mini" onclick="go('upgrade')" style="margin-left:12px;cursor:pointer;color:var(--accent)">open Upgrade Watch →</a>
       </div>
@@ -2021,6 +2030,28 @@ function upgradeHits(r,winStart,winEnd){
     hits++;days.add(new Date(x.ts).toDateString());last=x.ts;if(x.util>peak)peak=x.util;
   }
   return {hits,days:days.size,last,peak,thr:ur.utilPct,bhOnly:ur.businessHoursOnly,reqDays:ur.days,met:days.size>=ur.days};
+}
+// Per-month breakdown of samples + policy hits for one link, gap-filled so months
+// with NO data show as an empty stub. Lets you see, month by month, whether the
+// recent months actually carry data and any threshold crossings for this link.
+function monthlyPolicy(r){
+  const ur=r.upgradeRule,thr=ur.utilPct/100,m={};
+  const ymOf=d=>d.getFullYear()*12+d.getMonth();
+  const keyOf=ym=>Math.floor(ym/12)+'-'+String(ym%12+1).padStart(2,'0');
+  for(const x of r.samples){
+    if(x.util==null)continue;
+    const d=new Date(x.ts),ym=ymOf(d),key=keyOf(ym);
+    let o=m[key];if(!o)o=m[key]={ym,key,samples:0,hits:0,days:new Set(),peak:0};
+    o.samples++;
+    if(x.util<thr)continue;
+    if(ur.businessHoursOnly&&!isBH(x.ts))continue;
+    o.hits++;o.days.add(d.getDate());if(x.util>o.peak)o.peak=x.util;
+  }
+  const keys=Object.keys(m);if(!keys.length)return [];
+  const lo=Math.min(...keys.map(k=>m[k].ym)),hi=Math.max(...keys.map(k=>m[k].ym));
+  const out=[];
+  for(let ym=lo;ym<=hi;ym++){const o=m[keyOf(ym)];out.push(o?{key:o.key,samples:o.samples,hits:o.hits,days:o.days.size,peak:o.peak}:{key:keyOf(ym),samples:0,hits:0,days:0,peak:0});}
+  return out;
 }
 function setWatchWin(n){S.watchWin=(n==='all'||n==null||+n===0)?'all':+n;try{localStorage.setItem('np-watchwin',S.watchWin)}catch(e){}render();}
 function watchAdd(id){if(id&&!S.watch.includes(id)){S.watch.push(id);IDB.put('watch',S.watch);logAudit('watch.add',id);render();}}
