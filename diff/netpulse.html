@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v40</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v41</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -2358,7 +2358,7 @@ function genUpgradePolicyXlsx(scope){
     ['Counts below cover the full loaded history; the live "Upgrade Recommended" verdict uses the rolling '+(S.cfg.upgradeRule.lookbackDays?S.cfg.upgradeRule.lookbackDays+'-day':'full-history')+' look-back window.'],
     ...(siblingNote?[[siblingNote]]:[]),
     [],
-    ['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)','Policy threshold %','Policy days','Business hours only','Days threshold hit','Total hits','Upgrade trigger met','Busy p95 %','Verdict']];
+    ['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)','Policy threshold %','Policy days','Business hours only','Days threshold hit','Total hits','Last hit','Data through','Upgrade trigger met','Busy p95 %','Verdict']];
   const hits=[['Device','Interface','Site','Timestamp','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Business hours','Policy threshold %']];
   // Per-day roll-up: one row per calendar day that had at least one crossing.
   const perday=[['Device','Interface','Site','Date','Day of week','Hits this day','Peak util %','Avg util %','First hit','Last hit','Business hours only','Policy threshold %']];
@@ -2375,7 +2375,11 @@ function genUpgradePolicyXlsx(scope){
   const linksWithHits=recs.filter(x=>x.rhits.length>0).length;
   for(const {r,ur,rhits,daysHit,met} of recs){
     totalHits+=rhits.length;
-    summary.push([r.dev,r.intf,r.linkname||'',r.site,r.cls,r.impact,r.speed?+(r.speed/1e6).toFixed(0):'',ur.utilPct,ur.days,ur.businessHoursOnly?'Yes':'No',daysHit,rhits.length,met?'YES':'no',+(r.p95*100).toFixed(1),r.verdict.title]);
+    // "Last hit" vs "Data through" sit side by side so a link whose crossings stopped
+    // months ago is obviously NOT a link whose data stops there — coverage still runs
+    // to the latest sample. Prevents reading a quiet recent stretch as missing data.
+    const lastHitTs=rhits.length?rhits.reduce((m,x)=>x.ts>m?x.ts:m,0):null;
+    summary.push([r.dev,r.intf,r.linkname||'',r.site,r.cls,r.impact,r.speed?+(r.speed/1e6).toFixed(0):'',ur.utilPct,ur.days,ur.businessHoursOnly?'Yes':'No',daysHit,rhits.length,lastHitTs?fmtTs(lastHitTs):'—',fmtTs(r.end),met?'YES':'no',+(r.p95*100).toFixed(1),r.verdict.title]);
     for(const x of rhits){
       if(hits.length>MAXH){truncated=true;break;}
       hits.push([r.dev,r.intf,r.site,fmtTs(x.ts),+((x.util*100).toFixed(2)),x.tx!=null?+((x.tx/1e6).toFixed(1)):'',x.rx!=null?+((x.rx/1e6).toFixed(1)):'',r.speed?+((r.speed/1e6).toFixed(0)):'',isBH(x.ts)?'Yes':'No',ur.utilPct]);
