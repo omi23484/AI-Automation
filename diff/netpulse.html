@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v43</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v44</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1018,6 +1018,14 @@ function computeAnalytics(){
       const pk=(x.ptx!=null||x.prx!=null)?Math.max(x.ptx||0,x.prx||0)/spOv:x.pu;
       return {...x,speed:spOv,util:u,pu:pk!=null&&pk>1.2?null:pk,bad:(u!=null&&(u<0||u>1.2))?1:undefined};});
     const speed=spOv||s.map(x=>x.speed).filter(Boolean).pop()||null;
+    // Detect a capacity change within the link's own history (an upgrade/downgrade in the
+    // source data). Utilization is already computed per-sample against each sample's own
+    // capacity, so hits/verdicts are correct either way — this just surfaces it to the user.
+    let capChange=null;
+    if(!spOv){const seq=s.map(x=>x.speed).filter(Boolean);const distinct=[...new Set(seq)];
+      if(distinct.length>1){const first=seq[0],last=seq.at(-1);
+        let atTs=null,fromSp=first;for(const x of s){if(x.speed&&x.speed!==fromSp){atTs=x.ts;break;}}
+        capChange={distinct:distinct.sort((a,b)=>a-b),first,last,at:atTs,up:last>first};}}
     const badCount=s.filter(x=>x.bad).length;
     s=s.filter(x=>!x.bad);
     if(!s.length)continue;
@@ -1116,7 +1124,7 @@ function computeAnalytics(){
     // risk
     const growth=forecast.growthMoM;
     const risk=riskScore({p95,avg,pk:pkP95,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
-    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,th:tRes,thOff:hasOffBands?tOffRes:null,ip:info.ip,linkname:info.linkname,badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
+    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,capChange,th:tRes,thOff:hasOffBands?tOffRes:null,ip:info.ip,linkname:info.linkname,badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
       start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,pkP95,pkMax,provisionPeak,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
     rec.verdict=verdictFor(rec);
     rec.ai=aiSummary(rec);
@@ -1399,7 +1407,7 @@ function chartHover(cfg,e){
     for(const p of s.data){if(p[1]==null||p[0]<cfg.vx0||p[0]>cfg.vx1)continue;const dd=Math.abs(p[0]-dataX);if(dd<bd){bd=dd;best=p;}}
     if(!best)continue;
     if(t==null||Math.abs(best[0]-dataX)<Math.abs(t-dataX))t=best[0];
-    rows+=`<div class="trow"><i style="background:${s.color}"></i>${esc(s.name||'value')}<b>${pct1(best[1])}${speed?` · ${fmtBps(best[1]*speed)}`:''}</b></div>`;
+    rows+=`<div class="trow"><i style="background:${s.color}"></i>${esc(s.name||'value')}<b>${pct1(best[1])}${best[2]!=null?` · ${fmtBps(best[2])}`:(speed?` · ${fmtBps(best[1]*speed)}`:'')}</b></div>`;
     marks+=`<circle cx="${cfg.X(best[0]).toFixed(1)}" cy="${cfg.Y(best[1]).toFixed(1)}" r="3.4" fill="${s.color}" stroke="var(--bg2)" stroke-width="1.4"/>`;
   }
   if(t==null){tip.style.display='none';if(hg)hg.innerHTML='';return;}
@@ -1711,11 +1719,15 @@ function view_intf(){
   const tf1=flt.to?new Date(flt.to).getTime():Infinity;
   const inFlt=x=>x.ts>=tf0&&x.ts<=tf1&&(flt.hours==='bh'?isBH(x.ts):flt.hours==='off'?!isBH(x.ts):true);
   const fsam=hasFlt?r.samples.filter(inFlt):r.samples;
-  const txS=fsam.filter(x=>x.tx!=null&&r.speed).map(x=>[x.ts,x.tx/r.speed]);
-  const rxS=fsam.filter(x=>x.rx!=null&&r.speed).map(x=>[x.ts,x.rx/r.speed]);
+  // Plot each sample against ITS OWN capacity (x.speedTx/x.speedRx), not the link's
+  // latest speed — so a link whose capacity changed mid-history is charted correctly
+  // and the chart agrees with the per-sample utilization that drives hits/verdicts.
+  // Carry the raw bps as a 3rd tuple element so the tooltip shows true throughput.
+  const txS=fsam.filter(x=>x.tx!=null&&(x.speedTx||r.speed)).map(x=>[x.ts,x.tx/(x.speedTx||r.speed),x.tx]);
+  const rxS=fsam.filter(x=>x.rx!=null&&(x.speedRx||r.speed)).map(x=>[x.ts,x.rx/(x.speedRx||r.speed),x.rx]);
   const txs=fsam.map(x=>x.tx).filter(v=>v!=null),rxs=fsam.map(x=>x.rx).filter(v=>v!=null);
   const pks=fsam.map(x=>x.pu).filter(v=>v!=null);
-  const puS=fsam.filter(x=>x.pu!=null).map(x=>[x.ts,x.pu]);
+  const puS=fsam.filter(x=>x.pu!=null).map(x=>[x.ts,x.pu,Math.max(x.ptx||0,x.prx||0)||null]);
   // filtered distribution + rhythm heatmap (precomputed values when unfiltered)
   let distV=r.dist,heatV=r.heat;
   if(hasFlt){
@@ -1758,6 +1770,7 @@ function view_intf(){
     <div>
       <div class="panel pad" style="margin-bottom:16px">
         <div class="sec-title"><h2>Traffic &amp; Utilization</h2><span class="sub">${bwSub}${S.maintenance.length?' · maintenance shaded':''}</span></div>
+        ${r.capChange?`<div class="ai" style="margin:0 0 10px;padding:8px 10px"><p class="mini" style="margin:0;font-size:12px;line-height:1.5">↕ <b>Capacity changed</b> in the data: ${r.capChange.distinct.map(v=>fmtBps(v)).join(' → ')}${r.capChange.at?` (around ${fmtDate(r.capChange.at)})`:''}. Each sample's utilization is measured against the capacity in force at that time, so hits, verdicts and the % line are all correct across the change. The link’s stated capacity shows the latest, <b>${fmtBps(r.capChange.last)}</b>.</p></div>`:''}
         ${utilChart}
         <div class="legend"><span><i style="background:#38bdf8"></i>Transmit</span><span><i style="background:#818cf8"></i>Received</span>${puS.length?`<span><i style="background:#f472b6"></i>Peak</span>`:''}<span><i style="background:rgba(56,189,248,.35)"></i>business hours</span><span><i style="background:#f5b13d"></i>policy ${r.upgradeRule.utilPct}%${r.upgradeRule.businessHoursOnly?' (business hrs)':''}</span>${anomEvents.length?`<span><i style="background:#fb923c;border-radius:50%"></i>anomaly</span>`:''}<span><i style="background:var(--warning)"></i>warn</span><span><i style="background:var(--critical)"></i>critical</span></div>
       </div>
@@ -2367,6 +2380,7 @@ function genUpgradePolicyXlsx(scope){
     [`Coverage: ${fmtIST(cStart)}  to  ${fmtIST(cEnd)}  (${covDays} days, entire loaded history)`],
     ['Counts below cover the full loaded history; the live "Upgrade Recommended" verdict uses the rolling '+(S.cfg.upgradeRule.lookbackDays?S.cfg.upgradeRule.lookbackDays+'-day':'full-history')+' look-back window.'],
     ['NOTE: Every threshold crossing is listed and tagged Market hours vs Non-market hours. '+(list.some(r=>r.upgradeRule.businessHoursOnly)?'Policy = "Market hours only": only Market-hr hits count toward the upgrade trigger (Days threshold hit / Upgrade trigger met); Non-market-hr hits (e.g. overnight/backup peaks) are shown for visibility but do NOT trigger. Change it in Admin → Link upgrade policy.':'Policy = "All hours": both Market-hr and Non-market-hr hits count toward the trigger.')],
+    ...(list.some(r=>r.capChange)?[['NOTE: '+list.filter(r=>r.capChange).map(r=>`${r.dev} ${r.intf} capacity changed ${r.capChange.distinct.map(v=>(v/1e6).toFixed(0)+' Mbps').join('→')}`).join('; ')+'. Utilization is measured per-sample against the capacity in force at that time; the "Capacity (Mbps)" column shows the latest.']]:[]),
     ...(siblingNote?[[siblingNote]]:[]),
     [],
     ['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)','Policy threshold %','Policy days','Policy counts','Days threshold hit','Market-hr hits','Non-market-hr hits','Total crossings','Last hit','Data through','Upgrade trigger met','Busy p95 %','Verdict']];
