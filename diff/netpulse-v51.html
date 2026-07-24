@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v50</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v51</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -2107,7 +2107,8 @@ function exportProcessed(fmt){
   const to=($('#pdTo')||{}).value?new Date($('#pdTo').value).getTime():Infinity;
   const ur=S.cfg.upgradeRule,thr=ur.utilPct/100,flag=S.cfg.flagUtilAbove||1.0;
   const p2=n=>String(n).padStart(2,'0');
-  const fmtTs=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())} ${tzLabel()}`;};
+  // seconds included so the audit reconciles to the exact source timestamp (e.g. 00:00:46)
+  const fmtTs=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())} ${tzLabel()}`;};
   const sel=S.samples.filter(x=>x.ts>=from&&x.ts<=to&&(scope==='all'||x.ifid===scope));
   if(!sel.length){toast('No samples in that range/link');return;}
   sel.sort((a,b)=>a.ifid<b.ifid?-1:a.ifid>b.ifid?1:a.ts-b.ts);
