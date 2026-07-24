@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v44</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v46</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -432,6 +432,11 @@ const DEFAULT_CFG={
   // Link-upgrade policy — editable: recommend/auto-flag upgrade when utilization
   // crosses utilPct on `days` distinct days (optionally business-hours only).
   upgradeRule:{utilPct:80, days:5, businessHoursOnly:true, lookbackDays:90, mode:'recommend'},
+  // Utilization above this (fraction) FLAGS a link for capacity review in the Upgrade tab
+  // — it usually means the capacity in the source is stale or the link was upgraded.
+  // Samples are NEVER dropped; they are kept in analytics, charts and policy hits, and
+  // the user is asked to verify/override the capacity. Editable in Admin.
+  flagUtilAbove:1.0,
   // Compliance / regulatory (SEBI CSCRF & BCP-DR capacity, RBI IT/Cyber, CERT-In logging).
   // The threshold is configurable — set it to the value in your current applicable circular.
   regThreshold:0.75, regRetentionDays:180, tz:'Asia/Kolkata',
@@ -689,17 +694,20 @@ function buildSamples(rows,resolved,srcName,batchId){
     const pT=spT&&ptx!=null?ptx/spT:(x.ptxp!=null?x.ptxp/100:null);
     const pR=spR&&prx!=null?prx/spR:(x.prxp!=null?x.prxp/100:null);
     let pu=(pT!=null||pR!=null)?Math.max(pT??0,pR??0):null;
-    // Physically impossible values (rate above link capacity / util > 120%) are
-    // counter-wrap or export artifacts — flag them so they are excluded from
-    // analytics, charts and reports consistently, never silently mixed in.
+    // Samples are NEVER dropped for high utilization. A utilization above 100% almost
+    // always means the capacity in the source is stale / the link was upgraded — that is
+    // surfaced to the user in the Upgrade tab for review, not hidden. Only a genuinely
+    // invalid value (negative) is flagged as bad. `over` marks a >100% (or Admin flag
+    // threshold) sample so links needing a capacity check can be found.
+    const flag=(S.cfg&&S.cfg.flagUtilAbove)||1.0;
     let bad=0;
-    if(util!=null&&(util<0||util>1.2))bad=1;
-    if(!bad&&((spT&&tx!=null&&tx>spT*1.2)||(spR&&rx!=null&&rx>spR*1.2)))bad=1;
+    if(util!=null&&util<0)bad=1;
     if(bad)issues.corrupt++;
-    if(pu!=null&&pu>1.2){if(!bad)issues.corrupt++;pu=null;ptx=null;prx=null;}
+    const over=(util!=null&&util>flag)?1:undefined;
+    if(over)issues.overCap=(issues.overCap||0)+1;
     const dv=intern(x.dev),it=intern(x.intf);
     out.push({ifid:intern(dv+'|'+it),dev:dv,intf:it,ts:x.ts,tx,rx,ptx,prx,pu,
-      speed,speedTx:spT||null,speedRx:spR||null,util,bad:bad||undefined,batch:batchId});
+      speed,speedTx:spT||null,speedRx:spR||null,util,bad:bad||undefined,over,batch:batchId});
   }
   const extremes=[...out].filter(x=>x.util!=null).sort((a,b)=>(b.util||0)-(a.util||0)).slice(0,5);
   return {samples:out,issues,scaleGuessNote,info,extremes};
@@ -815,7 +823,8 @@ function validateStaged(parsed,built){
   if(deltas.length){const med=percentile(deltas,0.5);intervalNote=`~${Math.round(med/60000)} min`;
     let gaps=0;for(const d of deltas)if(d>med*2.5)gaps++;
     if(gaps)findings.warn.push(`<b>${gaps}</b> polling gap(s) detected (missing intervals beyond ~2.5× the ${intervalNote} cadence).`);}
-  if(built.issues.corrupt)findings.warn.push(`<b>${built.issues.corrupt}</b> physically impossible value(s) (rate above link capacity / utilization &gt;120% / negative) — excluded from analytics, charts and reports. These are usually poller counter-wrap artifacts; if a whole link is affected, its bandwidth column is wrong — fix the mapping or set a Speed override later in Link Manager.`);
+  if(built.issues.overCap)findings.info.push(`<b>${built.issues.overCap}</b> sample(s) show utilization <b>above 100%</b> — <b>kept, not dropped</b>. A &gt;100% reading usually means the source capacity is stale or the link was upgraded; the affected links are listed under <b>Upgrade → Capacity review</b> so you can verify/override the capacity.`);
+  if(built.issues.corrupt)findings.warn.push(`<b>${built.issues.corrupt}</b> invalid (negative) value(s) excluded. If a whole link is affected, its rate/bandwidth column mapping is likely wrong — fix the mapping or set a Speed override later in Link Manager.`);
   // Capacity sanity — the >120% flag catches an under-scaled capacity, but an OVER-scaled
   // one (e.g. a Mbps capacity read as Gbps) makes utilization ~1000× too small and slips
   // through silently. If nearly every link looks idle, surface it so the mapping is checked.
@@ -1014,9 +1023,10 @@ function computeAnalytics(){
     const hasOffBands=!!(S.cfg.thresholdsOff||ov.thOff);
     const tForS=x=>(!hasOffBands||isBH(x.ts))?tRes:tOffRes;
     const spOv=ov.speed?parseSpeed(ov.speed):null;                                          // per-link speed override
+    const flag=S.cfg.flagUtilAbove||1.0;                                                    // >this util → flag for capacity review
     if(spOv)s=s.map(x=>{const u=(x.tx!=null||x.rx!=null)?Math.max(x.tx||0,x.rx||0)/spOv:x.util;
       const pk=(x.ptx!=null||x.prx!=null)?Math.max(x.ptx||0,x.prx||0)/spOv:x.pu;
-      return {...x,speed:spOv,util:u,pu:pk!=null&&pk>1.2?null:pk,bad:(u!=null&&(u<0||u>1.2))?1:undefined};});
+      return {...x,speed:spOv,speedTx:spOv,speedRx:spOv,util:u,pu:pk,bad:(u!=null&&u<0)?1:undefined,over:(u!=null&&u>flag)?1:undefined};});
     const speed=spOv||s.map(x=>x.speed).filter(Boolean).pop()||null;
     // Detect a capacity change within the link's own history (an upgrade/downgrade in the
     // source data). Utilization is already computed per-sample against each sample's own
@@ -1029,12 +1039,19 @@ function computeAnalytics(){
     const badCount=s.filter(x=>x.bad).length;
     s=s.filter(x=>!x.bad);
     if(!s.length)continue;
+    // Over-capacity flag: samples whose utilization exceeds 100% (or the Admin flag level)
+    // — kept in all analytics, but the link is flagged so the user can verify/override the
+    // capacity in the Upgrade tab (a >100% reading usually means the source capacity is stale).
+    const overS=s.filter(x=>x.util!=null&&x.util>flag);   // derive live so the Admin flag level applies without re-upload
+    let overCap=null;
+    if(overS.length){let mxu=0,mxTs=null;for(const x of overS){if(x.util>mxu){mxu=x.util;mxTs=x.ts;}}
+      overCap={count:overS.length,pct:overS.length/s.length,max:mxu,maxTs:mxTs,lastTs:overS.at(-1).ts,threshold:flag};}
     const speedTx=s.map(x=>x.speedTx).filter(Boolean).pop()||speed;
     const speedRx=s.map(x=>x.speedRx).filter(Boolean).pop()||speed;
-    const utils=s.map(x=>x.util).filter(v=>v!=null&&v>=0&&v<=3);
+    const utils=s.map(x=>x.util).filter(v=>v!=null&&v>=0);
     const p95=percentile(utils,0.95),p99=percentile(utils,0.99),avg=mean(utils),mx=amax(utils,0);
     // peak-column analytics (microbursts the averages hide)
-    const pus=s.map(x=>x.pu).filter(v=>v!=null&&v>=0&&v<=3);
+    const pus=s.map(x=>x.pu).filter(v=>v!=null&&v>=0);
     const pkP95=pus.length?percentile(pus,0.95):null,pkMax=pus.length?amax(pus):null;
     // #3 "peak" used to SIZE capacity — a selectable high percentile (robust to a single glitch,
     // yet closer to true peak load than p95), measured over the trailing projection window
@@ -1042,12 +1059,12 @@ function computeAnalytics(){
     const pkB=S.cfg.peakBasis||'p999';const pkQ=pkB==='p99'?0.99:pkB==='max'?1:0.999;
     const fwDays=S.cfg.forecastWindowDays!=null?S.cfg.forecastWindowDays:180;
     const fwStart=fwDays>0?s.at(-1).ts-fwDays*86400000:-Infinity;
-    const pusW=s.filter(x=>x.ts>=fwStart).map(x=>x.pu).filter(v=>v!=null&&v>=0&&v<=3);
-    const utilsW=s.filter(x=>x.ts>=fwStart).map(x=>x.util).filter(v=>v!=null&&v>=0&&v<=3);
+    const pusW=s.filter(x=>x.ts>=fwStart).map(x=>x.pu).filter(v=>v!=null&&v>=0);
+    const utilsW=s.filter(x=>x.ts>=fwStart).map(x=>x.util).filter(v=>v!=null&&v>=0);
     const provisionPeak=pusW.length?percentile(pusW,pkQ):(utilsW.length?percentile(utilsW,pkQ):(pus.length?percentile(pus,pkQ):mx));
     // distribution (time-in-state)
     const dist={normal:0,warning:0,high:0,critical:0};let distN=0;
-    for(const x of s){if(x.util==null||x.util<0||x.util>3)continue;dist[stateOfT(x.util,tForS(x))]++;distN++;}
+    for(const x of s){if(x.util==null||x.util<0)continue;dist[stateOfT(x.util,tForS(x))]++;distN++;}
     for(const k in dist)dist[k]/=(distN||1);
     // business-hour breaches
     const t=tRes;const breachesBH=s.filter(x=>x.util>=t.crit&&isBH(x.ts)).length;
@@ -1124,7 +1141,7 @@ function computeAnalytics(){
     // risk
     const growth=forecast.growthMoM;
     const risk=riskScore({p95,avg,pk:pkP95,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
-    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,capChange,th:tRes,thOff:hasOffBands?tOffRes:null,ip:info.ip,linkname:info.linkname,badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
+    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,capChange,overCap,th:tRes,thOff:hasOffBands?tOffRes:null,ip:info.ip,linkname:info.linkname,badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
       start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,pkP95,pkMax,provisionPeak,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
     rec.verdict=verdictFor(rec);
     rec.ai=aiSummary(rec);
@@ -1771,6 +1788,7 @@ function view_intf(){
       <div class="panel pad" style="margin-bottom:16px">
         <div class="sec-title"><h2>Traffic &amp; Utilization</h2><span class="sub">${bwSub}${S.maintenance.length?' · maintenance shaded':''}</span></div>
         ${r.capChange?`<div class="ai" style="margin:0 0 10px;padding:8px 10px"><p class="mini" style="margin:0;font-size:12px;line-height:1.5">↕ <b>Capacity changed</b> in the data: ${r.capChange.distinct.map(v=>fmtBps(v)).join(' → ')}${r.capChange.at?` (around ${fmtDate(r.capChange.at)})`:''}. Each sample's utilization is measured against the capacity in force at that time, so hits, verdicts and the % line are all correct across the change. The link’s stated capacity shows the latest, <b>${fmtBps(r.capChange.last)}</b>.</p></div>`:''}
+        ${r.overCap?`<div class="ai" style="margin:0 0 10px;padding:8px 10px;border-color:var(--critical)"><p class="mini" style="margin:0;font-size:12px;line-height:1.5">⚑ <b>Utilization above 100%</b> on <b>${r.overCap.count.toLocaleString()}</b> sample(s) (max <b>${pct1(r.overCap.max)}</b>). Samples are kept and counted — but a &gt;100% reading means the capacity in your file (<b>${r.speed?fmtBps(r.speed):'?'}</b>) is likely stale or this link was upgraded. If so, set the correct <b>Speed override</b> in Link settings below and the % will recompute against the right capacity.</p></div>`:''}
         ${utilChart}
         <div class="legend"><span><i style="background:#38bdf8"></i>Transmit</span><span><i style="background:#818cf8"></i>Received</span>${puS.length?`<span><i style="background:#f472b6"></i>Peak</span>`:''}<span><i style="background:rgba(56,189,248,.35)"></i>business hours</span><span><i style="background:#f5b13d"></i>policy ${r.upgradeRule.utilPct}%${r.upgradeRule.businessHoursOnly?' (business hrs)':''}</span>${anomEvents.length?`<span><i style="background:#fb923c;border-radius:50%"></i>anomaly</span>`:''}<span><i style="background:var(--warning)"></i>warn</span><span><i style="background:var(--critical)"></i>critical</span></div>
       </div>
@@ -2013,7 +2031,7 @@ function view_uploads(){
       ${st.built.extremes&&st.built.extremes.length?`
       <div class="sec-title" style="margin-top:10px"><h2 style="font-size:13px">Parse inspector — highest parsed values</h2><span class="sub">verify the backend read your numbers correctly before committing</span></div>
       <table><thead><tr><th>Time</th><th>Interface</th><th>Transmit</th><th>Received</th><th>Capacity</th><th>Util</th><th></th></tr></thead><tbody>
-      ${st.built.extremes.map(x=>`<tr style="cursor:default"><td class="small">${fmtDate(x.ts)}</td><td class="small"><b>${esc(x.dev)}</b> ${esc(x.intf)}</td><td class="mono">${x.tx!=null?fmtBps(x.tx):'–'}</td><td class="mono">${x.rx!=null?fmtBps(x.rx):'–'}</td><td class="mono">${x.speed?fmtBps(x.speed):'–'}</td><td class="mono" style="${x.util>1.2?'color:var(--critical);font-weight:700':''}">${pct1(x.util)}</td><td class="mini">${x.bad?'flagged artifact':''}</td></tr>`).join('')}
+      ${st.built.extremes.map(x=>`<tr style="cursor:default"><td class="small">${fmtDate(x.ts)}</td><td class="small"><b>${esc(x.dev)}</b> ${esc(x.intf)}</td><td class="mono">${x.tx!=null?fmtBps(x.tx):'–'}</td><td class="mono">${x.rx!=null?fmtBps(x.rx):'–'}</td><td class="mono">${x.speed?fmtBps(x.speed):'–'}</td><td class="mono" style="${x.util>1?'color:var(--critical);font-weight:700':''}">${pct1(x.util)}</td><td class="mini">${x.bad?'invalid (negative)':(x.util>1?'over 100% — verify capacity':'')}</td></tr>`).join('')}
       </tbody></table>`:''}
       <div class="flex" style="margin-top:14px"><button class="btn" ${canCommit?'':'disabled'} onclick="commitStaged()">✓ Commit${extra?` this + ${extra} more`:''} ${(st.built.samples.length-(st.built.overlap||0)).toLocaleString()}${extra?'+':''} samples</button><button class="btn ghost" onclick="cancelStaged()">Cancel${extra?' all':''}</button><span class="commitprog small" style="color:var(--accent)"></span>${canCommit?'':'<span class="small" style="color:var(--errtxt)">Resolve blocking issues to commit.</span>'}</div>
     </div>`;
@@ -2021,12 +2039,68 @@ function view_uploads(){
   return crumb([['Uploads']])+`
   ${st?'':`<div class="panel pad" style="margin-bottom:16px"><div class="dz" id="dz"><div style="font-size:34px;opacity:.6">⭱</div><h3 style="margin:8px 0">Drop XLSX / CSV files here</h3><p class="small">Headers are understood by <b>meaning</b> (not fixed names). Bandwidth in Gbps/Mbps/Kbps/bytes is auto-normalized. History is never overwritten. Select many files at once — same-layout files are mapped only once and streamed in one at a time.</p><p class="mini" style="margin-top:6px">💡 Very large datasets (6-month / 1M+ rows ≈ ~1&nbsp;GB in the browser): upload in batches of ~10 files for the smoothest experience — history accumulates across uploads.</p><div class="flex" style="justify-content:center;margin-top:12px"><button class="btn" onclick="fileInput.click()">Choose files</button><button class="btn ghost" onclick="genDemo()">✨ Demo data</button></div><input type="file" id="fileInput" accept=".xlsx,.csv" multiple style="display:none"></div></div>`}
   ${stagedHtml}
+  ${S.samples.length?`<div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>⬇ Download processed data</h2><span class="sub">audit exactly what NetPulse computed</span></div>
+    <div class="small" style="margin-bottom:10px">Exports the processed samples after unit-normalization and <b>per-sample</b> utilization, so you can reconcile against your source file line-by-line: raw Transmit/Receive rate, the capacity used for that row, the derived Transmit %/Receive %/Utilization %, whether it falls in market hours, and whether it counts as a policy hit. Nothing is dropped — rows over 100% are kept and marked for capacity review. Pick a date range to keep the file manageable.</div>
+    <div class="flex" style="gap:12px;flex-wrap:wrap;align-items:flex-end">
+      <label class="fld" style="margin:0;min-width:240px"><span>Link</span><select id="pdScope"><option value="all">All links (${A().ifs.length})</option>${A().ifs.map(r=>`<option value="${esc(r.ifid)}">${esc(r.dev)} ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''}</option>`).join('')}</select></label>
+      <label class="fld" style="margin:0"><span>From</span><input type="datetime-local" id="pdFrom"></label>
+      <label class="fld" style="margin:0"><span>To</span><input type="datetime-local" id="pdTo"></label>
+      <button class="btn" onclick="exportProcessed('xlsx')">⬇ Excel</button>
+      <button class="btn ghost" onclick="exportProcessed('csv')">⬇ CSV</button>
+    </div>
+    <div class="mini" style="margin-top:8px;color:var(--muted)">Utilization % is <b>max(Transmit %, Receive %)</b> measured against each row’s own capacity — the exact value used for policy hits. Nothing is dropped: rows over <b>${Math.round((S.cfg.flagUtilAbove||1.0)*100)}%</b> are kept and marked for capacity review. Policy threshold currently <b>${S.cfg.upgradeRule.utilPct}%</b>${S.cfg.upgradeRule.businessHoursOnly?' · market hours only':''}.</div>
+  </div>`:''}
   <div class="panel pad"><div class="sec-title"><h2>Upload history</h2><span class="sub">${S.batches.length} batch(es) · ${S.samples.length.toLocaleString()} samples in memory${S.samples.length>800000?' · ⚠ large dataset (~'+Math.round(S.samples.length/1200)+' MB) — consider a higher-RAM browser or chunked uploads':''} · append-only</span></div>
   <table><thead><tr><th>File</th><th>Uploaded</th><th>By</th><th>Coverage</th><th>Rows</th><th>Added</th><th>Interfaces</th><th>Cadence</th><th></th></tr></thead><tbody>
   ${S.batches.map(b=>`<tr style="cursor:default"><td><b>${esc(b.file)}</b></td><td class="small">${fmtDate(b.ts)}</td><td class="small">${esc(b.who)}</td><td class="small">${b.coverage?fmtDay(b.coverage[0])+'–'+fmtDay(b.coverage[1]):'–'}</td><td class="mono">${b.rows}</td><td class="mono">${b.added}</td><td class="mono">${b.entities}</td><td class="small">${b.intervalNote||'–'}</td><td><button class="btn sm ghost" title="Delete this batch and its samples (e.g. ingested with a wrong mapping)" onclick="removeBatch('${b.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan=9 class="small">No uploads yet.</td></tr>'}
   </tbody></table></div>`;
 }
 
+// Export the processed samples for a date range so the data can be audited end-to-end
+// against the source file: raw rate, per-sample capacity, derived %, market/non-market,
+// and the policy-hit flag — all derived live from the Admin-set policy (nothing hardcoded).
+// Artifact rows (util above the Admin validity ceiling / rate above capacity) are included
+// with the exclusion reason, so nothing is silently dropped from the audit.
+function exportProcessed(fmt){
+  if(!S.samples.length){toast('No data yet');return;}
+  const scope=($('#pdScope')||{}).value||'all';
+  const from=($('#pdFrom')||{}).value?new Date($('#pdFrom').value).getTime():-Infinity;
+  const to=($('#pdTo')||{}).value?new Date($('#pdTo').value).getTime():Infinity;
+  const ur=S.cfg.upgradeRule,thr=ur.utilPct/100,flag=S.cfg.flagUtilAbove||1.0;
+  const p2=n=>String(n).padStart(2,'0');
+  const fmtTs=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())} ${tzLabel()}`;};
+  const sel=S.samples.filter(x=>x.ts>=from&&x.ts<=to&&(scope==='all'||x.ifid===scope));
+  if(!sel.length){toast('No samples in that range/link');return;}
+  sel.sort((a,b)=>a.ifid<b.ifid?-1:a.ifid>b.ifid?1:a.ts-b.ts);
+  const MAX=fmt==='xlsx'?200000:1000000;let trunc=false;
+  const use=sel.length>MAX?(trunc=true,sel.slice(0,MAX)):sel;
+  const hdr=['Device','Interface','Timestamp (local)','Epoch ms','Transmit (Mbps)','Received (Mbps)','Peak Tx (Mbps)','Peak Rx (Mbps)','Capacity Tx (Mbps)','Capacity Rx (Mbps)','Transmit %','Receive %','Utilization % (max)','Peak %','Period','Policy threshold %','Counts as policy hit','Capacity review'];
+  const rows=[hdr];
+  for(const x of use){
+    const bad=!!x.bad,bh=isBH(x.ts);
+    const txp=(x.tx!=null&&x.speedTx)?x.tx/x.speedTx:null;
+    const rxp=(x.rx!=null&&x.speedRx)?x.rx/x.speedRx:null;
+    const hit=!bad&&x.util!=null&&x.util>=thr&&(!ur.businessHoursOnly||bh);
+    rows.push([x.dev,x.intf,fmtTs(x.ts),x.ts,
+      x.tx!=null?+(x.tx/1e6).toFixed(3):'',x.rx!=null?+(x.rx/1e6).toFixed(3):'',
+      x.ptx!=null?+(x.ptx/1e6).toFixed(3):'',x.prx!=null?+(x.prx/1e6).toFixed(3):'',
+      x.speedTx?+(x.speedTx/1e6).toFixed(0):'',x.speedRx?+(x.speedRx/1e6).toFixed(0):'',
+      txp!=null?+(txp*100).toFixed(2):'',rxp!=null?+(rxp*100).toFixed(2):'',
+      x.util!=null?+(x.util*100).toFixed(2):'',x.pu!=null?+(x.pu*100).toFixed(2):'',
+      bh?'Market hours':'Non-market hours',ur.utilPct,bad?'invalid (negative)':(hit?'Yes':'No'),
+      (x.util!=null&&x.util>flag)?`⚠ over ${Math.round(flag*100)}% — verify capacity (kept, not dropped)`:'']);
+  }
+  if(trunc)rows.push([`NOTE: truncated at ${MAX.toLocaleString()} rows — narrow the date range or pick a single link for the full slice.`]);
+  const stamp=new Date().toISOString().slice(0,10),scopeLbl=scope==='all'?'AllLinks':scope.replace(/\W+/g,'_');
+  if(fmt==='csv'){
+    const csv=rows.map(r=>r.map(c=>{const s=String(c==null?'':c);return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
+    dl(new Blob([csv],{type:'text/csv;charset=utf-8'}),`NetPulse_ProcessedData_${scopeLbl}_${stamp}.csv`);
+  }else{
+    dl(xlsxBlob([{name:'Processed Data',rows}]),`NetPulse_ProcessedData_${scopeLbl}_${stamp}.xlsx`);
+  }
+  logAudit('data.export.processed',scope,`${use.length} rows${trunc?' (truncated)':''}`);
+  toast(`⬇ ${use.length.toLocaleString()} processed sample(s) exported${trunc?' — truncated, narrow the range':''}`);
+}
 function view_maintenance(){
   const a=S.samples.length?A():{ifs:[],devices:[]};
   return crumb([['Maintenance']])+`<div class="grid g-main">
@@ -2098,6 +2172,18 @@ function view_upgrade(){
     <h3>${tracked.length} link(s) watched · ${totalHits.toLocaleString()} threshold hit(s) over ${winLabel} · ${metCount} meeting the upgrade trigger</h3>
     <div class="reason">Counting every time a link crossed <b>${ur.utilPct}%</b>${ur.businessHoursOnly?' during business hours':''} (trigger = ${ur.days} distinct day(s)). ${win==='all'?`Covers all loaded data (${fmtDate(dataStart)} – ${fmtDate(dataEnd)}).`:`Window ends ${fmtDate(dataEnd)} (latest data).`} Edit the policy in Admin → Link upgrade policy.</div>
   </div>
+  ${(()=>{const flagged=a.ifs.filter(r=>r.overCap).sort((x,y)=>y.overCap.max-x.overCap.max);if(!flagged.length)return '';
+    return `<div class="verdict high" style="margin-bottom:16px"><span class="lvl pill high">⚑ Capacity review</span>
+    <h3>${flagged.length} link(s) show utilization above ${Math.round((S.cfg.flagUtilAbove||1)*100)}% — was the link upgraded?</h3>
+    <div class="reason">A reading over 100% usually means the capacity in the source is <b>stale</b> or the link was <b>upgraded</b>. These samples are <b>kept and counted</b> — nothing is dropped — but the utilization % is measured against the capacity in your file, so it reads too high. Please confirm each link's real capacity; if it changed, set a <b>Speed override</b> on the link and the % will recompute against the correct capacity.</div>
+    <div style="overflow-x:auto;margin-top:10px"><table style="min-width:760px"><thead><tr><th>Link</th><th>Capacity in data</th><th>Samples over ${Math.round((S.cfg.flagUtilAbove||1)*100)}%</th><th>Max util</th><th>Last seen</th><th></th></tr></thead><tbody>
+    ${flagged.map(r=>`<tr><td style="cursor:pointer" data-nav='${esc(JSON.stringify({view:'intf',id:r.ifid}))}'><b>${esc(r.dev)}</b> ${esc(r.intf)}${r.linkname?`<div class="mini">${esc(r.linkname)}</div>`:''}</td>
+      <td class="mono small">${r.speed?fmtBps(r.speed):'?'}</td>
+      <td class="mono">${r.overCap.count.toLocaleString()} <span class="mini">(${pct1(r.overCap.pct)} of samples)</span></td>
+      <td class="mono" style="color:var(--critical)">${pct1(r.overCap.max)}</td>
+      <td class="small">${fmtDate(r.overCap.maxTs)}</td>
+      <td><button class="btn sm" data-nav='${esc(JSON.stringify({view:'intf',id:r.ifid}))}'>Review &amp; set capacity →</button></td></tr>`).join('')}
+    </tbody></table></div></div>`;})()}
   <div class="panel pad" style="margin-bottom:16px"><div class="flex" style="gap:10px;flex-wrap:wrap">
     <span class="small" style="font-weight:700">Window</span>
     <span class="tabs" style="margin:0">${WATCH_WINS.map(n=>`<button class="${win===n?'active':''}" onclick="setWatchWin('${n}')">${n==='all'?'All':n+'d'}</button>`).join('')}</span>
@@ -2185,6 +2271,9 @@ function view_admin(){
         <label class="fld"><span>Crit %</span><input type="number" id="thCritO" value="${S.cfg.thresholdsOff?Math.round((S.cfg.thresholdsOff.crit??t.crit)*100):''}" placeholder="${(t.crit*100).toFixed(0)}"></label>
       </div>
       <div class="mini" style="margin-bottom:10px">Lets a backup link run hot at night without alarming, while business hours stay strict.</div>
+      <div class="sec-title" style="margin-top:12px"><h2 style="font-size:13px">Capacity-review flag</h2><span class="sub">detect stale/upgraded capacity</span></div>
+      <label class="fld"><span>Flag utilization above (%)</span><input type="number" id="maxUtil" value="${Math.round((S.cfg.flagUtilAbove||1.0)*100)}"></label>
+      <div class="mini" style="margin-bottom:10px">Links with utilization above this are flagged in the <b>Upgrade tab</b> for capacity review — a reading over 100% usually means the source capacity is stale or the link was upgraded. <b>Samples are never dropped</b>; they stay in analytics, charts and policy hits. Default 100%. Applies to newly uploaded files (re-upload to re-flag existing data).</div>
       <button class="btn" onclick="saveThresholds()">Save thresholds</button>
     </div>
     <div class="panel pad"><div class="sec-title"><h2>Business hours & planning</h2></div>
@@ -2700,7 +2789,8 @@ function saveThresholds(){
   const ow=parseFloat($('#thWarnO')?.value),oh=parseFloat($('#thHighO')?.value),oc=parseFloat($('#thCritO')?.value);
   const off={};if(!isNaN(ow))off.warn=clamp(ow/100,0,2);if(!isNaN(oh))off.high=clamp(oh/100,0,2);if(!isNaN(oc))off.crit=clamp(oc/100,0,2);
   S.cfg.thresholdsOff=Object.keys(off).length?off:null;
-  save('cfg');logAudit('config.thresholds','',JSON.stringify({business:S.cfg.thresholds,offHours:S.cfg.thresholdsOff}));
+  const mu=parseFloat($('#maxUtil')?.value);if(!isNaN(mu))S.cfg.flagUtilAbove=clamp(mu/100,0.5,10);
+  save('cfg');logAudit('config.thresholds','',JSON.stringify({business:S.cfg.thresholds,offHours:S.cfg.thresholdsOff,flagUtilAbove:S.cfg.flagUtilAbove}));
   S.analytics=null;toast('Thresholds saved — verdicts recomputed');render();}
 function savePlanning(){S.cfg.businessHours.startHr=+$('#bhStart').value;S.cfg.businessHours.endHr=+$('#bhEnd').value;S.cfg.planHorizonDays=+$('#planH').value;S.cfg.upgradeLeadDays=+$('#leadD').value;save('cfg');logAudit('config.planning');S.analytics=null;toast('Saved');render();}
 function saveForecastCfg(){S.cfg.forecastMetric=$('#fcMetric').value;S.cfg.forecastDirection=$('#fcDir').value;S.cfg.provisionFactor=Math.max(1,+$('#provN').value||1.5);
