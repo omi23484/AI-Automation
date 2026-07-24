@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v39</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v40</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -2360,6 +2360,9 @@ function genUpgradePolicyXlsx(scope){
     [],
     ['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)','Policy threshold %','Policy days','Business hours only','Days threshold hit','Total hits','Upgrade trigger met','Busy p95 %','Verdict']];
   const hits=[['Device','Interface','Site','Timestamp','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Business hours','Policy threshold %']];
+  // Per-day roll-up: one row per calendar day that had at least one crossing.
+  const perday=[['Device','Interface','Site','Date','Day of week','Hits this day','Peak util %','Avg util %','First hit','Last hit','Business hours only','Policy threshold %']];
+  const hm=ts=>{const d=new Date(ts);return `${p2(d.getHours())}:${p2(d.getMinutes())}`;};
   const MAXH=50000;let truncated=false,totalHits=0;
   // Compute each link's hits first, then sort so links that DID cross the threshold
   // appear at the top — otherwise a quiet link can sit in row 1 and the report looks
@@ -2377,6 +2380,13 @@ function genUpgradePolicyXlsx(scope){
       if(hits.length>MAXH){truncated=true;break;}
       hits.push([r.dev,r.intf,r.site,fmtTs(x.ts),+((x.util*100).toFixed(2)),x.tx!=null?+((x.tx/1e6).toFixed(1)):'',x.rx!=null?+((x.rx/1e6).toFixed(1)):'',r.speed?+((r.speed/1e6).toFixed(0)):'',isBH(x.ts)?'Yes':'No',ur.utilPct]);
     }
+    // roll the same crossings up per calendar day, chronologically
+    const byDay=new Map();
+    for(const x of rhits){const d=new Date(x.ts);const key=`${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`;
+      let o=byDay.get(key);if(!o){o={key,dow:DOW[d.getDay()],n:0,peak:0,sum:0,first:x.ts,last:x.ts};byDay.set(key,o);}
+      o.n++;o.sum+=x.util;if(x.util>o.peak)o.peak=x.util;if(x.ts<o.first)o.first=x.ts;if(x.ts>o.last)o.last=x.ts;}
+    for(const o of [...byDay.values()].sort((p,q)=>p.key.localeCompare(q.key)))
+      perday.push([r.dev,r.intf,r.site,o.key,o.dow,o.n,+((o.peak*100).toFixed(1)),+((o.sum/o.n*100).toFixed(1)),hm(o.first),hm(o.last),ur.businessHoursOnly?'Yes':'No',ur.utilPct]);
     if(truncated)break;
   }
   if(truncated)hits.push(['NOTE: hit list truncated at 50,000 rows — narrow the scope (single link or shorter window) for full detail']);
@@ -2387,9 +2397,10 @@ function genUpgradePolicyXlsx(scope){
     summary.push([]); summary.push(['— No policy hits —',why]);
     if(scope!=='all')summary.push(['Tip','This is a single-link export. Choose “All links” in Reports → Upgrade Policy Hits to include links that did cross.']);
     hits.push(['— No policy hits —',why]);
-    if(siblingNote){summary.push([siblingNote]);hits.push([siblingNote]);}
+    perday.push(['— No policy hits —',why]);
+    if(siblingNote){summary.push([siblingNote]);hits.push([siblingNote]);perday.push([siblingNote]);}
   }
-  const blob=xlsxBlob([{name:'Summary',rows:summary},{name:'Policy Hits',rows:hits}]);
+  const blob=xlsxBlob([{name:'Summary',rows:summary},{name:'Hits by Day',rows:perday},{name:'Hits by Date-Time',rows:hits}]);
   const fname=`NetPulse_Upgrade_Policy_${scope==='all'?'AllLinks':(list[0].dev+'_'+list[0].intf).replace(/\W+/g,'_')}_${new Date().toISOString().slice(0,10)}.xlsx`;
   dl(blob,fname);
   logAudit('report.export.xlsx',scope==='all'?'all links':scope,`${totalHits} policy hit rows`);
