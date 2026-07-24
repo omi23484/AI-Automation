@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v49</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v50</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -539,9 +539,20 @@ function unitMultiplierFromToken(tok){ // returns {mult, isByte} bits-per-second
   return {mult:scale*(byte?8:1),byte};
 }
 function headerUnit(h){ // detect explicit unit inside a header string
-  const m=String(h).toLowerCase().match(/\(?\s*(t|g|m|k)?\s*(bps|bit\/s|bits?|bytes?|octets?|b\/s)\s*\)?/);
-  if(!m)return null; const info=unitMultiplierFromToken(m[0]); if(!info)return null;
-  if(/%|percent|util/.test(String(h).toLowerCase()))return null;
+  const hl=String(h).toLowerCase();
+  // Prefix (k/m/g/t) must be ATTACHED to the unit (e.g. "mbps"), with word boundaries —
+  // otherwise the trailing letter of a word leaks in as a prefix ("Transmi-t bps" → tera).
+  const m=hl.match(/\b(t|g|m|k)?(bps|bit\/s|bits?|bytes?|octets?|b\/s)\b/);
+  if(!m)return null;
+  if(/%|percent|util/.test(hl))return null;
+  // A bare bit-rate token ("bps"/"bit"/"bits"/"b/s") with NO k/m/g/t prefix is the METRIC
+  // NAME ("bits per second"), not a magnitude — vendors routinely label Mbps/Gbps columns
+  // just "bps". Treating it as literal bits/sec would force the wrong scale and disable the
+  // magnitude self-correction, so leave it ambiguous and let magnitude inference (value vs
+  // capacity) pick the true scale. Prefixed units (Kbps/Mbps/Gbps) and byte units stay exact.
+  const prefix=m[1],isByte=/byte|octet/.test(m[2]);
+  if(!prefix&&!isByte)return null;
+  const info=unitMultiplierFromToken(m[0]); if(!info)return null;
   return info;
 }
 // → bits/sec. When a capacity carries no unit, magnitude decides the scale, tuned for the
