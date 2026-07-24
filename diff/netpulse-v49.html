@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v48</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v49</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -2045,7 +2045,7 @@ function view_uploads(){
   if(st){const fnd=st.findings;const canCommit=fnd.block.length===0;
     const extra=st.extraCount||0;
     stagedHtml=`<div class="panel pad" style="margin-bottom:16px;border-color:var(--stroke2)">
-      <div class="sec-title"><h2>Validation Console — “${esc(st.parsed.name)}”</h2><span class="sub">${st.built.samples.length.toLocaleString()} rows · cadence ${st.built.intervalNote||'?'} · covers ${fmtDay(st.built.coverage[0])}–${fmtDay(st.built.coverage[1])}</span></div>
+      <div class="sec-title"><h2>Validation Console — “${esc(st.parsed.name)}”</h2><span class="sub">${st.built.samples.length.toLocaleString()} rows · median interval ${st.built.intervalNote||'?'} (every row kept as-is) · covers ${fmtDay(st.built.coverage[0])}–${fmtDay(st.built.coverage[1])}</span></div>
       ${extra?`<div class="small" style="margin:2px 0 8px">📎 ${extra} more file(s) selected — files with this same layout will be committed automatically using the mapping below (you’re only asked once); any different layout will prompt next.</div>`:''}
       <div class="sec-title" style="margin-top:6px"><h2 style="font-size:13px">Column mapping — auto-proposed, fully editable</h2><span class="sub">${extra?'applies to all same-layout files · ':''}change any dropdown if a guess is wrong; nothing is hardcoded</span></div>
       <div style="margin-bottom:14px">${Object.keys(FIELD_LABELS).map(f=>{
@@ -2068,7 +2068,7 @@ function view_uploads(){
   ${st?'':`<div class="panel pad" style="margin-bottom:16px"><div class="dz" id="dz"><div style="font-size:34px;opacity:.6">⭱</div><h3 style="margin:8px 0">Drop XLSX / CSV files here</h3><p class="small">Headers are understood by <b>meaning</b> (not fixed names). Bandwidth in Gbps/Mbps/Kbps/bytes is auto-normalized. History is never overwritten. Select many files at once — same-layout files are mapped only once and streamed in one at a time.</p><p class="mini" style="margin-top:6px">💡 Very large datasets (6-month / 1M+ rows ≈ ~1&nbsp;GB in the browser): upload in batches of ~10 files for the smoothest experience — history accumulates across uploads.</p><div class="flex" style="justify-content:center;margin-top:12px"><button class="btn" onclick="fileInput.click()">Choose files</button><button class="btn ghost" onclick="genDemo()">✨ Demo data</button></div><input type="file" id="fileInput" accept=".xlsx,.csv" multiple style="display:none"></div></div>`}
   ${stagedHtml}
   ${S.samples.length?`<div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>⬇ Download processed data</h2><span class="sub">audit exactly what NetPulse computed</span></div>
-    <div class="small" style="margin-bottom:10px">Exports the processed samples after unit-normalization and <b>per-sample</b> utilization, so you can reconcile against your source file line-by-line: raw Transmit/Receive rate, the capacity used for that row, the derived Transmit %/Receive %/Utilization %, whether it falls in market hours, and whether it counts as a policy hit. Nothing is dropped — rows over 100% are kept and marked for capacity review. Pick a date range to keep the file manageable.</div>
+    <div class="small" style="margin-bottom:10px">Exports the processed samples after unit-normalization and <b>per-sample</b> utilization, so you can reconcile against your source file line-by-line: raw Transmit/Receive rate, the capacity used for that row, the derived Transmit %/Receive %/Utilization %, whether it falls in market hours, and whether it counts as a policy hit. <b>Every raw row is stored 1:1 with its exact timestamp (seconds preserved) — data is never resampled or bucketed.</b> Rows over 100% are kept and marked for capacity review. Pick a date range to keep the file manageable.</div>
     <div class="flex" style="gap:12px;flex-wrap:wrap;align-items:flex-end">
       <label class="fld" style="margin:0;min-width:240px"><span>Link</span><select id="pdScope"><option value="all">All links (${A().ifs.length})</option>${A().ifs.map(r=>`<option value="${esc(r.ifid)}">${esc(r.dev)} ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''}</option>`).join('')}</select></label>
       <label class="fld" style="margin:0"><span>From</span><input type="datetime-local" id="pdFrom"></label>
@@ -2079,7 +2079,7 @@ function view_uploads(){
     <div class="mini" style="margin-top:8px;color:var(--muted)">Utilization % is <b>max(Transmit %, Receive %)</b> measured against each row’s own capacity — the exact value used for policy hits. Nothing is dropped: rows over <b>${Math.round((S.cfg.flagUtilAbove||1.0)*100)}%</b> are kept and marked for capacity review. Policy threshold currently <b>${S.cfg.upgradeRule.utilPct}%</b>${S.cfg.upgradeRule.businessHoursOnly?' · market hours only':''}.</div>
   </div>`:''}
   <div class="panel pad"><div class="sec-title"><h2>Upload history</h2><span class="sub">${S.batches.length} batch(es) · ${S.samples.length.toLocaleString()} samples in memory${S.samples.length>800000?' · ⚠ large dataset (~'+Math.round(S.samples.length/1200)+' MB) — consider a higher-RAM browser or chunked uploads':''} · append-only</span></div>
-  <table><thead><tr><th>File</th><th>Uploaded</th><th>By</th><th>Coverage</th><th>Rows</th><th>Added</th><th>Interfaces</th><th>Cadence</th><th></th></tr></thead><tbody>
+  <table><thead><tr><th>File</th><th>Uploaded</th><th>By</th><th>Coverage</th><th>Rows</th><th>Added</th><th>Interfaces</th><th>Median interval</th><th></th></tr></thead><tbody>
   ${S.batches.map(b=>`<tr style="cursor:default"><td><b>${esc(b.file)}</b></td><td class="small">${fmtDate(b.ts)}</td><td class="small">${esc(b.who)}</td><td class="small">${b.coverage?fmtDay(b.coverage[0])+'–'+fmtDay(b.coverage[1]):'–'}</td><td class="mono">${b.rows}</td><td class="mono">${b.added}</td><td class="mono">${b.entities}</td><td class="small">${b.intervalNote||'–'}</td><td><button class="btn sm ghost" title="Delete this batch and its samples (e.g. ingested with a wrong mapping)" onclick="removeBatch('${b.id}')">✕</button></td></tr>`).join('')||'<tr><td colspan=9 class="small">No uploads yet.</td></tr>'}
   </tbody></table></div>`;
 }
@@ -2999,7 +2999,8 @@ const GLOSSARY=[
   ['interface',"A single physical port on a device — the unit everything is analysed at."],
   ['device',"The router/switch the interface belongs to."],
   ['link',"A monitored interface (device + interface), optionally with a friendly circuit name."],
-  ['cadence',"How often the source polled the interface (the typical gap between samples)."],
+  ['median interval',"Descriptive only: the typical gap between your consecutive polls (median). NetPulse keeps every raw row exactly as supplied — it does NOT resample or bucket your data to this interval."],
+  ['cadence',"How often the source polled the interface (the typical gap between samples). Descriptive only — data is never resampled to it."],
   ['coverage',"The time span the uploaded data covers."]
 ];
 function tipFor(txt){const t=(txt||'').toLowerCase().replace(/\s+/g,' ').trim();for(const [k,v] of GLOSSARY)if(t.includes(k))return v;return null;}
