@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v47</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v48</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -416,6 +416,8 @@ const IDB={db:null,
 };
 
 /* --------------------------------- state ---------------------------------- */
+// Curated IANA time zones offered in Admin (covers the common trading/ops locations).
+const TZLIST=['Asia/Kolkata','UTC','Asia/Dubai','Asia/Singapore','Asia/Hong_Kong','Asia/Tokyo','Europe/London','Europe/Paris','Europe/Zurich','America/New_York','America/Chicago','America/Los_Angeles','Australia/Sydney'];
 const DEFAULT_CFG={
   thresholds:{warn:0.60,high:0.75,crit:0.90},
   classThresholds:{Trading:{warn:0.45,high:0.60,crit:0.80},Backup:{warn:0.75,high:0.88,crit:0.96}},
@@ -440,6 +442,10 @@ const DEFAULT_CFG={
   // Compliance / regulatory (SEBI CSCRF & BCP-DR capacity, RBI IT/Cyber, CERT-In logging).
   // The threshold is configurable — set it to the value in your current applicable circular.
   regThreshold:0.75, regRetentionDays:180, tz:'Asia/Kolkata',
+  // How to interpret timestamps in uploaded files: 'aswritten' = the times already match
+  // your local clock (keep exactly, no shift); 'utc' = the file logged UTC, convert to your
+  // time zone for display/analysis. Applied at parse time (re-upload to re-apply).
+  inputTz:'aswritten',
   mergeHostnames:false, // auto-merge a link split across a short hostname and its FQDN
   institution:'', reportPreparedBy:'', reportReviewedBy:'', reportApprovedBy:''
 };
@@ -558,9 +564,17 @@ function parseSpeed(raw){
 // yields the encoded calendar fields as if UTC, so we read those fields back and rebuild
 // them in local time — the displayed hour then equals the hour in the file (00 stays 00),
 // consistent with how string dates are parsed and how every view reads getHours().
+// Build a timestamp from calendar fields, honoring the Admin "input time zone" setting:
+// 'utc' → the fields are UTC, so anchor them in UTC (browser then shows them in local time);
+// 'aswritten' (default) → keep the exact wall clock, no shift.
+function mkTs(y,mo,d,h,mi,s){
+  return (S.cfg&&S.cfg.inputTz==='utc')?Date.UTC(y,mo,d,h||0,mi||0,s||0):new Date(y,mo,d,h||0,mi||0,s||0).getTime();
+}
 function xlSerialToTs(serial){
   const ms=Math.round((serial-25569)*86400000/1000)*1000;   // nearest second (guards Excel float error)
-  const d=new Date(ms);
+  // The serial's wall clock is timezone-naive; `ms` is exactly that wall clock read as UTC.
+  if(S.cfg&&S.cfg.inputTz==='utc')return ms;                // treat as UTC instant → local display converts
+  const d=new Date(ms);                                     // else rebuild the same wall clock in local time (as written)
   return new Date(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds(),0).getTime();
 }
 function parseTs(raw){
@@ -571,11 +585,11 @@ function parseTs(raw){
   // day-first dates: 22-06-2026 00:30 (common in exports; JS Date.parse chokes on these)
   const dm=s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if(dm){const A=+dm[1],B=+dm[2];const d=A>12?A:(B>12?B:A),mo=A>12?B:(B>12?A:B);
-    const t=new Date(+dm[3],mo-1,d,+(dm[4]||0),+(dm[5]||0),+(dm[6]||0)).getTime();if(!isNaN(t))return t;}
-  // ISO-style YYYY-MM-DD[ T]HH:MM[:SS] — parse as wall-clock LOCAL, ignoring any trailing
-  // Z / timezone offset, so the time is kept exactly as written (no shift) like the others.
+    const t=mkTs(+dm[3],mo-1,d,+(dm[4]||0),+(dm[5]||0),+(dm[6]||0));if(!isNaN(t))return t;}
+  // ISO-style YYYY-MM-DD[ T]HH:MM[:SS] — the wall-clock fields are taken exactly as written
+  // (any trailing Z / offset is ignored) and interpreted per the Admin input-time-zone setting.
   const iso=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-  if(iso){const t=new Date(+iso[1],+iso[2]-1,+iso[3],+(iso[4]||0),+(iso[5]||0),+(iso[6]||0)).getTime();if(!isNaN(t))return t;}
+  if(iso){const t=mkTs(+iso[1],+iso[2]-1,+iso[3],+(iso[4]||0),+(iso[5]||0),+(iso[6]||0));if(!isNaN(t))return t;}
   const t=Date.parse(s.replace(' ','T')); if(!isNaN(t))return t;
   const t2=Date.parse(s); return isNaN(t2)?null:t2;
 }
@@ -2298,6 +2312,14 @@ function view_admin(){
       <button class="btn" onclick="savePlanning()">Save</button>
     </div>
   </div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Time zone</h2><span class="sub">how timestamps in your files are read</span></div>
+    <div class="grid g2">
+      <label class="fld"><span>Your time zone</span><select id="tzSel">${TZLIST.map(z=>`<option value="${z}" ${(S.cfg.tz||'Asia/Kolkata')===z?'selected':''}>${z}${z==='Asia/Kolkata'?' (IST)':''}</option>`).join('')}</select></label>
+      <label class="fld"><span>Times in the input files are…</span><select id="tzInput"><option value="aswritten" ${(S.cfg.inputTz||'aswritten')==='aswritten'?'selected':''}>As written — already my time zone</option><option value="utc" ${S.cfg.inputTz==='utc'?'selected':''}>UTC — convert to my time zone</option></select></label>
+    </div>
+    <div class="mini" style="margin:2px 0 10px">Pick <b>As written</b> if the file’s times already match your local clock — they are kept exactly, no shift. Pick <b>UTC</b> if the poller logged in UTC — NetPulse converts them to your time zone. Times are shown on this computer’s clock; the zone name is used to label reports. <b>Applies to newly uploaded files</b> — re-upload to re-apply to existing data.</div>
+    <button class="btn" onclick="saveTimezone()">Save time zone</button>
+  </div>
   <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Link upgrade policy</h2><span class="sub">when to recommend upgrading a link</span></div>
     <div class="small" style="margin-bottom:12px">Recommend a link upgrade when utilization crosses the threshold on the given number of distinct days, evaluated over a trailing look-back window (so an old breach doesn't latch the verdict forever). Editable; applies fleet-wide (per-link overrides available in Link Manager).</div>
     <div class="grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px">
@@ -2807,6 +2829,7 @@ function saveThresholds(){
   save('cfg');logAudit('config.thresholds','',JSON.stringify({business:S.cfg.thresholds,offHours:S.cfg.thresholdsOff,flagUtilAbove:S.cfg.flagUtilAbove}));
   S.analytics=null;toast('Thresholds saved — verdicts recomputed');render();}
 function savePlanning(){S.cfg.businessHours.startHr=+$('#bhStart').value;S.cfg.businessHours.endHr=+$('#bhEnd').value;S.cfg.planHorizonDays=+$('#planH').value;S.cfg.upgradeLeadDays=+$('#leadD').value;save('cfg');logAudit('config.planning');S.analytics=null;toast('Saved');render();}
+function saveTimezone(){const prev=S.cfg.inputTz;S.cfg.tz=$('#tzSel').value;S.cfg.inputTz=$('#tzInput').value;save('cfg');logAudit('config.timezone','',S.cfg.tz+' · input '+S.cfg.inputTz);toast(prev!==S.cfg.inputTz&&S.samples.length?'Time zone saved — re-upload files to apply the new interpretation to existing data':'Time zone saved');render();}
 function saveForecastCfg(){S.cfg.forecastMetric=$('#fcMetric').value;S.cfg.forecastDirection=$('#fcDir').value;S.cfg.provisionFactor=Math.max(1,+$('#provN').value||1.5);
   if($('#fcPeak'))S.cfg.peakBasis=$('#fcPeak').value;
   if($('#fcCI'))S.cfg.forecastCI=clamp((+$('#fcCI').value||80)/100,0.5,0.99);
