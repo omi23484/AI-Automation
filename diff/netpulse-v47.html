@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v46</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v47</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -553,15 +553,29 @@ function parseSpeed(raw){
   else{ if(v>=1e6){} else if(v>=1000)v*=1e6; else v*=1e9; }
   return v;
 }
+// Excel serial date → timestamp, preserving the wall-clock time exactly AS WRITTEN with
+// NO timezone shift. Excel serials are timezone-naive; the raw (serial-25569)*86400000
+// yields the encoded calendar fields as if UTC, so we read those fields back and rebuild
+// them in local time — the displayed hour then equals the hour in the file (00 stays 00),
+// consistent with how string dates are parsed and how every view reads getHours().
+function xlSerialToTs(serial){
+  const ms=Math.round((serial-25569)*86400000/1000)*1000;   // nearest second (guards Excel float error)
+  const d=new Date(ms);
+  return new Date(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds(),0).getTime();
+}
 function parseTs(raw){
   if(raw==null||raw==='')return null;
-  if(typeof raw==='number'){ if(raw>20000&&raw<80000)return Math.round((raw-25569)*86400000); if(raw>1e11)return raw; if(raw>1e9)return raw*1000; }
+  if(typeof raw==='number'){ if(raw>20000&&raw<80000)return xlSerialToTs(raw); if(raw>1e11)return raw; if(raw>1e9)return raw*1000; }
   const s=String(raw).trim();
-  if(/^\d+(\.\d+)?$/.test(s)){const n=parseFloat(s);if(n>20000&&n<80000)return Math.round((n-25569)*86400000);if(n>1e11)return n;if(n>1e9)return n*1000;}
+  if(/^\d+(\.\d+)?$/.test(s)){const n=parseFloat(s);if(n>20000&&n<80000)return xlSerialToTs(n);if(n>1e11)return n;if(n>1e9)return n*1000;}
   // day-first dates: 22-06-2026 00:30 (common in exports; JS Date.parse chokes on these)
   const dm=s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if(dm){const A=+dm[1],B=+dm[2];const d=A>12?A:(B>12?B:A),mo=A>12?B:(B>12?A:B);
     const t=new Date(+dm[3],mo-1,d,+(dm[4]||0),+(dm[5]||0),+(dm[6]||0)).getTime();if(!isNaN(t))return t;}
+  // ISO-style YYYY-MM-DD[ T]HH:MM[:SS] — parse as wall-clock LOCAL, ignoring any trailing
+  // Z / timezone offset, so the time is kept exactly as written (no shift) like the others.
+  const iso=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+  if(iso){const t=new Date(+iso[1],+iso[2]-1,+iso[3],+(iso[4]||0),+(iso[5]||0),+(iso[6]||0)).getTime();if(!isNaN(t))return t;}
   const t=Date.parse(s.replace(' ','T')); if(!isNaN(t))return t;
   const t2=Date.parse(s); return isNaN(t2)?null:t2;
 }
