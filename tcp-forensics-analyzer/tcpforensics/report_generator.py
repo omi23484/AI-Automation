@@ -46,9 +46,15 @@ _TEMPLATE = r"""<!DOCTYPE html>
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
+/* Type system: UI sans carries structure (headings, labels, controls);
+   mono is reserved for data — numbers, timestamps, addresses, tables.
+   System stacks are a deliberate constraint: the report must stay a
+   zero-request single file, so no webfonts. */
 body{margin:0;background:var(--bg);color:var(--fg);
-  font:13px/1.5 var(--mono);font-variant-numeric:tabular-nums;
+  font:13.5px/1.55 var(--ui);font-variant-numeric:tabular-nums;
   overflow-x:hidden}
+table,.kv,.mono,td,.tile .v,.legend,.chip{font-family:var(--mono);font-size:12px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 /* ---- ambient background: aurora orbs + engineering grid ---- */
 body::before{content:'';position:fixed;inset:0;z-index:-3;background:
   radial-gradient(60% 50% at 12% -5%, rgba(57,135,229,.17), transparent 62%),
@@ -76,14 +82,38 @@ h1{font-size:21px;background:linear-gradient(92deg,#eaf1fb 10%,#7fb3f5 45%,#b3a8
   background-size:220% 100%;-webkit-background-clip:text;background-clip:text;
   -webkit-text-fill-color:transparent;animation:sheen 9s linear infinite}
 @keyframes sheen{from{background-position:0% 0}to{background-position:220% 0}}
-h2{font-size:15px;color:var(--bright)}
+h2{font-size:16px;color:var(--bright)}
 h2::before{content:'';display:inline-block;width:9px;height:9px;margin-right:9px;
   border-radius:3px;background:linear-gradient(135deg,var(--accent),var(--accent2));
   box-shadow:var(--glow)}
 h3{font-size:12.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
 a{color:var(--accent);cursor:pointer;text-decoration:none;transition:color .15s}
 a:hover{color:#7fb3f5}
-.wrap{max-width:1520px;margin:0 auto;padding:16px}
+.wrap{max-width:1520px;margin:0 auto;padding:64px 16px 16px}
+
+/* ---- sticky section nav ---- */
+.nav{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;
+  gap:4px;padding:8px 20px;background:rgba(10,14,26,.78);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--border);font-family:var(--ui);
+  animation:navIn .5s cubic-bezier(.22,1,.36,1)}
+@keyframes navIn{from{transform:translateY(-100%)}to{transform:none}}
+.nav .brand{font-weight:700;font-size:13px;letter-spacing:.02em;color:var(--bright);
+  margin-right:14px;white-space:nowrap}
+.nav .brand::before{content:'';display:inline-block;width:10px;height:10px;
+  border-radius:3px;margin-right:8px;vertical-align:-1px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:var(--glow)}
+.nav a{color:var(--dim);font-size:12.5px;padding:5px 11px;border-radius:7px;
+  transition:color .15s,background .15s}
+.nav a:hover{color:var(--bright);background:rgba(57,135,229,.10)}
+.nav .spacer{flex:1}
+.seg{display:inline-flex;background:rgba(30,37,54,.85);border:1px solid var(--border);
+  border-radius:8px;padding:2px;gap:2px}
+.seg button{border:none;background:transparent;box-shadow:none;padding:3px 12px;
+  border-radius:6px;color:var(--dim);font-family:var(--mono)}
+.seg button:hover{color:var(--bright);box-shadow:none}
+.seg button.on{background:linear-gradient(135deg,var(--accent),var(--accent2));
+  color:#fff;box-shadow:0 1px 8px rgba(57,135,229,.4)}
 
 /* ---- glass panels with staggered entrance ---- */
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;
@@ -142,7 +172,22 @@ tr.clickable:hover{background:linear-gradient(90deg,rgba(57,135,229,.14),rgba(57
 .scroll::-webkit-scrollbar-track{background:transparent}
 
 .badge{display:inline-block;border-radius:20px;padding:1px 9px;font-size:10.5px;margin:1px 2px;
-  border:1px solid;letter-spacing:.02em}
+  border:1px solid;letter-spacing:.02em;font-family:var(--ui)}
+.hdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;
+  vertical-align:1px}
+.hdot.ok{background:var(--ok);box-shadow:0 0 6px rgba(47,179,92,.5)}
+.hdot.warn{background:var(--warn);box-shadow:0 0 6px rgba(210,153,34,.5)}
+.hdot.bad{background:var(--bad);box-shadow:0 0 6px rgba(230,103,103,.55)}
+.pill{display:inline-block;padding:1px 9px;border-radius:20px;font-size:10.5px;
+  font-family:var(--ui);letter-spacing:.03em;border:1px solid var(--border2);color:var(--dim)}
+.pill.closed{color:var(--ok);border-color:rgba(47,179,92,.4)}
+.pill.established{color:var(--accent);border-color:rgba(57,135,229,.4)}
+.pill.reset{color:var(--bad);border-color:rgba(230,103,103,.45)}
+.pill.half-closed{color:var(--warn);border-color:rgba(210,153,34,.4)}
+.pill.partial{color:var(--warn);border-color:rgba(210,153,34,.4)}
+.empty{padding:34px 10px;text-align:center;color:var(--dim);font-family:var(--ui);
+  font-size:13px}
+.empty::before{content:'∅';display:block;font-size:22px;opacity:.4;margin-bottom:6px}
 .b-ok{color:var(--ok);border-color:var(--ok);background:rgba(47,179,92,.09)}
 .b-warn{color:var(--warn);border-color:var(--warn);background:rgba(210,153,34,.09)}
 .b-bad{color:var(--bad);border-color:var(--bad);background:rgba(230,103,103,.09)}
@@ -185,6 +230,8 @@ canvas{background:var(--surface);border:1px solid var(--border);border-radius:9p
 .state-Retransmitted{color:var(--c-retx)}.state-Duplicate{color:var(--c-loss)}
 .state-Out-of-order{color:var(--warn)}.state-Recovered{color:var(--ok)}
 .state-Ambiguous,.state-Missing{color:var(--warn)}
+.state-Keep-alive,.state-Window-probe{color:var(--dim)}
+.panel{scroll-margin-top:56px}
 .tooltip{position:fixed;background:rgba(10,14,26,.92);border:1px solid var(--border2);
   border-radius:8px;padding:7px 10px;font-size:11px;pointer-events:none;z-index:99;
   white-space:pre;display:none;backdrop-filter:blur(8px);
@@ -199,7 +246,15 @@ canvas{background:var(--surface);border:1px solid var(--border);border-radius:9p
 .verdict:hover{transform:translateX(4px);box-shadow:0 4px 16px rgba(0,0,0,.3)}
 .verdict.ok{border-color:var(--ok)}.verdict.warn{border-color:var(--warn)}
 .verdict.bad{border-color:var(--bad)}.verdict.info{border-color:var(--accent)}
-.verdict .ev{color:var(--dim);font-size:12px;margin-top:3px;white-space:normal}
+.verdict{display:grid;grid-template-columns:24px 1fr;gap:2px 10px;font-family:var(--ui)}
+.verdict .glyph{grid-row:span 2;width:22px;height:22px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-size:12px;
+  font-weight:700;margin-top:1px}
+.verdict.ok .glyph{color:var(--ok);background:rgba(47,179,92,.13)}
+.verdict.warn .glyph{color:var(--warn);background:rgba(210,153,34,.13)}
+.verdict.bad .glyph{color:var(--bad);background:rgba(230,103,103,.13)}
+.verdict.info .glyph{color:var(--accent);background:rgba(57,135,229,.13)}
+.verdict .ev{color:var(--dim);font-size:12.5px;white-space:normal}
 .mut{color:var(--dim)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media(max-width:1000px){.grid2{grid-template-columns:1fr}}
@@ -221,6 +276,16 @@ canvas{background:var(--surface);border:1px solid var(--border);border-radius:9p
 <body>
 <div class="orb a"></div><div class="orb b"></div>
 <div class="tooltip" id="tt"></div>
+<nav class="nav" aria-label="report sections">
+  <span class="brand">TCP Forensics</span>
+  <a href="#hdr">Capture</a>
+  <a href="#latPanel">Latency</a>
+  <a href="#sessPanel">Sessions</a>
+  <a href="#lossPanel">Loss</a>
+  <a href="#detail" id="navSess" style="display:none"></a>
+  <span class="spacer"></span>
+  <span class="seg" role="group" aria-label="display unit" id="unitSeg"></span>
+</nav>
 <div class="wrap">
   <div class="panel" style="--i:0" id="hdr"></div>
   <div class="panel" style="--i:1"><div class="tiles" id="tiles"></div></div>
@@ -235,12 +300,12 @@ canvas{background:var(--surface);border:1px solid var(--border);border-radius:9p
         <canvas id="gRecCdf" width="640" height="150"></canvas></div>
     </div>
   </div>
-  <div class="panel" style="--i:3">
+  <div class="panel" style="--i:3" id="sessPanel">
     <h2>Session Explorer</h2>
     <div class="controls" id="sessFilters"></div>
     <div class="scroll" style="max-height:420px"><table id="sessTable"></table></div>
   </div>
-  <div class="panel" style="--i:4">
+  <div class="panel" style="--i:4" id="lossPanel">
     <h2>Loss &amp; Recovery Dashboard</h2>
     <div class="controls">
       <button onclick="exportLossCsv()">Export loss CSV</button>
@@ -341,12 +406,18 @@ function renderHeader(){
    '<div class="k">Duration</div><div>'+esc(c.duration_str)+'</div>'+
    '<div class="k">Packets</div><div>'+fmtInt(c.packets)+' total, '+fmtInt(c.tcp_packets)+' TCP'+
      (c.truncated_frames?' <span class="b-warn badge">'+fmtInt(c.truncated_frames)+' truncated by snaplen</span>':'')+'</div>'+
-   '<div class="k">Display unit</div><div>'+
-     ['ns','us','ms'].map(u=>'<button '+(UNIT===u?'class="primary"':'')+
-       ' onclick="setUnit(\''+u+'\')">'+(u==='us'?'µs':u)+'</button>').join(' ')+
-     ' <span class="mut">display only &mdash; internal values remain integer nanoseconds</span></div>'+
    '</div>'+
-   '<div class="mut" style="margin-top:8px">'+esc(M.tool.name)+' v'+esc(M.tool.version)+'</div>';
+   (c.warnings&&c.warnings.length?c.warnings.map(w=>'<div class="warnbox">⚠ '+esc(w)+'</div>').join(''):'')+
+   '<div class="mut" style="margin-top:8px;font-family:var(--ui)">'+esc(M.tool.name)+' v'+esc(M.tool.version)+
+   ' &mdash; display unit is presentation only; internal values remain integer nanoseconds</div>';
+}
+function renderNav(){
+  $('#unitSeg').innerHTML=['ns','us','ms'].map(u=>
+    '<button class="'+(UNIT===u?'on':'')+'" onclick="setUnit(\''+u+'\')" '+
+    'aria-pressed="'+(UNIT===u)+'">'+(u==='us'?'µs':u)+'</button>').join('');
+  const nl=$('#navSess');
+  if(curSess){nl.style.display='';nl.textContent=curSess.label;}
+  else nl.style.display='none';
 }
 function setUnit(u){UNIT=u;renderAll();}
 
@@ -388,8 +459,16 @@ function drawHist(canvas,h,color){
   }
   const W=canvas.width,H=canvas.height,pad=34,max=Math.max(...h.counts);
   const bw=(W-pad-8)/h.counts.length, n=h.counts.length;
+  const total=h.counts.reduce((a,b)=>a+b,0);
+  canvas._hist={h,pad,bw,total};          // geometry for the hover layer
+  if(!canvas._histHover){canvas._histHover=true;
+    canvas.addEventListener('mousemove',histHover);
+    canvas.addEventListener('mouseleave',()=>{$('#tt').style.display='none';});}
   animCanvas(canvas, 650, p=>{
     ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle='rgba(120,140,190,.14)';ctx.lineWidth=1;
+    [0.5,1].forEach(f=>{const y=H-18-(H-30)*f;
+      ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(W-8,y);ctx.stroke();});
     h.counts.forEach((c,i)=>{
       const pi=Math.max(0,Math.min(1,(p - (i/n)*0.35)/0.65));
       const bh=max?(H-30)*c/max*pi:0;
@@ -419,6 +498,10 @@ function drawCdf(canvas,h,color){
   const xs=h.cdf.map(q=>q[0]);const lo=xs[0],hi=xs[xs.length-1]||1;
   const X=v=>pad+(hi>lo?(v-lo)/(hi-lo):0)*(W-pad-8);
   const Y=q=>H-16-(q/100)*(H-28);
+  canvas._cdf={cdf:h.cdf,lo,hi,pad};      // for the hover readout
+  if(!canvas._cdfHover){canvas._cdfHover=true;
+    canvas.addEventListener('mousemove',cdfHover);
+    canvas.addEventListener('mouseleave',()=>{$('#tt').style.display='none';});}
   animCanvas(canvas, 750, p=>{
     ctx.clearRect(0,0,W,H);
     ctx.strokeStyle='rgba(120,140,190,.18)';ctx.lineWidth=1;
@@ -434,6 +517,29 @@ function drawCdf(canvas,h,color){
     ctx.fillText('CDF',pad,10);ctx.fillText(fmtNs(lo),pad,H-4);
     const last=fmtNs(hi);ctx.fillText(last,W-8-ctx.measureText(last).width,H-4);
   });
+}
+function histHover(ev){
+  const cv=ev.currentTarget,g=cv._hist,tt=$('#tt');
+  if(!g){tt.style.display='none';return;}
+  const r=cv.getBoundingClientRect();
+  const x=(ev.clientX-r.left)*cv.width/r.width;
+  const i=Math.floor((x-g.pad)/g.bw);
+  if(i<0||i>=g.h.counts.length||!g.h.counts[i]){tt.style.display='none';return;}
+  const lo=g.h.buckets[i], hi=g.h.buckets[i+1]??g.h.buckets[i];
+  const c=g.h.counts[i], pctv=g.total?(100*c/g.total).toFixed(1):'0';
+  tt.style.display='block';tt.style.left=(ev.clientX+12)+'px';tt.style.top=(ev.clientY+12)+'px';
+  tt.textContent=fmtNs(lo)+' – '+fmtNs(hi)+'\n'+fmtInt(c)+' samples ('+pctv+'%)';
+}
+function cdfHover(ev){
+  const cv=ev.currentTarget,g=cv._cdf,tt=$('#tt');
+  if(!g){tt.style.display='none';return;}
+  const r=cv.getBoundingClientRect();
+  const x=(ev.clientX-r.left)*cv.width/r.width;
+  const v=g.lo+Math.max(0,Math.min(1,(x-g.pad)/(cv.width-g.pad-8)))*(g.hi-g.lo);
+  let best=g.cdf[0];
+  for(const q of g.cdf){if(q[0]<=v)best=q;else break;}
+  tt.style.display='block';tt.style.left=(ev.clientX+12)+'px';tt.style.top=(ev.clientY+12)+'px';
+  tt.textContent='P'+best[1].toFixed(1)+' of samples ≤ '+fmtNs(best[0]);
 }
 function statLine(s){
   if(!s||!s.count)return '<span class="mut">no valid samples</span>';
@@ -510,7 +616,10 @@ function renderSessTable(){
   let h='<tr>'+SESS_COLS.map(c=>'<th onclick="setSort(\''+c[0]+'\')">'+c[1]+
     (sortKey===c[0]?(sortDir>0?' ▲':' ▼'):'')+'</th>').join('')+'</tr>';
   rows.forEach((s,i)=>{
-    h+='<tr class="clickable" style="--i:'+Math.min(i,30)+'" onclick="openSession('+s.id+')"><td>'+s.label+
+    const sev=s.verdicts.some(v=>v.severity==='bad')?'bad'
+             :s.verdicts.some(v=>v.severity==='warn')?'warn':'ok';
+    h+='<tr class="clickable" style="--i:'+Math.min(i,30)+'" onclick="openSession('+s.id+')">'+
+      '<td><span class="hdot '+sev+'" title="worst verdict severity: '+sev+'"></span>'+s.label+
       (s.partial?' <span class="badge b-warn">partial</span>':'')+'</td>'+
       '<td>'+esc(s.client)+'</td><td>'+esc(s.server)+'</td>'+
       '<td class="num">'+fmtNs(s.duration_ns)+'</td>'+
@@ -525,9 +634,9 @@ function renderSessTable(){
       '<td class="num">'+fmtNs(s.stats.rtt.median)+'</td>'+
       '<td class="num">'+fmtNs(s.stats.rtt.p99)+'</td>'+
       '<td class="num">'+fmtInt(s.stats.zero_window_events)+'</td>'+
-      '<td>'+esc(s.state)+'</td></tr>';
+      '<td><span class="pill '+esc(s.state)+'">'+esc(s.state)+'</span></td></tr>';
   });
-  $('#sessTable').innerHTML=h+(rows.length?'':'<tr><td colspan="16" class="mut">no sessions match the filters</td></tr>');
+  $('#sessTable').innerHTML=h+(rows.length?'':'<tr><td colspan="16"><div class="empty">no sessions match the filters</div></td></tr>');
 }
 function setSort(k){if(sortKey===k)sortDir=-sortDir;else{sortKey=k;sortDir=1;}renderSessTable();}
 
@@ -558,12 +667,13 @@ function renderLossTable(){
      '<td>'+(e.sack?'yes':'no')+'</td><td class="num">'+e.dup_acks+'</td>'+
      '<td>'+esc(e.classification)+(e.recovered?'':' <span class="badge b-bad">unrecovered</span>')+'</td></tr>';
   });
-  $('#lossTable').innerHTML=h+(allLoss().length?'':'<tr><td colspan="16" class="mut">no loss events</td></tr>');
+  $('#lossTable').innerHTML=h+(allLoss().length?'':'<tr><td colspan="16"><div class="empty">no loss events in this capture</div></td></tr>');
 }
 
 /* -------------------------------------------------------- session view */
 function openSession(id,tab){
   curSess=M.sessions.find(s=>s.id===id);curTab=tab||'overview';
+  renderNav();
   renderDetail(true);
   $('#detail').scrollIntoView({behavior:MOTION?'smooth':'auto'});
 }
@@ -576,8 +686,10 @@ function renderDetail(pop){
   d.style.display='block';
   if(pop){d.classList.remove('pop');void d.offsetWidth;d.classList.add('pop');}
   let h='<h2>'+s.label+' &mdash; '+esc(s.client)+' ⇄ '+esc(s.server)+'</h2>';
-  h+='<div class="tabs">'+TABS.map(t=>'<div class="'+(curTab===t[0]?'active':'')+
-    '" onclick="switchTab(\''+t[0]+'\')">'+t[1]+'</div>').join('')+'</div>';
+  h+='<div class="tabs" role="tablist">'+TABS.map(t=>'<div class="'+(curTab===t[0]?'active':'')+
+    '" role="tab" tabindex="0" aria-selected="'+(curTab===t[0])+
+    '" onclick="switchTab(\''+t[0]+'\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();switchTab(\''+t[0]+'\');}">'+
+    t[1]+'</div>').join('')+'</div>';
   h+='<div id="tabBody"></div>';
   d.innerHTML=h;
   renderTab();
@@ -614,13 +726,17 @@ function tabOverview(s){
   const rows=[['Packets','packets'],['Bytes (IP)','bytes'],['Payload','payload_bytes'],
    ['Unique bytes','unique_bytes'],['ACKed bytes','acked_bytes'],['Outstanding','outstanding_bytes'],
    ['Data segments','data_segments'],['Retrans segs','retrans_segments'],['Retrans bytes','retrans_bytes'],
-   ['Out-of-order','ooo_packets'],['Duplicates','dup_packets'],['SACK events','sack_events'],
+   ['Out-of-order','ooo_packets'],['Duplicates','dup_packets'],['Keep-alives','keepalives'],
+   ['SACK events','sack_events'],
    ['SACK blocks','sack_blocks'],['SACK holes','sack_holes'],['DSACK','dsack_events'],
    ['Zero-window','zero_window_events'],['MSS','mss'],['Window scale','window_scale']];
   rows.forEach((r,i)=>{h+='<tr style="--i:'+i+'"><td class="mut">'+r[0]+'</td><td class="num">'+fmtInt(s.dir_a[r[1]])+'</td><td class="num">'+fmtInt(s.dir_b[r[1]])+'</td></tr>';});
   h+='</table></div></div>';
   h+='<h3>Automated verdicts <span class="mut" style="text-transform:none">(thresholds: '+esc(JSON.stringify(M.verdict_config))+')</span></h3>';
-  s.verdicts.forEach((v,i)=>{h+='<div class="verdict '+v.severity+'" style="--i:'+i+'"><b>'+esc(v.verdict)+'</b><div class="ev">'+esc(v.evidence)+'</div></div>';});
+  const GLYPH={ok:'✓',warn:'!',bad:'✕',info:'i'};
+  s.verdicts.forEach((v,i)=>{h+='<div class="verdict '+v.severity+'" style="--i:'+i+'">'+
+    '<div class="glyph" aria-hidden="true">'+GLYPH[v.severity]+'</div>'+
+    '<b>'+esc(v.verdict)+'</b><div class="ev">'+esc(v.evidence)+'</div></div>';});
   if(s.warnings.length){h+='<h3>Capture artifact warnings</h3>';
     for(const w of s.warnings)h+='<div class="warnbox">⚠ '+esc(w)+'</div>';}
   return h;
@@ -631,7 +747,7 @@ function tabSequence(s){
   let h='<div class="controls"><label>search SEQ <input id="seqSearch" size="12" oninput="renderSeqRows()"></label>'+
    '<label>direction <select id="seqDir" onchange="renderSeqRows()"><option value="">both</option><option>A-&gt;B</option><option>B-&gt;A</option></select></label>'+
    '<label>state <select id="seqState" onchange="renderSeqRows()"><option value="">all</option>'+
-   ['Original','ACKed','SACKed','Retransmitted','Duplicate','Out-of-order','Recovered'].map(x=>'<option>'+x+'</option>').join('')+'</select></label>'+
+   ['Original','ACKed','SACKed','Retransmitted','Duplicate','Out-of-order','Recovered','Keep-alive','Window-probe'].map(x=>'<option>'+x+'</option>').join('')+'</select></label>'+
    '<button onclick="exportSessionPackets()">Export session events CSV</button></div>'+
    '<div class="scroll" style="max-height:520px"><table id="seqTable"></table></div>';
   setTimeout(renderSeqRows,0);
@@ -1097,7 +1213,7 @@ function exportSessionPackets(){
 
 /* --------------------------------------------------------------- boot */
 function renderAll(){
-  renderHeader();renderTiles();renderGlobalCharts();
+  renderNav();renderHeader();renderTiles();renderGlobalCharts();
   renderSessFilters();renderSessTable();renderLossTable();
   if(curSess)renderDetail();
 }

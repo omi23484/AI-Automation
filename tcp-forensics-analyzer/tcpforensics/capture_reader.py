@@ -46,6 +46,7 @@ class CaptureReader:
         self.time_info = CaptureTimeInfo()
         self.snaplen: int | None = None
         self.truncated_frames = 0
+        self.warnings: list[str] = []
 
     # ------------------------------------------------------------------ file
     def frames(self) -> Iterator[tuple[int, int, int, bytes, bool]]:
@@ -86,7 +87,10 @@ class CaptureReader:
             ts_sec, ts_frac, caplen, origlen = rec.unpack(rh)
             data = fh.read(caplen)
             if len(data) < caplen:
-                break  # truncated final record
+                self.warnings.append(
+                    "capture file ends mid-record — the final packet was "
+                    "discarded (interrupted or copied-while-writing capture)")
+                break
             frame_no += 1
             ts_ns = ts_sec * 1_000_000_000 + (ts_frac if nano else ts_frac * 1_000)
             truncated = caplen < origlen
@@ -123,10 +127,19 @@ class CaptureReader:
                     fh.read(remaining)
                 continue
             if blen < 12 or blen % 4:
-                raise CaptureError(f"bad pcapng block length {blen}")
+                # corrupt block: stop at the damage instead of discarding the
+                # whole capture; everything read so far stays analyzable
+                self.warnings.append(
+                    f"corrupt pcapng block (type 0x{btype:08X}, "
+                    f"length {blen}) after {self.time_info.packet_count} "
+                    "packets — remainder of the file skipped")
+                break
             body = fh.read(blen - 12)
             fh.read(4)  # trailing block-length
             if len(body) < blen - 12:
+                self.warnings.append(
+                    "capture file ends mid-block — the final block was "
+                    "discarded (interrupted or copied-while-writing capture)")
                 break
             if btype == 0x00000001:  # IDB
                 linktype = struct.unpack(endian + "H", body[0:2])[0]

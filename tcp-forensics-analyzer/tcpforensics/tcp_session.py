@@ -49,6 +49,7 @@ class DirectionState:
         self.retrans_events: list[RetransmissionEvent] = []
         # dup-ACK tracking for ACKs *sent by* this direction
         self.dup_last_ack: int | None = None
+        self.dup_last_win: int | None = None
         self.dup_train: DupAckTrain | None = None
         self.dup_ack_trains: list[DupAckTrain] = []
         # negotiated options announced by this endpoint
@@ -64,7 +65,9 @@ class DirectionState:
         self.retrans_bytes = 0
         self.dup_packets = 0
         self.ooo_packets = 0
+        self.keepalive_count = 0
         self.oversize_segments = 0                    # > MSS: TSO/GSO suspicion
+        self.gap_overflow = 0
         self._window_full = False
 
     # ------------------------------------------------------------- helpers
@@ -84,9 +87,14 @@ class DirectionState:
 class Session:
     """One reconstructed TCP connection."""
 
-    def __init__(self, session_id: int, first_pkt: TCPPacket, cfg: RetransConfig):
+    MAX_OPEN_GAPS = 1024          # pathological-capture memory bound
+
+    def __init__(self, session_id: int, first_pkt: TCPPacket, cfg: RetransConfig,
+                 row_limit: int = 20_000):
         self.session_id = session_id
         self.cfg = cfg
+        self.row_limit = row_limit
+        self.rows_dropped = 0
         self.capture_id = first_pkt.capture_id
         self.capture_point = ""
         self.ep_a = (first_pkt.src_ip, first_pkt.src_port)
@@ -159,6 +167,16 @@ class Session:
             snd.fin_seen = True
             self.fin_frames.append(pkt.frame_number)
 
+        # window scaling normally activates on the handshake's third ACK; if
+        # that packet was not captured, activate once both SYNs are known and
+        # the first non-SYN packet arrives (never guess with one-sided info)
+        if (not self.dir_a.window.scale_known and self.dir_a.syn_seen
+                and self.dir_b.syn_seen and not pkt.flags & SYN):
+            both = self.dir_a.ws is not None and self.dir_b.ws is not None
+            for ds in (self.dir_a, self.dir_b):
+                ds.window.scale = ds.ws if both else None
+                ds.window.scale_known = True
+
         # advertised receive window (advertised BY the sender of this packet)
         snd.window.process(pkt.frame_number, pkt.timestamp_ns, pkt.window_raw,
                            in_syn=bool(pkt.flags & SYN))
@@ -188,7 +206,8 @@ class Session:
                 snd.isn = seq64
                 snd.isn_raw = pkt.seq_raw
                 snd.rel_base = seq64
-                self.client_dir = d
+                if self.client_dir is None:   # simultaneous open: first SYN wins
+                    self.client_dir = d
                 self.partial = False
                 self.syn_ts = pkt.timestamp_ns
                 self.syn_frame = pkt.frame_number
@@ -210,10 +229,19 @@ class Session:
                 snd.mss, snd.ws = pkt.mss, pkt.window_scale
                 snd.sack_permitted = pkt.sack_permitted
                 snd.tsopt = pkt.ts_val is not None
-                if self.syn_ts is not None:
+                if self.syn_ts is not None and self.client_dir is not None:
+                    cds = self.dstate(self.client_dir)
                     rtt = pkt.timestamp_ns - self.syn_ts
-                    if rtt >= 0 and self.client_dir is not None:
-                        self.dstate(self.client_dir).rtt.add_sample(
+                    if len(cds.syn_frames) > 1:
+                        # Karn applies to the handshake too: a retransmitted
+                        # SYN makes this sample ambiguous
+                        cds.rtt.add_ambiguous(
+                            pkt.timestamp_ns, self.syn_frame,
+                            pkt.frame_number, 0, 1,
+                            "SYN was retransmitted; SYN/ACK could answer "
+                            "either SYN (Karn's algorithm exclusion)")
+                    elif rtt >= 0:
+                        cds.rtt.add_sample(
                             pkt.timestamp_ns, rtt, "syn-synack",
                             self.syn_frame, pkt.frame_number, 0, 1)
             snd.syn_frames.append(pkt.frame_number)
@@ -223,9 +251,15 @@ class Session:
             self.est_ack_ts = pkt.timestamp_ns
             self.est_ack_frame = pkt.frame_number
             rtt = pkt.timestamp_ns - self.synack_ts
-            if rtt >= 0:
-                sdir = "B->A" if self.client_dir == "A->B" else "A->B"
-                self.dstate(sdir).rtt.add_sample(
+            sdir = "B->A" if self.client_dir == "A->B" else "A->B"
+            sds = self.dstate(sdir)
+            if len(sds.syn_frames) > 1:
+                sds.rtt.add_ambiguous(
+                    pkt.timestamp_ns, self.synack_frame, pkt.frame_number, 0, 1,
+                    "SYN/ACK was retransmitted; the ACK could answer either "
+                    "copy (Karn's algorithm exclusion)")
+            elif rtt >= 0:
+                sds.rtt.add_sample(
                     pkt.timestamp_ns, rtt, "synack-ack",
                     self.synack_frame, pkt.frame_number, 0, 1)
             # window scaling becomes active only if BOTH sides offered it
@@ -250,7 +284,19 @@ class Session:
         if snd.mss and pkt.payload_len > snd.mss:
             snd.oversize_segments += 1
 
-        if overlaps and pkt.payload_len > 0:
+        # Keep-alives and zero-window probes look like tiny retransmissions
+        # (<=1 byte at/below snd_una) but are liveness signalling, not loss —
+        # classify them explicitly so they never pollute retransmission,
+        # duplicate or loss statistics.
+        una = snd.ack_corr.snd_una
+        tiny = (pkt.payload_len <= 1 and not pkt.flags & (SYN | FIN | RST)
+                and una is not None and seq64 <= una)
+        if tiny and rcv.window.zero_window_open_ts is not None:
+            seg.state = "Window-probe"
+        elif tiny and overlaps and pkt.payload_len > 0 and end64 <= una:
+            seg.state = "Keep-alive"
+            snd.keepalive_count += 1
+        elif overlaps and pkt.payload_len > 0:
             self._retransmission(pkt, d, snd, rcv, seg, overlaps, full_overlap)
         else:
             self._original_data(pkt, snd, seg, seq64, end64)
@@ -258,7 +304,11 @@ class Session:
         snd.transmitted.add(seq64, end64)
         snd.seg_index.add(seq64, end64, seg.seg_id)
         snd.snd_max = end64 if snd.snd_max is None else max(snd.snd_max, end64)
-        snd.ack_corr.register_segment(seg)
+        if seg.state not in ("Keep-alive", "Window-probe"):
+            # liveness segments are not latency samples: their byte ranges
+            # are already ACKed, so pairing them with a later cumulative ACK
+            # would fabricate DATA->ACK latency
+            snd.ack_corr.register_segment(seg)
 
         # possible window-full: bytes in flight reached the peer's advertised
         # receive window (peer advertises via rcv-direction packets)
@@ -280,9 +330,12 @@ class Session:
         if contig is not None and seq64 > contig:
             # sequence gap at the capture point: reordering OR loss OR capture
             # drop — do not classify yet (section 13)
-            snd.open_gaps.append({
-                "start": contig, "end": seq64,
-                "ts": pkt.timestamp_ns, "frame": pkt.frame_number})
+            if len(snd.open_gaps) < Session.MAX_OPEN_GAPS:
+                snd.open_gaps.append({
+                    "start": contig, "end": seq64,
+                    "ts": pkt.timestamp_ns, "frame": pkt.frame_number})
+            else:
+                snd.gap_overflow += 1
         # does this segment fill an earlier gap with never-before-seen data?
         for gap in snd.open_gaps:
             if gap.get("resolved"):
@@ -412,7 +465,11 @@ class Session:
         is_pure_ack = (pkt.payload_len == 0
                        and not pkt.flags & (SYN | FIN | RST))
         if is_pure_ack:
-            if snd.dup_last_ack is not None and ack64 == snd.dup_last_ack:
+            # a true duplicate ACK repeats BOTH the ACK number and the
+            # advertised window — same ACK with a new window is a window
+            # update, not loss signalling (RFC 5681 §2)
+            if (snd.dup_last_ack is not None and ack64 == snd.dup_last_ack
+                    and pkt.window_raw == snd.dup_last_win):
                 if snd.dup_train is None:
                     snd.dup_train = DupAckTrain(
                         direction=d, ack=ack64, first_frame=pkt.frame_number,
@@ -445,6 +502,7 @@ class Session:
             else:
                 snd.dup_train = None
             snd.dup_last_ack = ack64
+            snd.dup_last_win = pkt.window_raw
         elif pkt.payload_len > 0:
             snd.dup_train = None
 
@@ -486,7 +544,8 @@ class Session:
                                         f"{rec.dsack_reason})")
                 rcv.loss.reclassify(l64, r64, "duplicate",
                                     f"DSACK in frame {pkt.frame_number}: "
-                                    f"{rec.dsack_reason}")
+                                    f"{rec.dsack_reason}",
+                                    evidence_ts=pkt.timestamp_ns)
             # mark ledger segments now covered by SACK
             for l64, r64 in rec.blocks if not rec.is_dsack else rec.blocks[1:]:
                 for s, e, sid in rcv.seg_index.overlapping(l64, r64):
@@ -530,6 +589,9 @@ class Session:
 
     def _store_row(self, pkt: TCPPacket, d: str, snd: DirectionState,
                    seq64: int, end64: int, seg: SegmentRecord | None) -> None:
+        if len(self.packet_rows) >= self.row_limit:
+            self.rows_dropped += 1
+            return
         self.packet_rows.append((
             pkt.frame_number, pkt.timestamp_ns, d,
             snd.rel(seq64), snd.rel(end64), pkt.payload_len,
@@ -542,8 +604,10 @@ class Session:
 class SessionManager:
     """Demultiplexes TCP packets into Session objects (5-tuple + state)."""
 
-    def __init__(self, cfg: RetransConfig | None = None):
+    def __init__(self, cfg: RetransConfig | None = None,
+                 row_limit: int = 20_000):
         self.cfg = cfg or RetransConfig()
+        self.row_limit = row_limit
         self.sessions: list[Session] = []
         self._active: dict[tuple, Session] = {}
 
@@ -559,7 +623,8 @@ class SessionManager:
         if sess is not None and self._is_new_connection(sess, pkt):
             sess = None
         if sess is None:
-            sess = Session(len(self.sessions), pkt, self.cfg)
+            sess = Session(len(self.sessions), pkt, self.cfg,
+                           row_limit=self.row_limit)
             self.sessions.append(sess)
             self._active[key] = sess
         sess.add_packet(pkt)

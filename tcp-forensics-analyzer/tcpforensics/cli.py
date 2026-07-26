@@ -15,6 +15,7 @@ import sys
 
 from . import __version__
 from .analyzer import analyze_capture
+from .capture_reader import CaptureError
 from .report_generator import generate_report
 from .tcp_retransmission import RetransConfig
 from .verdicts import VerdictConfig
@@ -76,6 +77,13 @@ def main(argv: list[str] | None = None) -> int:
             quiet=args.quiet)
     except FileNotFoundError:
         print(f"error: capture not found: {args.capture}", file=sys.stderr)
+        return 2
+    except IsADirectoryError:
+        print(f"error: {args.capture} is a directory, not a capture file",
+              file=sys.stderr)
+        return 2
+    except CaptureError as exc:
+        print(f"error: cannot parse {args.capture}: {exc}", file=sys.stderr)
         return 2
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:

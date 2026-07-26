@@ -112,9 +112,17 @@ class LossManager:
         return recovered
 
     def reclassify(self, seq: int, end: int, classification: str,
-                   evidence: str) -> None:
+                   evidence: str, evidence_ts: int | None = None) -> None:
+        """Reclassify overlapping events — but never rewrite history: an
+        event that already completed recovery BEFORE this evidence arrived
+        keeps its classification (e.g. a DSACK for a later spurious copy
+        does not un-make an earlier genuine loss)."""
         for ev in self.events:
             if ev.seq < end and seq < ev.end:
+                if (evidence_ts is not None and ev.recovered
+                        and ev.recovery_ns is not None
+                        and ev.recovery_ns < evidence_ts):
+                    continue
                 ev.classification = classification
                 ev.classification_evidence = evidence
 

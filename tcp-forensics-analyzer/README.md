@@ -74,6 +74,14 @@ stepping in the report, hole first-observation timestamps, and RFC 2883
 DSACK detection (block below cumulative ACK, or first block contained in the
 second) driving spurious-retransmission evidence.
 
+**Liveness traffic** — TCP keep-alives (a ≤1-byte segment at `snd_una−1` on
+an idle connection) and zero-window probes are recognized explicitly and
+never counted as retransmissions, duplicates, loss, or latency samples.
+Duplicate-ACK detection follows RFC 5681: the ACK number *and* the
+advertised window must repeat — pure window updates never count as loss
+signalling. Karn's exclusion also applies to the handshake: a retransmitted
+SYN or SYN/ACK makes the corresponding handshake RTT sample ambiguous.
+
 **Retransmissions** — detected by sequence-space overlap (never packet
 equality) and classified with recorded evidence: `fast-retransmission`
 (≥3 dup-ACKs or an open SACK hole), `rto-retransmission` (delay beyond a
@@ -184,6 +192,12 @@ captures — analysis results themselves are never truncated.
 * Nothing is fabricated: insufficient evidence yields `Unknown`,
   `Ambiguous`, `partial`, or a capture-artifact warning instead of a guess.
 * Every conclusion is traceable to frame numbers shown in the report.
+* Evidence never rewrites history: a DSACK arriving after a loss event has
+  already recovered marks the later spurious copy without reclassifying the
+  original, genuine loss.
+* Corrupt or truncated captures degrade gracefully: everything before the
+  damage is analyzed and the damage itself is reported as a capture warning
+  in the report header.
 
 ## Validation
 

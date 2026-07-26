@@ -38,7 +38,7 @@ def analyze_capture(path: str, *, capture_id: int = 0, capture_point: str = "",
 
     reader = CaptureReader(path, capture_id=capture_id,
                            capture_point=capture_point)
-    mgr = SessionManager(retrans_cfg)
+    mgr = SessionManager(retrans_cfg, row_limit=max_packet_rows)
 
     _progress("[1/4] Reading packets & reconstructing sessions ...", quiet)
     n = 0
@@ -108,6 +108,7 @@ def analyze_capture(path: str, *, capture_id: int = 0, capture_point: str = "",
         "tcp_packets": ti.tcp_packet_count,
         "snaplen": reader.snaplen,
         "truncated_frames": reader.truncated_frames,
+        "warnings": reader.warnings,
     }
     model = {
         "tool": {"name": "tcpforensics", "version": __version__},
@@ -120,13 +121,12 @@ def analyze_capture(path: str, *, capture_id: int = 0, capture_point: str = "",
         "verdict_config": (verdict_cfg or VerdictConfig()).to_dict(),
         "sessions": sessions_json,
     }
-    # cap embedded packet rows for very large captures (noted in the report)
-    for sj in sessions_json:
+    # rows are capped at collection time; surface how many were dropped
+    for sj, sess in zip(sessions_json, mgr.sessions):
+        sj["packets_truncated"] = sess.rows_dropped
         if len(sj["packets"]) > max_packet_rows:
-            sj["packets_truncated"] = len(sj["packets"]) - max_packet_rows
+            sj["packets_truncated"] += len(sj["packets"]) - max_packet_rows
             sj["packets"] = sj["packets"][:max_packet_rows]
-        else:
-            sj["packets_truncated"] = 0
     _rebase_timestamps(model)
     _progress("[4/4] Analysis model ready.", quiet)
     return model
@@ -166,7 +166,8 @@ def _rebase_timestamps(model: dict) -> None:
 
 def _dir_stats(ds: DirectionState) -> dict:
     data_segs = sum(1 for s in ds.segments if s.payload_len > 0
-                    and not s.is_retransmission)
+                    and not s.is_retransmission
+                    and s.state not in ("Keep-alive", "Window-probe"))
     acked = 0
     if ds.ack_corr.snd_una is not None and ds.rel_base is not None:
         acked = max(0, ds.ack_corr.snd_una - ds.rel_base)
@@ -182,6 +183,7 @@ def _dir_stats(ds: DirectionState) -> dict:
         "retrans_segments": ds.retrans_segments,
         "retrans_bytes": ds.retrans_bytes,
         "dup_packets": ds.dup_packets, "ooo_packets": ds.ooo_packets,
+        "keepalives": ds.keepalive_count,
         "sack_events": len(ds.scoreboard.records),
         "sack_blocks": ds.scoreboard.sack_block_total,
         "sack_holes": len(ds.scoreboard.hole_history),

@@ -38,6 +38,12 @@ def session_artifacts(sess) -> list[str]:
         if una is not None and ds.snd_max is None and ds.packets == 0:
             warns.append(f"Direction {name} carried no packets — one-sided "
                          "(asymmetric) capture for this session.")
+    if sess.dir_a.gap_overflow or sess.dir_b.gap_overflow:
+        n = sess.dir_a.gap_overflow + sess.dir_b.gap_overflow
+        warns.append(
+            f"{n} additional sequence gaps beyond the per-session tracking "
+            "bound were not individually tracked — gap-level classification "
+            "for this session is partial.")
     # unresolved receiver-side gaps that never got filled: possible capture drop
     for ds, name in ((a, "A->B"), (b, "B->A")):
         unresolved = [g for g in ds.open_gaps if not g.get("resolved")]
