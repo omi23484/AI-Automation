@@ -28,6 +28,11 @@ class RetransConfig:
     rto_floor_ns: int = 200_000_000          # 200 ms conservative RTO floor
     duplicate_window_ns: int = 2_000_000     # 2 ms: capture-dup heuristic
     srtt_rto_multiplier: int = 3             # delay > 3 * sRTT also suggests RTO
+    # window for recognizing the SAME IP packet observed at multiple capture
+    # points (SPAN on several leafs, routed hops): identical TCP content +
+    # identical non-zero IP ID within this window is one packet, not a
+    # retransmission — a retransmission is a NEW IP packet with a new IP ID
+    observation_window_ns: int = 20_000_000  # 20 ms
 
 
 def classify(*, delay_since_last_tx_ns: int | None,

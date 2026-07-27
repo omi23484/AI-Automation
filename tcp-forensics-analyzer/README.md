@@ -82,6 +82,22 @@ advertised window must repeat — pure window updates never count as loss
 signalling. Karn's exclusion also applies to the handshake: a retransmitted
 SYN or SYN/ACK makes the corresponding handshake RTT sample ambiguous.
 
+**Multi-point / SPAN capture intelligence** — captures taken at several
+points in the network (SPAN on two leafs, both sides of a routed hop, VLAN
+translation, mirrored feeds) show the SAME packet more than once with
+rewritten MACs, VLAN and decremented TTL.  The engine fingerprints recent
+packets (full TCP content + IPv4 ID + timestamps + window + SACK blocks)
+and tracks the set of observation-point signatures per fingerprint: an
+identical non-zero IP ID means the same IP packet (a real retransmission is
+a NEW IP packet with a new ID) — confirmed; with weak IDs (Linux DF /
+IPv6), a NEW L2/TTL signature marks the same packet at another point
+("likely") while a REPEATED signature is a new packet generation, so
+genuine dup-ACK trains and retransmissions in interleaved two-point
+captures are never swallowed.  Recognized observation duplicates are
+excluded from retransmission/duplicate/dup-ACK/latency statistics, and the
+inter-observation skew (leaf-to-leaf traversal latency) is reported per
+event with min/median/P95 statistics.
+
 **Retransmissions** — detected by sequence-space overlap (never packet
 equality) and classified with recorded evidence: `fast-retransmission`
 (≥3 dup-ACKs or an open SACK hole), `rto-retransmission` (delay beyond a
@@ -130,6 +146,13 @@ Single HTML file, all CSS/JS embedded, zero external requests:
   p50/p99 thresholds, SACK, loss, zero-window, RST, incomplete);
 * **Loss & Recovery dashboard** across the capture, each row opening the
   owning session;
+* a per-session flow ladder that reads SYN → Δ → SYN/ACK → Δ → ACK → Δ →
+  PSH/ACK … with the inter-packet latency printed between every pair of
+  consecutive packets (also available as a Δ-prev column in the Packets
+  tab);
+* a relative/raw switch for all SEQ/ACK displays (sticky-nav knob):
+  relative numbers are ISN-anchored, raw numbers are the on-wire 32-bit
+  values, and sequence search accepts input in whichever mode is active;
 * per-session forensic view with tabs: Overview, Sequence (ledger with
   sequence-number search), ACK (dup-ACK trains + DATA→ACK distribution),
   SACK (steppable scoreboard visualization + option records), Loss,
@@ -200,6 +223,16 @@ captures — analysis results themselves are never truncated.
   in the report header.
 
 ## Validation
+
+Real-world corpus: `tools/validate_samples.py <dir>` batch-runs the
+analyzer over a directory of captures with cross-consistency checks; the
+tool has been validated against 12 TCP captures from the Wireshark wiki
+sample set (http.cap, telnet-cooked.pcap, tcp-ecn-sample.pcap,
+pcapng-example.pcapng, the 200722 window-scale/tcp pcapng pair,
+http_redirects.pcapng, http_with_jpegs.cap and more) — all parse cleanly
+with plausible session/RTT/retransmission results (e.g. telnet-cooked's
+known 370 ms RTO retransmission at frame 53).  Non-pcap formats such as
+NetMon .cap files are rejected with a clear error rather than misparsed.
 
 `tests/` builds synthetic captures byte-by-byte with exact nanosecond
 timestamps and asserts expected sequence-space state and timing for: normal

@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 # TCP flag bits
 FIN, SYN, RST, PSH, ACK, URG, ECE, CWR = 1, 2, 4, 8, 16, 32, 64, 128
 
-FLAG_NAMES = [(CWR, "CWR"), (ECE, "ECE"), (URG, "URG"), (ACK, "ACK"),
-              (PSH, "PSH"), (RST, "RST"), (SYN, "SYN"), (FIN, "FIN")]
+FLAG_NAMES = [(SYN, "SYN"), (FIN, "FIN"), (RST, "RST"), (PSH, "PSH"),
+              (ACK, "ACK"), (URG, "URG"), (ECE, "ECE"), (CWR, "CWR")]
 
 
 def flags_to_str(flags: int) -> str:
@@ -41,6 +41,15 @@ class TCPPacket:
     payload_len: int
     ip_total_len: int
     truncated: bool = False
+    # L2/L3 observation-point attributes: these change when the SAME packet
+    # is captured at different points in the network (SPAN on two leafs, a
+    # routed hop, VLAN translation) while the TCP content stays identical
+    ip_id: int | None = None          # IPv4 Identification (None for IPv6)
+    ttl: int | None = None            # IPv4 TTL / IPv6 hop limit
+    src_mac: str | None = None
+    dst_mac: str | None = None
+    vlan: int | None = None           # outermost 802.1Q VLAN id
+    payload_crc: int = 0              # CRC32 of captured TCP payload bytes
     # TCP options (None when absent)
     mss: int | None = None
     window_scale: int | None = None

@@ -13,6 +13,7 @@ and every timestamp is normalized to integer nanoseconds.
 from __future__ import annotations
 
 import struct
+import zlib
 from typing import BinaryIO, Iterator
 
 from .models import TCPPacket
@@ -204,22 +205,34 @@ class CaptureReader:
 
 def decode_tcp(frame_no: int, ts_ns: int, linktype: int, data: bytes,
                truncated: bool, capture_id: int) -> TCPPacket | None:
-    """Decode link -> IP -> TCP; return None for anything that is not TCP."""
+    """Decode link -> IP -> TCP; return None for anything that is not TCP.
+
+    L2 attributes (MACs, VLAN) and L3 attributes (IP ID, TTL) are preserved:
+    they identify the *observation point*, and comparing them is how the
+    engine tells "same packet captured twice" apart from a retransmission.
+    """
     try:
         if linktype == LINKTYPE_ETHERNET:
             if len(data) < 14:
                 return None
+            dst_mac = data[0:6].hex(":")
+            src_mac = data[6:12].hex(":")
             ethertype = struct.unpack(">H", data[12:14])[0]
             off = 14
+            vlan = None
             while ethertype in (0x8100, 0x88A8) and len(data) >= off + 4:  # VLAN
+                if vlan is None:
+                    vlan = struct.unpack(">H", data[off:off + 2])[0] & 0x0FFF
                 ethertype = struct.unpack(">H", data[off + 2:off + 4])[0]
                 off += 4
+            l2 = (src_mac, dst_mac, vlan)
             payload = data[off:]
             if ethertype == 0x0800:
-                return _decode_ipv4(frame_no, ts_ns, payload, truncated, capture_id)
+                return _decode_ipv4(frame_no, ts_ns, payload, truncated, capture_id, l2)
             if ethertype == 0x86DD:
-                return _decode_ipv6(frame_no, ts_ns, payload, truncated, capture_id)
+                return _decode_ipv6(frame_no, ts_ns, payload, truncated, capture_id, l2)
             return None
+        no_l2 = (None, None, None)
         if linktype == LINKTYPE_RAW:
             return _decode_ip_auto(frame_no, ts_ns, data, truncated, capture_id)
         if linktype == LINKTYPE_NULL:
@@ -231,18 +244,18 @@ def decode_tcp(frame_no: int, ts_ns: int, linktype: int, data: bytes,
                 return None
             proto = struct.unpack(">H", data[14:16])[0]
             if proto == 0x0800:
-                return _decode_ipv4(frame_no, ts_ns, data[16:], truncated, capture_id)
+                return _decode_ipv4(frame_no, ts_ns, data[16:], truncated, capture_id, no_l2)
             if proto == 0x86DD:
-                return _decode_ipv6(frame_no, ts_ns, data[16:], truncated, capture_id)
+                return _decode_ipv6(frame_no, ts_ns, data[16:], truncated, capture_id, no_l2)
             return None
         if linktype == LINKTYPE_LINUX_SLL2:
             if len(data) < 20:
                 return None
             proto = struct.unpack(">H", data[0:2])[0]
             if proto == 0x0800:
-                return _decode_ipv4(frame_no, ts_ns, data[20:], truncated, capture_id)
+                return _decode_ipv4(frame_no, ts_ns, data[20:], truncated, capture_id, no_l2)
             if proto == 0x86DD:
-                return _decode_ipv6(frame_no, ts_ns, data[20:], truncated, capture_id)
+                return _decode_ipv6(frame_no, ts_ns, data[20:], truncated, capture_id, no_l2)
             return None
         return None
     except (struct.error, IndexError):
@@ -252,24 +265,27 @@ def decode_tcp(frame_no: int, ts_ns: int, linktype: int, data: bytes,
 def _decode_ip_auto(frame_no, ts_ns, data, truncated, capture_id):
     if not data:
         return None
+    no_l2 = (None, None, None)
     ver = data[0] >> 4
     if ver == 4:
-        return _decode_ipv4(frame_no, ts_ns, data, truncated, capture_id)
+        return _decode_ipv4(frame_no, ts_ns, data, truncated, capture_id, no_l2)
     if ver == 6:
-        return _decode_ipv6(frame_no, ts_ns, data, truncated, capture_id)
+        return _decode_ipv6(frame_no, ts_ns, data, truncated, capture_id, no_l2)
     return None
 
 
-def _decode_ipv4(frame_no, ts_ns, data, truncated, capture_id):
+def _decode_ipv4(frame_no, ts_ns, data, truncated, capture_id, l2):
     if len(data) < 20 or data[0] >> 4 != 4:
         return None
     ihl = (data[0] & 0x0F) * 4
     if ihl < 20 or len(data) < ihl:
         return None
     total_len = struct.unpack(">H", data[2:4])[0]
+    ip_id = struct.unpack(">H", data[4:6])[0]
     flags_frag = struct.unpack(">H", data[6:8])[0]
     if flags_frag & 0x1FFF:      # non-first fragment: no TCP header
         return None
+    ttl = data[8]
     proto = data[9]
     if proto != 6:
         return None
@@ -278,14 +294,16 @@ def _decode_ipv4(frame_no, ts_ns, data, truncated, capture_id):
     ip_payload_len = max(0, min(total_len, len(data)) - ihl)
     return _decode_tcp_header(frame_no, ts_ns, src, dst, data[ihl:ihl + ip_payload_len],
                               total_len, truncated, capture_id,
-                              declared_payload=total_len - ihl)
+                              declared_payload=total_len - ihl,
+                              ip_id=ip_id, ttl=ttl, l2=l2)
 
 
-def _decode_ipv6(frame_no, ts_ns, data, truncated, capture_id):
+def _decode_ipv6(frame_no, ts_ns, data, truncated, capture_id, l2):
     if len(data) < 40 or data[0] >> 4 != 6:
         return None
     payload_len = struct.unpack(">H", data[4:6])[0]
     nxt = data[6]
+    hop_limit = data[7]
     src = _v6(data[8:24])
     dst = _v6(data[24:40])
     off = 40
@@ -299,7 +317,8 @@ def _decode_ipv6(frame_no, ts_ns, data, truncated, capture_id):
     tcp_bytes = data[off:40 + payload_len] if payload_len else data[off:]
     return _decode_tcp_header(frame_no, ts_ns, src, dst, tcp_bytes,
                               40 + payload_len, truncated, capture_id,
-                              declared_payload=(40 + payload_len) - off)
+                              declared_payload=(40 + payload_len) - off,
+                              ip_id=None, ttl=hop_limit, l2=l2)
 
 
 def _v6(b: bytes) -> str:
@@ -308,7 +327,8 @@ def _v6(b: bytes) -> str:
 
 
 def _decode_tcp_header(frame_no, ts_ns, src, dst, tcp, ip_total_len,
-                       truncated, capture_id, declared_payload):
+                       truncated, capture_id, declared_payload,
+                       ip_id=None, ttl=None, l2=(None, None, None)):
     if len(tcp) < 20:
         return None
     (sport, dport, seq, ack, off_flags, window, _cksum, _urg) = struct.unpack(
@@ -350,6 +370,7 @@ def _decode_tcp_header(frame_no, ts_ns, src, dst, tcp, ip_total_len,
         elif kind == 8 and len(body) == 8:
             ts_val, ts_ecr = struct.unpack(">II", body)
         i += olen
+    payload_crc = zlib.crc32(tcp[data_off:]) if payload_len else 0
     return TCPPacket(
         frame_number=frame_no, timestamp_ns=ts_ns, capture_id=capture_id,
         src_ip=src, dst_ip=dst, src_port=sport, dst_port=dport,
@@ -357,4 +378,6 @@ def _decode_tcp_header(frame_no, ts_ns, src, dst, tcp, ip_total_len,
         payload_len=payload_len, ip_total_len=ip_total_len, truncated=truncated,
         mss=mss, window_scale=wscale, sack_permitted=sack_permitted,
         sack_blocks=tuple(sack_blocks), ts_val=ts_val, ts_ecr=ts_ecr,
+        ip_id=ip_id, ttl=ttl, src_mac=l2[0], dst_mac=l2[1], vlan=l2[2],
+        payload_crc=payload_crc,
     )

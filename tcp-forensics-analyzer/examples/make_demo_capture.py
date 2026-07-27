@@ -96,7 +96,32 @@ f.s2c(d + 321_080_000, 50001, 1601, ACK,
       options=opt_sack([(1001, 1601)]))                # DSACK
 add(f)
 
-# --- session 7: mid-capture partial session ------------------------------
+# --- session 7: multi-point SPAN — same packets seen on two leafs --------
+f = Flow(client="10.10.10.27", server="10.20.20.55", cport=44000, sport=9200)
+from tests.pcap_builder import SYN, opt_mss, opt_sack_perm, opt_wscale
+opts = opt_mss(1460) + opt_sack_perm() + opt_wscale(7)
+t = T0 + 14_000_000_000
+f.c2s(t, 1000, 0, SYN, options=opts, ip_id=201, ttl=64,
+      src_mac="aa:aa:aa:00:00:01", vlan=100)
+f.c2s(t + 9_200, 1000, 0, SYN, options=opts, ip_id=201, ttl=63,
+      src_mac="cc:cc:cc:00:00:02", vlan=200)          # egress leaf
+f.s2c(t + 130_000, 60000, 1001, SYN | ACK, options=opts, ip_id=801, ttl=64)
+f.c2s(t + 260_000, 1001, 60001, ACK, ip_id=202, ttl=64,
+      src_mac="aa:aa:aa:00:00:01", vlan=100)
+f.c2s(t + 269_400, 1001, 60001, ACK, ip_id=202, ttl=63,
+      src_mac="cc:cc:cc:00:00:02", vlan=200)
+d = t + 300_000
+seq, ipid = 1001, 203
+for i in range(4):
+    f.c2s(d + i * 50_000, seq, 60001, ACK | PSH, b"M" * 700, ip_id=ipid,
+          ttl=64, src_mac="aa:aa:aa:00:00:01", vlan=100)
+    f.c2s(d + i * 50_000 + 8_000 + i * 900, seq, 60001, ACK | PSH, b"M" * 700,
+          ip_id=ipid, ttl=63, src_mac="cc:cc:cc:00:00:02", vlan=200)
+    seq += 700; ipid += 1
+    f.s2c(d + i * 50_000 + 120_000, 60000 + 1, seq, ACK, ip_id=802 + i)
+add(f)
+
+# --- session 8: mid-capture partial session ------------------------------
 f = Flow(client="10.10.10.26", server="10.20.20.54", cport=43500, sport=5201)
 d = T0 + 12_000_000_000
 seq = 900_000

@@ -69,6 +69,12 @@ class DirectionState:
         self.oversize_segments = 0                    # > MSS: TSO/GSO suspicion
         self.gap_overflow = 0
         self._window_full = False
+        # multi-point observation dedup: fingerprint of recent packets ->
+        # {frame, ts, sigs: set of observation-point signatures, last_sig}
+        self.recent_fp: dict[tuple, dict] = {}
+        self._fp_prune_at = 0
+        self.network_dups = 0
+        self.observation_events: list[dict] = []
 
     # ------------------------------------------------------------- helpers
     def rel(self, seq64: int | None) -> int | None:
@@ -143,6 +149,21 @@ class Session:
         self.last_ts = pkt.timestamp_ns
         if pkt.truncated:
             self.truncated_frames += 1
+
+        # Multi-point capture intelligence: the SAME packet captured on two
+        # leafs / SPAN sources / sides of a routed hop reappears with
+        # identical TCP content but possibly different MACs, VLAN and TTL.
+        # Recognize it BEFORE any TCP-state analysis so one packet never
+        # masquerades as a retransmission, duplicate or extra dup-ACK.
+        dup = self._observation_duplicate(pkt, snd)
+        if dup is not None:
+            snd.network_dups += 1
+            snd.packets += 1
+            snd.bytes += pkt.ip_total_len   # a real frame, but not new data
+            self._store_row(pkt, d, snd,
+                            snd.unwrapper.unwrap_no_advance(pkt.seq_raw),
+                            None, None, state_override="Capture-dup")
+            return
 
         snd.packets += 1
         snd.bytes += pkt.ip_total_len
@@ -587,8 +608,91 @@ class Session:
         seg = self._first_tx(rcv, start, end)
         return seg.frame_number if seg else None
 
+    def _observation_duplicate(self, pkt: TCPPacket,
+                               snd: DirectionState) -> dict | None:
+        """Same-packet-at-another-observation-point detection.
+
+        Fingerprint = full TCP content (seq, ack, flags, length, payload
+        CRC, window, SACK blocks, TCP timestamps) + IPv4 ID.  Each
+        fingerprint tracks the SET of observation-point signatures
+        (TTL, MACs, VLAN) it has been seen with inside the window:
+
+        * identical non-zero IP ID -> the same IP packet (a retransmission
+          is a NEW IP packet with a new ID) -> confirmed, whether the
+          signature is new (other leaf / routed hop) or repeated within the
+          tight duplicate window (same-point SPAN mirror duplication);
+        * IP ID zero/absent (Linux DF, IPv6): a NEW signature is the same
+          packet at another point ("likely"); a REPEATED signature is a new
+          packet generation at a known point (genuine dup-ACK, genuine
+          retransmission) and is NEVER deduplicated — the entry resets, so
+          interleaved multi-point captures cannot swallow real TCP events.
+
+        The observation delta itself is recorded — it is the traversal
+        latency between capture points.
+        """
+        fp = (pkt.seq_raw, pkt.ack_raw, pkt.flags, pkt.payload_len,
+              pkt.payload_crc, pkt.ip_id, pkt.ts_val, pkt.ts_ecr,
+              pkt.window_raw, pkt.sack_blocks)
+        sig = (pkt.ttl, pkt.src_mac, pkt.dst_mac, pkt.vlan)
+        now = pkt.timestamp_ns
+        if now >= snd._fp_prune_at:          # amortized cadence pruning
+            cutoff = now - self.cfg.observation_window_ns
+            snd.recent_fp = {k: v for k, v in snd.recent_fp.items()
+                             if v["ts"] >= cutoff}
+            snd._fp_prune_at = now + self.cfg.observation_window_ns // 2
+
+        entry = snd.recent_fp.get(fp)
+        fresh = {"frame": pkt.frame_number, "ts": now,
+                 "sigs": {sig}, "last_sig": sig}
+        if entry is None or now - entry["ts"] > self.cfg.observation_window_ns:
+            snd.recent_fp[fp] = fresh
+            return None
+
+        strong = pkt.ip_id not in (None, 0)
+        seen_sig = sig in entry["sigs"]
+        if strong:
+            if seen_sig and now - entry["ts"] > self.cfg.duplicate_window_ns:
+                # a repeat at the SAME point well after the mirror window is
+                # more plausibly a new packet with a colliding/random IP ID
+                # (RFC 6864 permits arbitrary IDs) — never guess
+                snd.recent_fp[fp] = fresh
+                return None
+            confidence = "confirmed"
+        elif seen_sig:
+            # weak IP ID + already-seen observation point: this is a new
+            # packet generation (genuine dup-ACK / retransmission)
+            snd.recent_fp[fp] = fresh
+            return None
+        else:
+            confidence = "likely"
+
+        prev_sig = entry["last_sig"]
+        diffs = []
+        if pkt.ttl is not None and prev_sig[0] is not None and pkt.ttl != prev_sig[0]:
+            diffs.append(f"TTL {prev_sig[0]}→{pkt.ttl}")
+        if pkt.src_mac and prev_sig[1] and pkt.src_mac != prev_sig[1]:
+            diffs.append("src MAC rewritten")
+        if pkt.dst_mac and prev_sig[2] and pkt.dst_mac != prev_sig[2]:
+            diffs.append("dst MAC rewritten")
+        if pkt.vlan != prev_sig[3] and (pkt.vlan is not None
+                                        or prev_sig[3] is not None):
+            diffs.append(f"VLAN {prev_sig[3]}→{pkt.vlan}")
+        ev = {"frame": pkt.frame_number, "ts": now,
+              "orig_frame": entry["frame"], "orig_ts": entry["ts"],
+              "delta_ns": now - entry["ts"],
+              "differs": ", ".join(diffs) if diffs else
+                         "L2/TTL identical (same-point SPAN duplication)",
+              "confidence": confidence}
+        snd.observation_events.append(ev)
+        entry["frame"] = pkt.frame_number
+        entry["ts"] = now
+        entry["sigs"].add(sig)
+        entry["last_sig"] = sig
+        return ev
+
     def _store_row(self, pkt: TCPPacket, d: str, snd: DirectionState,
-                   seq64: int, end64: int, seg: SegmentRecord | None) -> None:
+                   seq64: int, end64: int | None, seg: SegmentRecord | None,
+                   state_override: str | None = None) -> None:
         if len(self.packet_rows) >= self.row_limit:
             self.rows_dropped += 1
             return
@@ -597,7 +701,7 @@ class Session:
             snd.rel(seq64), snd.rel(end64), pkt.payload_len,
             flags_to_str(pkt.flags), pkt.ack_raw, pkt.window_raw,
             len(pkt.sack_blocks),
-            seg.state if seg else "",
+            state_override if state_override else (seg.state if seg else ""),
         ))
 
 

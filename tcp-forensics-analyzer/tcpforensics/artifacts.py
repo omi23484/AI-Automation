@@ -38,6 +38,19 @@ def session_artifacts(sess) -> list[str]:
         if una is not None and ds.snd_max is None and ds.packets == 0:
             warns.append(f"Direction {name} carried no packets — one-sided "
                          "(asymmetric) capture for this session.")
+    ndups = a.network_dups + b.network_dups
+    if ndups:
+        from .statistics import percentile
+        deltas = sorted(e["delta_ns"] for ds in (a, b)
+                        for e in ds.observation_events)
+        med = percentile(deltas, 50)   # same nearest-rank rule as the stats
+        warns.append(
+            f"{ndups} frames are the SAME packet observed more than once "
+            "(multi-point SPAN / mirrored feed / routed-hop capture) — "
+            "recognized by identical TCP content and IP ID with unchanged or "
+            "rewritten MAC/VLAN/TTL, and excluded from retransmission, "
+            "duplicate and dup-ACK statistics. Median inter-observation "
+            f"skew: {med} ns (see Overview → Multi-point observations).")
     if sess.dir_a.gap_overflow or sess.dir_b.gap_overflow:
         n = sess.dir_a.gap_overflow + sess.dir_b.gap_overflow
         warns.append(

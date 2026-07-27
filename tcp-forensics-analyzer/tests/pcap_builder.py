@@ -41,17 +41,28 @@ def _pad_opts(opts: bytes) -> bytes:
 # ------------------------------------------------------------------ frames
 def tcp_frame(src: str, dst: str, sport: int, dport: int, seq: int, ack: int,
               flags: int, payload: bytes = b"", window: int = 65535,
-              options: bytes = b"") -> bytes:
+              options: bytes = b"", ip_id: int = 0, ttl: int = 64,
+              src_mac: str = "04:04:04:04:04:04",
+              dst_mac: str = "02:02:02:02:02:02",
+              vlan: int | None = None) -> bytes:
     options = _pad_opts(options)
     data_off = (20 + len(options)) // 4
     tcp = struct.pack(">HHIIHHHH", sport, dport, seq & 0xFFFFFFFF,
                       ack & 0xFFFFFFFF, (data_off << 12) | flags,
                       window, 0, 0) + options + payload
     total_len = 20 + len(tcp)
-    ip = struct.pack(">BBHHHBBH4s4s", 0x45, 0, total_len, 0, 0x4000, 64, 6, 0,
-                     _ip(src), _ip(dst))
-    eth = b"\x02" * 6 + b"\x04" * 6 + b"\x08\x00"
+    ip = struct.pack(">BBHHHBBH4s4s", 0x45, 0, total_len, ip_id & 0xFFFF,
+                     0x4000, ttl, 6, 0, _ip(src), _ip(dst))
+    eth = _mac(dst_mac) + _mac(src_mac)
+    if vlan is not None:
+        eth += struct.pack(">HH", 0x8100, vlan & 0x0FFF) + b"\x08\x00"
+    else:
+        eth += b"\x08\x00"
     return eth + ip + tcp
+
+
+def _mac(m: str) -> bytes:
+    return bytes(int(x, 16) for x in m.split(":"))
 
 
 def _ip(a: str) -> bytes:
@@ -118,13 +129,15 @@ class Flow:
     def add(self, ts_ns: int, frame: bytes) -> None:
         self.frames.append((ts_ns, frame))
 
-    def c2s(self, ts, seq, ack, flags, payload=b"", window=65535, options=b""):
+    def c2s(self, ts, seq, ack, flags, payload=b"", window=65535, options=b"",
+            **l23):
         self.add(ts, tcp_frame(self.client, self.server, self.cport, self.sport,
-                               seq, ack, flags, payload, window, options))
+                               seq, ack, flags, payload, window, options, **l23))
 
-    def s2c(self, ts, seq, ack, flags, payload=b"", window=65535, options=b""):
+    def s2c(self, ts, seq, ack, flags, payload=b"", window=65535, options=b"",
+            **l23):
         self.add(ts, tcp_frame(self.server, self.client, self.sport, self.cport,
-                               seq, ack, flags, payload, window, options))
+                               seq, ack, flags, payload, window, options, **l23))
 
     def handshake(self, t0: int, rtt_ns: int = 100_000,
                   client_opts: bytes | None = None,

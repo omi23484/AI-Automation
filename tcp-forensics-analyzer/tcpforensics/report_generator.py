@@ -230,7 +230,7 @@ canvas{background:var(--surface);border:1px solid var(--border);border-radius:9p
 .state-Retransmitted{color:var(--c-retx)}.state-Duplicate{color:var(--c-loss)}
 .state-Out-of-order{color:var(--warn)}.state-Recovered{color:var(--ok)}
 .state-Ambiguous,.state-Missing{color:var(--warn)}
-.state-Keep-alive,.state-Window-probe{color:var(--dim)}
+.state-Keep-alive,.state-Window-probe,.state-Capture-dup{color:var(--dim)}
 .panel{scroll-margin-top:56px}
 .tooltip{position:fixed;background:rgba(10,14,26,.92);border:1px solid var(--border2);
   border-radius:8px;padding:7px 10px;font-size:11px;pointer-events:none;z-index:99;
@@ -284,6 +284,7 @@ canvas{background:var(--surface);border:1px solid var(--border);border-radius:9p
   <a href="#lossPanel">Loss</a>
   <a href="#detail" id="navSess" style="display:none"></a>
   <span class="spacer"></span>
+  <span class="seg" role="group" aria-label="sequence display" id="seqSeg" title="relative or raw 32-bit SEQ/ACK numbers"></span>
   <span class="seg" role="group" aria-label="display unit" id="unitSeg"></span>
 </nav>
 <div class="wrap">
@@ -333,6 +334,7 @@ const C = {rtt:'#3987e5', ack:'#199e70', retx:'#e66767',
            loss:'#d95926', dup:'#d55181', zw:'#9085e9',
            acked:'#199e70', sacked:'#9085e9', hole:'#e66767', out:'#2a3040'};
 let UNIT = 'ns';           // ns | us | ms
+let SEQMODE = 'rel';       // rel | raw — display only; engine stays 64-bit
 let curSess = null, curTab = 'overview';
 let TILES_ANIMATED = false;
 
@@ -386,6 +388,13 @@ function fmtBytes(b){
   return Math.round(b)+' B';
 }
 function pct(x){return x==null?'-':x.toFixed(2)+'%';}
+function seqBase(s,dir){return (dir==='A->B'?s.dir_a:s.dir_b).seq_base_raw||0;}
+function fmtSeq(s,dir,v){ // relative <-> raw 32-bit sequence display
+  if(v==null)return '-';
+  if(SEQMODE==='rel')return fmtInt(v);
+  return fmtInt((seqBase(s,dir)+v)%4294967296);
+}
+function oppDir(d){return d==='A->B'?'B->A':'A->B';}
 function tri(v){return v==null?'unknown':(v?'yes':'no');}
 
 /* ------------------------------------------------------------- header */
@@ -412,6 +421,9 @@ function renderHeader(){
    ' &mdash; display unit is presentation only; internal values remain integer nanoseconds</div>';
 }
 function renderNav(){
+  $('#seqSeg').innerHTML=['rel','raw'].map(m=>
+    '<button class="'+(SEQMODE===m?'on':'')+'" onclick="setSeqMode(\''+m+'\')" '+
+    'aria-pressed="'+(SEQMODE===m)+'">SEQ '+m+'</button>').join('');
   $('#unitSeg').innerHTML=['ns','us','ms'].map(u=>
     '<button class="'+(UNIT===u?'on':'')+'" onclick="setUnit(\''+u+'\')" '+
     'aria-pressed="'+(UNIT===u)+'">'+(u==='us'?'µs':u)+'</button>').join('');
@@ -420,6 +432,7 @@ function renderNav(){
   else nl.style.display='none';
 }
 function setUnit(u){UNIT=u;renderAll();}
+function setSeqMode(m){SEQMODE=m;renderAll();}
 
 /* -------------------------------------------------------------- tiles */
 function renderTiles(){
@@ -436,6 +449,7 @@ function renderTiles(){
     ['Dup ACKs',t.dup_acks,fmtInt,''],
     ['Out-of-order',t.ooo_packets,fmtInt,''],
     ['Zero-window',t.zero_window_events,fmtInt,t.zero_window_events?'bad':'ok'],
+    ['Multi-point dups',t.network_dups,fmtInt,''],
     ['Median RTT',r.median,fmtNs,''],
     ['P95 RTT',r.p95,fmtNs,''],
     ['P99 RTT',r.p99,fmtNs,''],
@@ -654,7 +668,7 @@ function renderLossTable(){
   allLoss().forEach(({s,e},i)=>{
     h+='<tr class="clickable" style="--i:'+Math.min(i,30)+'" onclick="openSession('+s.id+',\'loss\')">'+
      '<td>'+esc(e.loss_id)+'</td><td>#'+s.id+'</td><td>'+e.dir+'</td>'+
-     '<td class="num">'+fmtInt(e.seq)+'–'+fmtInt(e.end)+'</td>'+
+     '<td class="num">'+fmtSeq(s,e.dir,e.seq)+'–'+fmtSeq(s,e.dir,e.end)+'</td>'+
      '<td class="num">'+fmtInt(e.bytes)+'</td>'+
      '<td class="num">'+fmtTs(e.original_tx)+'</td>'+
      '<td class="num">'+fmtTs(e.evidence_ts)+'</td>'+
@@ -739,6 +753,23 @@ function tabOverview(s){
     '<b>'+esc(v.verdict)+'</b><div class="ev">'+esc(v.evidence)+'</div></div>';});
   if(s.warnings.length){h+='<h3>Capture artifact warnings</h3>';
     for(const w of s.warnings)h+='<div class="warnbox">⚠ '+esc(w)+'</div>';}
+  if(s.stats.network_dups){
+    h+='<h3>Multi-point observations <span class="mut" style="text-transform:none">— the same packet captured at more than one point (SPAN/leaf-to-leaf); excluded from retransmission &amp; dup-ACK statistics</span></h3>'+
+     '<div>Inter-observation skew: '+statLine(s.stats.observation_skew)+'</div>'+
+     '<div class="scroll" style="max-height:260px;margin-top:8px"><table><tr>'+
+     '<th>Frame</th><th>Observed</th><th>First seen (frame)</th><th>Skew Δ</th><th>Dir</th><th>What changed</th><th>Confidence</th></tr>';
+    s.observation_events.slice(0,2000).forEach((e,i)=>{
+      h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+e.frame+'</td>'+
+       '<td class="num">'+fmtTs(e.ts)+'</td>'+
+       '<td class="num">'+fmtTs(e.orig_ts)+' <span class="mut">#'+e.orig_frame+'</span></td>'+
+       '<td class="num" style="color:var(--accent)">'+fmtNs(e.delta_ns)+'</td>'+
+       '<td>'+e.dir+'</td><td style="white-space:normal">'+esc(e.differs)+'</td>'+
+       '<td>'+(e.confidence==='confirmed'
+         ?'<span class="badge b-ok">confirmed (same IP ID)</span>'
+         :'<span class="badge b-warn">likely (L2/TTL rewrite)</span>')+'</td></tr>';
+    });
+    h+='</table></div>';
+  }
   return h;
 }
 
@@ -761,13 +792,17 @@ function renderSeqRows(){
   let rows=s.segments;
   if(dir)rows=rows.filter(r=>r.dir===dir);
   if(st)rows=rows.filter(r=>r.state===st);
-  if(q!==''&&!isNaN(+q)){const v=+q;rows=rows.filter(r=>r.seq<=v&&v<r.end||r.seq===v||r.end===v);}
+  if(q!==''&&!isNaN(+q)){const v=+q;rows=rows.filter(r=>{
+    let qq=v;
+    if(SEQMODE==='raw'){qq=(v-seqBase(s,r.dir))%4294967296;if(qq<0)qq+=4294967296;}
+    return r.seq<=qq&&qq<r.end||r.seq===qq||r.end===qq
+      ||(SEQMODE==='raw'&&(r.seq<=qq+4294967296&&qq+4294967296<r.end));});}
   let h='<tr><th>Time</th><th>Frame</th><th>Dir</th><th>SEQ start</th><th>SEQ end</th><th>NEXTSEQ</th>'+
    '<th>Len</th><th>Flags</th><th>State</th><th>Orig frame</th><th>Retx delay</th>'+
    '<th>ACKed by</th><th>DATA→ACK</th><th>RTT</th><th>SACKed by</th></tr>';
   rows.slice(0,4000).forEach((r,i)=>{
     h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+fmtTs(r.ts)+'</td><td class="num">'+r.frame+'</td><td>'+r.dir+'</td>'+
-     '<td class="num">'+fmtInt(r.seq)+'</td><td class="num">'+fmtInt(r.end)+'</td><td class="num">'+fmtInt(r.end)+'</td>'+
+     '<td class="num">'+fmtSeq(s,r.dir,r.seq)+'</td><td class="num">'+fmtSeq(s,r.dir,r.end)+'</td><td class="num">'+fmtSeq(s,r.dir,r.end)+'</td>'+
      '<td class="num">'+r.len+'</td><td>'+r.flags+'</td>'+
      '<td class="state-'+r.state.replace(/ /g,'-')+'">'+r.state+(r.retx_kind?' <span class="mut">('+r.retx_kind+')</span>':'')+'</td>'+
      '<td class="num">'+(r.retx_of??'-')+'</td><td class="num">'+fmtNs(r.retx_delay)+'</td>'+
@@ -787,11 +822,11 @@ function tabAck(s){
    '<th>Dir</th><th>ACK</th><th>First frame</th><th>First TS</th><th>Dup count</th><th>Inter-ACK gaps</th>'+
    '<th>SACK blocks</th><th>Missing range</th><th>Retrans frame</th><th>Time to retrans</th><th>Time to recovery</th></tr>';
   s.dup_ack_trains.forEach((t,i)=>{
-    h+='<tr style="--i:'+i+'"><td>'+t.dir+'</td><td class="num">'+fmtInt(t.ack)+'</td><td class="num">'+t.first_frame+'</td>'+
+    h+='<tr style="--i:'+i+'"><td>'+t.dir+'</td><td class="num">'+fmtSeq(s,oppDir(t.dir),t.ack)+'</td><td class="num">'+t.first_frame+'</td>'+
      '<td class="num">'+fmtTs(t.first_ts)+'</td><td class="num">'+t.count+'</td>'+
      '<td class="num">'+t.gaps_ns.slice(0,6).map(g=>fmtNs(g)).join(', ')+(t.gaps_ns.length>6?' …':'')+'</td>'+
      '<td class="num">'+t.sack_blocks+'</td>'+
-     '<td class="num">'+(t.missing_seq!=null?fmtInt(t.missing_seq)+'–'+fmtInt(t.missing_end):'-')+'</td>'+
+     '<td class="num">'+(t.missing_seq!=null?fmtSeq(s,oppDir(t.dir),t.missing_seq)+'–'+fmtSeq(s,oppDir(t.dir),t.missing_end):'-')+'</td>'+
      '<td class="num">'+(t.retrans_frame??'-')+'</td><td class="num">'+fmtNs(t.time_to_retrans)+'</td>'+
      '<td class="num">'+fmtNs(t.time_to_recovery)+'</td></tr>';
   });
@@ -829,8 +864,8 @@ function tabSack(s){
    '<th>Frame</th><th>Time</th><th>Data dir</th><th>Cum ACK</th><th>#Blocks</th><th>Blocks (left–right)</th><th>DSACK</th></tr>';
   s.sack_records.slice(0,3000).forEach((r,i)=>{
     h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+r.frame+'</td><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.data_dir+'</td>'+
-     '<td class="num">'+fmtInt(r.ack)+'</td><td class="num">'+r.blocks.length+'</td>'+
-     '<td class="num">'+r.blocks.map(b=>fmtInt(b[0])+'–'+fmtInt(b[1])).join(' | ')+'</td>'+
+     '<td class="num">'+fmtSeq(s,r.data_dir,r.ack)+'</td><td class="num">'+r.blocks.length+'</td>'+
+     '<td class="num">'+r.blocks.map(b=>fmtSeq(s,r.data_dir,b[0])+'–'+fmtSeq(s,r.data_dir,b[1])).join(' | ')+'</td>'+
      '<td>'+(r.dsack?'<span class="badge b-warn">DSACK</span> <span class="mut">'+esc(r.dsack_reason||'')+'</span>':'-')+'</td></tr>';
   });
   if(!s.sack_records.length)h+='<tr><td colspan="7" class="mut">no SACK options observed</td></tr>';
@@ -857,7 +892,7 @@ function sbDraw(id){
   const dir=id==='ab'?'A->B':'B->A';
   const snaps=curSess.sack_snapshots[dir];const i=+$('#sb_'+id).value;const sn=snaps[i];
   $('#sbInfo_'+id).textContent=' event '+(i+1)+'/'+snaps.length+' frame '+sn.frame+' '+fmtTs(sn.ts)+
-    ' ACK='+fmtInt(sn.ack)+(sn.dsack?' [DSACK]':'')+(sn.ack_advanced?' [ACK advanced]':'');
+    ' ACK='+fmtSeq(curSess,dir,sn.ack)+(sn.dsack?' [DSACK]':'')+(sn.ack_advanced?' [ACK advanced]':'');
   const cv=$('#sbCanvas_'+id),ctx=cv.getContext('2d');
   let lo=sn.ack,hi=sn.ack+1;
   for(const [a,b] of sn.sacked){lo=Math.min(lo,a);hi=Math.max(hi,b);}
@@ -881,13 +916,13 @@ function sbDraw(id){
     for(const [a,b] of sn.holes){ctx.fillStyle=C.hole;ctx.fillRect(X(a),40,Math.max(2,X(b)-X(a)),28);}
     ctx.globalAlpha=1;
     ctx.fillStyle='#8b95a8';ctx.font='10px monospace';
-    ctx.fillText(fmtInt(Math.round(L)),30,92);
-    const t2=fmtInt(Math.round(H));ctx.fillText(t2,cv.width-30-ctx.measureText(t2).width,92);
-    ctx.fillStyle='#eef2f8';ctx.fillText('ACK '+fmtInt(sn.ack),Math.min(cv.width-100,Math.max(30,X(A))),30);
+    ctx.fillText(fmtSeq(curSess,dir,Math.round(L)),30,92);
+    const t2=fmtSeq(curSess,dir,Math.round(H));ctx.fillText(t2,cv.width-30-ctx.measureText(t2).width,92);
+    ctx.fillStyle='#eef2f8';ctx.fillText('ACK '+fmtSeq(curSess,dir,sn.ack),Math.min(cv.width-100,Math.max(30,X(A))),30);
     ctx.strokeStyle='#eef2f8';ctx.lineWidth=1.5;
     ctx.beginPath();ctx.moveTo(X(A),34);ctx.lineTo(X(A),72);ctx.stroke();
     for(const [a,b] of sn.holes){ctx.fillStyle=C.hole;
-      ctx.fillText('hole '+fmtInt(a)+'–'+fmtInt(b),Math.max(30,Math.min(cv.width-170,X(a))),105);}
+      ctx.fillText('hole '+fmtSeq(curSess,dir,a)+'–'+fmtSeq(curSess,dir,b),Math.max(30,Math.min(cv.width-170,X(a))),105);}
   };
   if(prev)animCanvas(cv,380,render);else render(1);
 }
@@ -902,7 +937,7 @@ function tabLoss(s){
    '<th>Mechanism</th><th>SACK reports</th><th>DupACKs</th><th>Extra holes</th><th>Class</th><th></th></tr>';
   s.loss_events.forEach((e,i)=>{
     h+='<tr style="--i:'+Math.min(i,30)+'"><td>'+esc(e.loss_id)+'</td><td>'+e.dir+'</td>'+
-     '<td class="num">'+fmtInt(e.seq)+'–'+fmtInt(e.end)+'</td><td class="num">'+e.bytes+'</td>'+
+     '<td class="num">'+fmtSeq(s,e.dir,e.seq)+'–'+fmtSeq(s,e.dir,e.end)+'</td><td class="num">'+e.bytes+'</td>'+
      '<td class="num">'+fmtTs(e.original_tx)+(e.original_frame?' <span class="mut">#'+e.original_frame+'</span>':'')+'</td>'+
      '<td class="num">'+fmtTs(e.evidence_ts)+' <span class="mut">'+esc(e.evidence_kind)+' #'+(e.evidence_frame??'-')+'</span></td>'+
      '<td class="num">'+fmtTs(e.retrans_ts)+(e.retrans_frame?' <span class="mut">#'+e.retrans_frame+'</span>':'')+
@@ -929,7 +964,7 @@ function tabRetrans(s){
    '<th>DupACKs before</th><th>SACK</th><th>Evidence</th></tr>';
   s.retrans_events.forEach((r,i)=>{
     h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+r.frame+'</td><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.dir+'</td>'+
-     '<td class="num">'+fmtInt(r.seq)+'–'+fmtInt(r.end)+'</td><td class="num">'+r.bytes+'</td>'+
+     '<td class="num">'+fmtSeq(s,r.dir,r.seq)+'–'+fmtSeq(s,r.dir,r.end)+'</td><td class="num">'+r.bytes+'</td>'+
      '<td class="state-Retransmitted">'+esc(r.class)+'</td>'+
      '<td class="num">'+(r.orig_frame?'#'+r.orig_frame+' '+fmtTs(r.orig_ts):'-')+'</td>'+
      '<td class="num">'+fmtNs(r.delay)+'</td><td class="num">'+r.dup_acks+'</td>'+
@@ -948,7 +983,7 @@ function tabRtt(s){
    '<th>Time</th><th>Kind</th><th>Dir</th><th>SEQ range</th><th>Data frame</th><th>ACK frame</th><th>RTT</th></tr>';
   s.rtt_samples.slice(0,3000).forEach((r,i)=>{
     h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.kind+'</td><td>'+r.dir+'</td>'+
-     '<td class="num">'+fmtInt(r.seq)+'–'+fmtInt(r.end)+'</td>'+
+     '<td class="num">'+fmtSeq(s,r.dir,r.seq)+'–'+fmtSeq(s,r.dir,r.end)+'</td>'+
      '<td class="num">'+r.frame_data+'</td><td class="num">'+r.frame_ack+'</td>'+
      '<td class="num">'+fmtNs(r.rtt)+'</td></tr>';
   });
@@ -957,7 +992,7 @@ function tabRtt(s){
     h+='<h3>RTT AMBIGUOUS (excluded, retained for forensics)</h3><div class="scroll" style="max-height:200px"><table><tr>'+
      '<th>ACK time</th><th>Dir</th><th>SEQ range</th><th>Data frame</th><th>ACK frame</th><th>Reason</th></tr>';
     for(const r of s.rtt_ambiguous)
-      h+='<tr><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.dir+'</td><td class="num">'+fmtInt(r.seq)+'–'+fmtInt(r.end)+'</td>'+
+      h+='<tr><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.dir+'</td><td class="num">'+fmtSeq(s,r.dir,r.seq)+'–'+fmtSeq(s,r.dir,r.end)+'</td>'+
        '<td class="num">'+r.frame_data+'</td><td class="num">'+r.frame_ack+'</td><td style="white-space:normal">'+esc(r.reason)+'</td></tr>';
     h+='</table></div>';
   }
@@ -1013,13 +1048,14 @@ function drawLadder(animate){
     let color='#8b95a8';
     if(state==='Retransmitted')color=C.retx;
     else if(state==='Duplicate')color=C.loss;
+    else if(state==='Capture-dup')color='#5a6478';
     else if(state==='Out-of-order')color=C.dup;
     else if(len>0)color=C.rtt;
     else if(sackn>0)color=C.zw;
     else if(flags.includes('SYN')||flags.includes('FIN')||flags.includes('RST'))color='#eef2f8';
-    let lab=flags;
-    if(len>0)lab='SEQ '+fmtInt(seq)+'–'+fmtInt(end)+' ('+len+'B) '+flags;
-    else if(ack!=null)lab='ACK'+(sackn>0?'+SACK×'+sackn:'')+' '+flags;
+    let lab=flags+(sackn>0?' +SACK×'+sackn:'');
+    if(state==='Capture-dup')lab+=' [same packet, 2nd observation]';
+    else if(len>0)lab=flags+' SEQ '+fmtSeq(s,dir,seq)+'–'+fmtSeq(s,dir,end)+' ('+len+'B)';
     if(state==='Retransmitted')lab+=' [RETX]';
     if(state==='Out-of-order')lab+=' [OOO]';
     ladderRows.push({y,p});
@@ -1047,6 +1083,14 @@ function drawLadder(animate){
         ctx.fillText(m.lab,(L+R)/2-ctx.measureText(m.lab).width/2,m.y-3);
         ctx.fillStyle='#8b95a8';
         ctx.fillText(fmtTs(ts),8,m.y+3);
+        // inter-packet latency between this arrow and the previous one —
+        // the "SYN, +Δ, SYN/ACK, +Δ, ACK, +Δ, PSH ..." reading of the flow
+        if(i>0&&step>=15){
+          const dt=ts-rowMeta[i-1].p[1];
+          ctx.fillStyle='#7fb3f5';ctx.font='10px monospace';
+          ctx.fillText('Δ '+fmtNs(dt),8,m.y-step/2+3.5);
+          ctx.font='11px monospace';
+        }
       }
     });
   };
@@ -1066,7 +1110,7 @@ function ladderClick(ev){
   const [frame,ts,dir,seq,end,len,flags,ack,win,sackn,state]=b.p;
   const seg=curSess.segments.find(g=>g.frame===frame);
   let h='<b>Frame '+frame+'</b> '+fmtTs(ts)+' ('+esc(dir)+')<br>'+
-   'SEQ '+fmtInt(seq)+' → NEXTSEQ '+fmtInt(end)+' | payload '+len+' B | flags '+esc(flags)+
+   'SEQ '+fmtSeq(curSess,dir,seq)+' → NEXTSEQ '+fmtSeq(curSess,dir,end)+' | payload '+len+' B | flags '+esc(flags)+
    ' | ACK(raw) '+fmtInt(ack)+' | window(raw) '+fmtInt(win)+(sackn?' | SACK blocks: '+sackn:'');
   if(seg){
     h+='<br>state: '+esc(seg.state);
@@ -1138,11 +1182,13 @@ function latHover(ev){
 function tabPackets(s){
   let h='';
   if(s.packets_truncated)h+='<div class="warnbox">'+fmtInt(s.packets_truncated)+' packet rows omitted from the embedded report (large session) — the sequence ledger and events above remain complete.</div>';
-  h+='<div class="scroll" style="max-height:560px"><table><tr><th>Frame</th><th>Time</th><th>Dir</th>'+
-   '<th>SEQ(rel)</th><th>End</th><th>Len</th><th>Flags</th><th>ACK(raw)</th><th>Win(raw)</th><th>SACK</th><th>State</th></tr>';
+  h+='<div class="scroll" style="max-height:560px"><table><tr><th>Frame</th><th>Time</th><th>Δ prev</th><th>Dir</th>'+
+   '<th>SEQ('+SEQMODE+')</th><th>End</th><th>Len</th><th>Flags</th><th>ACK(raw)</th><th>Win(raw)</th><th>SACK</th><th>State</th></tr>';
   s.packets.slice(0,6000).forEach((p,i)=>{
-    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+p[0]+'</td><td class="num">'+fmtTs(p[1])+'</td><td>'+p[2]+'</td>'+
-     '<td class="num">'+fmtInt(p[3])+'</td><td class="num">'+fmtInt(p[4])+'</td><td class="num">'+p[5]+'</td>'+
+    const dt=i>0?p[1]-s.packets[i-1][1]:null;
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+p[0]+'</td><td class="num">'+fmtTs(p[1])+'</td>'+
+     '<td class="num" style="color:var(--accent)">'+(dt==null?'-':'+'+fmtNs(dt))+'</td><td>'+p[2]+'</td>'+
+     '<td class="num">'+fmtSeq(s,p[2],p[3])+'</td><td class="num">'+fmtSeq(s,p[2],p[4])+'</td><td class="num">'+p[5]+'</td>'+
      '<td>'+p[6]+'</td><td class="num">'+fmtInt(p[7])+'</td><td class="num">'+fmtInt(p[8])+'</td>'+
      '<td class="num">'+(p[9]||'-')+'</td><td class="state-'+String(p[10]).replace(/ /g,'-')+'">'+ (p[10]||'-')+'</td></tr>';
   });

@@ -62,6 +62,7 @@ def analyze_capture(path: str, *, capture_id: int = 0, capture_point: str = "",
         "sack_events": 0, "dsack_events": 0, "loss_events": 0,
         "recovered_losses": 0, "dup_acks": 0, "ooo_packets": 0,
         "dup_packets": 0, "zero_window_events": 0, "resets": 0,
+        "network_dups": 0,
     }
     for sess in mgr.sessions:
         sj = _session_to_json(sess, verdict_cfg)
@@ -78,6 +79,7 @@ def analyze_capture(path: str, *, capture_id: int = 0, capture_point: str = "",
         totals["ooo_packets"] += st["ooo_packets"]
         totals["dup_packets"] += st["dup_packets"]
         totals["zero_window_events"] += st["zero_window_events"]
+        totals["network_dups"] += st["network_dups"]
         totals["resets"] += 1 if st["rst"] else 0
         global_rtt.extend(s["rtt"] for s in sj["rtt_samples"])
         global_recovery.extend(
@@ -184,11 +186,14 @@ def _dir_stats(ds: DirectionState) -> dict:
         "retrans_bytes": ds.retrans_bytes,
         "dup_packets": ds.dup_packets, "ooo_packets": ds.ooo_packets,
         "keepalives": ds.keepalive_count,
+        "network_dups": ds.network_dups,
         "sack_events": len(ds.scoreboard.records),
         "sack_blocks": ds.scoreboard.sack_block_total,
         "sack_holes": len(ds.scoreboard.hole_history),
         "dsack_events": ds.scoreboard.dsack_count,
         "zero_window_events": ds.window.zero_window_count,
+        "seq_base_raw": (ds.rel_base & 0xFFFFFFFF
+                         if ds.rel_base is not None else 0),
         "window_min": ds.window.min_window, "window_max": ds.window.max_window,
         "window_scale": ds.ws,
         "mss": ds.mss,
@@ -312,6 +317,12 @@ def _session_to_json(sess: Session, verdict_cfg: VerdictConfig) -> dict:
                 "time_to_retrans": t.time_to_retrans_ns,
                 "time_to_recovery": t.time_to_recovery_ns})
 
+    observation_events = []
+    for ds, dname in ((a, "A->B"), (b, "B->A")):
+        for ev in ds.observation_events:
+            observation_events.append(dict(ev, dir=dname))
+    obs_deltas = [e["delta_ns"] for e in observation_events]
+
     window_events = []
     for ds in (a, b):
         for w in ds.window.events:
@@ -384,6 +395,8 @@ def _session_to_json(sess: Session, verdict_cfg: VerdictConfig) -> dict:
         "spurious_retrans": spurious,
         "zero_window_events": (da["zero_window_events"]
                                + db["zero_window_events"]),
+        "network_dups": da["network_dups"] + db["network_dups"],
+        "observation_skew": summarize(obs_deltas),
         "rst": a.rst_seen or b.rst_seen,
         "rst_frame": sess.rst_frame,
         "fin": a.fin_seen or b.fin_seen,
@@ -435,6 +448,7 @@ def _session_to_json(sess: Session, verdict_cfg: VerdictConfig) -> dict:
         "retrans_events": retrans_events,
         "dup_ack_trains": dup_trains,
         "window_events": window_events,
+        "observation_events": observation_events,
         "sack_records": sack_records,
         "sack_snapshots": sack_snapshots,
         "packets": [list(r) for r in sess.packet_rows],
