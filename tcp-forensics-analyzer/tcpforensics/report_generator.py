@@ -466,6 +466,7 @@ function renderTiles(){
 
 /* ------------------------------------------------------------- charts */
 function drawHist(canvas,h,color){
+  if(!canvas)return;   // tab switched away before a deferred draw ran
   const ctx=canvas.getContext('2d');
   if(!h||!h.counts||!h.counts.length){
     ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -503,6 +504,7 @@ function drawHist(canvas,h,color){
   });
 }
 function drawCdf(canvas,h,color){
+  if(!canvas)return;
   const ctx=canvas.getContext('2d');
   if(!h||!h.cdf||!h.cdf.length){
     ctx.clearRect(0,0,canvas.width,canvas.height);
