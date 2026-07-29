@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v52</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v53</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -447,8 +447,23 @@ const DEFAULT_CFG={
   // time zone for display/analysis. Applied at parse time (re-upload to re-apply).
   inputTz:'aswritten',
   mergeHostnames:false, // auto-merge a link split across a short hostname and its FQDN
-  institution:'', reportPreparedBy:'', reportReviewedBy:'', reportApprovedBy:''
+  institution:'', reportPreparedBy:'', reportReviewedBy:'', reportApprovedBy:'',
+  // User-defined custom fields (e.g. ISP, Purpose, Vendor, Cost centre). Each is
+  // {key,label}: mappable from an uploaded column, editable per link, and emitted as a
+  // column/row in every Excel export and PDF report. Add/remove in Admin.
+  customFields:[]
 };
+// --- custom fields ---------------------------------------------------------------
+const cfList=()=>((S.cfg&&S.cfg.customFields)||[]);
+const cfKey=label=>'cf_'+norm(label).slice(0,24);
+// Effective value for a link: per-link override (Link settings) wins over the value
+// mapped from the uploaded file.
+function cfVal(r,key){
+  const ov=(S.ifmeta[r.ifid]||{}).cf||{};
+  if(ov[key]!=null&&String(ov[key]).trim()!=='')return String(ov[key]).trim();
+  const fromFile=(r&&r.cf)||{};
+  return fromFile[key]!=null?String(fromFile[key]).trim():'';
+}
 const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},rca:{},watch:[],watchWin:'all',
   role:'Admin', view:'exec', scope:{}, analytics:null, staged:null, aiMode:'tech'};
 
@@ -522,6 +537,9 @@ const FIELD_LABELS={
   ptxpct:'Peak Transmit %',prxpct:'Peak Receive %',
   site:'Site (from file)',ip:'IP address',linkname:'Link name / circuit'
 };
+// All mappable fields = the built-ins plus any user-defined custom fields, so custom
+// fields appear in the upload Column-mapping UI exactly like native ones.
+function fieldLabels(){const o=Object.assign({},FIELD_LABELS);for(const c of cfList())o[c.key]=c.label+' (custom)';return o;}
 const REQUIRED_FIELDS=['device','interface','ts'];
 const norm=s=>String(s==null?'':s).toLowerCase().replace(/[^a-z0-9]/g,'');
 const UNIT_RE=/(\d+(?:\.\d+)?)\s*(t|g|m|k)?\s*(b(?:it|ps|\/s)?|bytes?|o(?:ctet)?s?|bps)/i;
@@ -640,6 +658,14 @@ function resolveColumns(headers,rows){
   // Global greedy assignment: the strongest (field, column) pairs win first,
   // so an exact "Received Bandwidth"→speedrx beats a partial "received…"→rx.
   const usedH=new Set(),usedF=new Set(),map={},conf={};
+  // Custom fields claim an EXACT header-name match before the built-in greedy pass, so a
+  // user field named "ISP" is not stolen by a fuzzy built-in (e.g. "ip"). Weaker custom
+  // matches are resolved after the built-ins, on whatever columns remain.
+  for(const c of cfList()){
+    const target=norm(c.label);if(!target)continue;
+    const h=H.find(x=>!usedH.has(x.i)&&x.n===target);
+    if(h){map[c.key]=h.i;conf[c.key]=1;usedH.add(h.i);}
+  }
   const order=['ts','device','interface','speed','speedtx','speedrx','tx','rx','ptx','prx','util','txpct','rxpct','ptxpct','prxpct','site','ip','linkname'];
   const PCT_FIELDS=new Set(['util','txpct','rxpct','ptxpct','prxpct']);
   const RATE_FIELDS=new Set(['tx','rx','ptx','prx']);
@@ -662,6 +688,19 @@ function resolveColumns(headers,rows){
   }
   // fallback: if no ts column matched but a column is mostly dates
   if(map.ts==null){const d=shape.map((s,i)=>({i:H[i].i,d:s.date||0})).sort((a,b)=>b.d-a.d)[0];if(d&&d.d>0.6){map.ts=d.i;conf.ts=d.d;}}
+  // Custom fields: match a still-unused column against the field's label (exact →
+  // contains → fuzzy). Always editable in the mapping UI, so a miss is easy to fix.
+  for(const c of cfList()){
+    if(map[c.key]!=null)continue;               // already claimed by the exact-match pass
+    const target=norm(c.label);if(!target)continue;
+    let best=null,bs=0;
+    for(const h of H){
+      if(usedH.has(h.i))continue;
+      let s=h.n===target?1:(h.n.includes(target)||target.includes(h.n))?0.82:simRatio(h.n,target)*0.75;
+      if(s>bs){bs=s;best=h.i;}
+    }
+    if(best!=null&&bs>=0.6){map[c.key]=best;conf[c.key]=bs;usedH.add(best);}
+  }
   return {map,conf,headers:H,shape};
 }
 
@@ -670,6 +709,7 @@ function buildSamples(rows,resolved,srcName,batchId){
   const hInfo=f=>map[f]!=null?(headers.find(h=>h.i===map[f])||{}).unit:null;
   const units={tx:hInfo('tx'),rx:hInfo('rx'),ptx:hInfo('ptx'),prx:hInfo('prx')};
   const out=[],issues={corrupt:0,noTs:0,noSpeed:0,utilRecalc:0,cellUnit:0};
+  const CFS=cfList();
   let scaleGuessNote=null;
   const val=(r,f)=>map[f]!=null?r[map[f]]:null;
   const num=(r,f)=>{const v=val(r,f);if(v==null||v==='')return null;const n=parseFloat(String(v).replace(/[^\d.eE+-]/g,''));return isNaN(n)?null:n;};
@@ -680,6 +720,9 @@ function buildSamples(rows,resolved,srcName,batchId){
     if(!dev||!intf)continue;
     const st=String(val(r,'site')??'').trim(),ipv=String(val(r,'ip')??'').trim(),ln=String(val(r,'linkname')??'').trim();
     if(st||ipv||ln){const o=info[dev+'|'+intf]=info[dev+'|'+intf]||{};if(st)o.site=st;if(ipv)o.ip=ipv;if(ln)o.linkname=ln;}
+    // custom fields — last non-empty value per link wins (they are link attributes, not time series)
+    for(const c of CFS){const cv=String(val(r,c.key)??'').trim();
+      if(cv){const o=info[dev+'|'+intf]=info[dev+'|'+intf]||{};(o.cf=o.cf||{})[c.key]=cv;}}
     const ts=parseTs(val(r,'ts'));if(ts==null){issues.noTs++;continue;}
     const tx=map.tx!=null?parseRate(val(r,'tx'),units.tx):{val:null};
     const rx=map.rx!=null?parseRate(val(r,'rx'),units.rx):{val:null};
@@ -1180,7 +1223,7 @@ function computeAnalytics(){
     // risk
     const growth=forecast.growthMoM;
     const risk=riskScore({p95,avg,pk:pkP95,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
-    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,capChange,overCap,th:tRes,thOff:hasOffBands?tOffRes:null,ip:info.ip,linkname:info.linkname,badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
+    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,capChange,overCap,th:tRes,thOff:hasOffBands?tOffRes:null,ip:info.ip,linkname:info.linkname,cf:info.cf||{},badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
       start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,pkP95,pkMax,provisionPeak,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
     rec.verdict=verdictFor(rec);
     rec.ai=aiSummary(rec);
@@ -1887,6 +1930,8 @@ function view_intf(){
           <label class="fld"><span>Speed override</span><input type="text" id="metaSpeed" value="${esc((S.ifmeta[r.ifid]||{}).speed||'')}" placeholder="${r.speed?fmtBps(r.speed):'e.g. 200M / 10G'}"></label>
           <label class="fld"><span>Site override</span><input type="text" id="metaSite" value="${esc((S.ifmeta[r.ifid]||{}).site||'')}" placeholder="${esc(r.site)}"></label>
         </div>
+        ${cfList().length?`<div class="sec-title" style="margin-top:6px"><h2 style="font-size:13px">Custom fields</h2><span class="sub">shown in exports &amp; reports</span></div>
+        ${cfList().map(c=>`<label class="fld"><span>${esc(c.label)}</span><input type="text" id="cfv_${esc(c.key)}" value="${esc(((S.ifmeta[r.ifid]||{}).cf||{})[c.key]||'')}" placeholder="${esc((r.cf||{})[c.key]||'—')}"></label>`).join('')}`:''}
         <div class="flex"><button class="btn sm" onclick="saveIfMeta('${r.ifid}')">Save</button>${S.ifmeta[r.ifid]?`<button class="btn sm ghost" onclick="resetIfMeta('${r.ifid}')">Reset to auto</button>`:''}</div>
       </div>
       <div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>Risk factors</h2><span class="sub">${r.risk.score}/100</span></div>
@@ -2064,11 +2109,11 @@ function view_uploads(){
       <div class="sec-title"><h2>Validation Console — “${esc(st.parsed.name)}”</h2><span class="sub">${st.built.samples.length.toLocaleString()} rows · median interval ${st.built.intervalNote||'?'} (every row kept as-is) · covers ${fmtDay(st.built.coverage[0])}–${fmtDay(st.built.coverage[1])}</span></div>
       ${extra?`<div class="small" style="margin:2px 0 8px">📎 ${extra} more file(s) selected — files with this same layout will be committed automatically using the mapping below (you’re only asked once); any different layout will prompt next.</div>`:''}
       <div class="sec-title" style="margin-top:6px"><h2 style="font-size:13px">Column mapping — auto-proposed, fully editable</h2><span class="sub">${extra?'applies to all same-layout files · ':''}change any dropdown if a guess is wrong; nothing is hardcoded</span></div>
-      <div style="margin-bottom:14px">${Object.keys(FIELD_LABELS).map(f=>{
+      <div style="margin-bottom:14px">${(()=>{const FL=fieldLabels();return Object.keys(FL).map(f=>{
         const mi=st.parsed.resolved.map[f];const c=st.parsed.resolved.conf[f]||0;const req=REQUIRED_FIELDS.includes(f);
         const unit=mi!=null&&st.parsed.resolved.headers.find(h=>h.i===mi)?.unit?' <span class="chip">unit detected</span>':'';
-        return `<div class="map-row"><b class="small" style="${req&&mi==null?'color:var(--errtxt)':''}">${FIELD_LABELS[f]}${req?' *':''}</b><span style="text-align:center">→</span><span><select onchange="remap('${f}',this.value)" style="width:100%"><option value="">— not in this file —</option>${st.parsed.headers.map((h,i)=>`<option value="${i}" ${mi===i?'selected':''}>${esc(h)}</option>`).join('')}</select>${unit}</span><span class="mini">${mi==null?'—':((st.parsed.resolved.manual||{})[f]?'manual':Math.round(c*100)+'%')}<div class="confbar"><i style="width:${mi==null?0:c*100}%"></i></div></span></div>`;
-      }).join('')}</div>
+        return `<div class="map-row"><b class="small" style="${req&&mi==null?'color:var(--errtxt)':''}">${FL[f]}${req?' *':''}</b><span style="text-align:center">→</span><span><select onchange="remap('${f}',this.value)" style="width:100%"><option value="">— not in this file —</option>${st.parsed.headers.map((h,i)=>`<option value="${i}" ${mi===i?'selected':''}>${esc(h)}</option>`).join('')}</select>${unit}</span><span class="mini">${mi==null?'—':((st.parsed.resolved.manual||{})[f]?'manual':Math.round(c*100)+'%')}<div class="confbar"><i style="width:${mi==null?0:c*100}%"></i></div></span></div>`;
+      }).join('');})()}</div>
       ${fnd.block.map(m=>`<div class="sev-block block"><b>⛔ Blocking</b> — ${m}</div>`).join('')}
       ${fnd.warn.map(m=>`<div class="sev-block warn"><b>⚠ Warning</b> — ${m}</div>`).join('')}
       ${fnd.info.map(m=>`<div class="sev-block info"><b>ℹ Info</b> — ${m}</div>`).join('')}
@@ -2119,14 +2164,17 @@ function exportProcessed(fmt){
   sel.sort((a,b)=>a.ifid<b.ifid?-1:a.ifid>b.ifid?1:a.ts-b.ts);
   const MAX=fmt==='xlsx'?200000:1000000;let trunc=false;
   const use=sel.length>MAX?(trunc=true,sel.slice(0,MAX)):sel;
-  const hdr=['Device','Interface','Timestamp (local)','Epoch ms','Transmit (Mbps)','Received (Mbps)','Peak Tx (Mbps)','Peak Rx (Mbps)','Capacity Tx (Mbps)','Capacity Rx (Mbps)','Transmit %','Receive %','Utilization % (max)','Peak %','Period','Policy threshold %','Counts as policy hit','Capacity review'];
+  const CFS=cfList();
+  // per-link custom-field values, resolved once (override wins over file value)
+  const cfByIf={};for(const rr of A().ifs){const o={};for(const c of CFS)o[c.key]=cfVal(rr,c.key);cfByIf[rr.ifid]=o;}
+  const hdr=['Device','Interface',...CFS.map(c=>c.label),'Timestamp (local)','Epoch ms','Transmit (Mbps)','Received (Mbps)','Peak Tx (Mbps)','Peak Rx (Mbps)','Capacity Tx (Mbps)','Capacity Rx (Mbps)','Transmit %','Receive %','Utilization % (max)','Peak %','Period','Policy threshold %','Counts as policy hit','Capacity review'];
   const rows=[hdr];
   for(const x of use){
     const bad=!!x.bad,bh=isBH(x.ts);
     const txp=(x.tx!=null&&x.speedTx)?x.tx/x.speedTx:null;
     const rxp=(x.rx!=null&&x.speedRx)?x.rx/x.speedRx:null;
     const hit=!bad&&x.util!=null&&x.util>=thr&&(!ur.businessHoursOnly||bh);
-    rows.push([x.dev,x.intf,fmtTs(x.ts),x.ts,
+    rows.push([x.dev,x.intf,...CFS.map(c=>(cfByIf[x.ifid]||{})[c.key]||''),fmtTs(x.ts),x.ts,
       x.tx!=null?+(x.tx/1e6).toFixed(3):'',x.rx!=null?+(x.rx/1e6).toFixed(3):'',
       x.ptx!=null?+(x.ptx/1e6).toFixed(3):'',x.prx!=null?+(x.prx/1e6).toFixed(3):'',
       x.speedTx?+(x.speedTx/1e6).toFixed(0):'',x.speedRx?+(x.speedRx/1e6).toFixed(0):'',
@@ -2376,6 +2424,18 @@ function view_admin(){
     <td><span class="chip impact-${im}">${im}</span></td></tr>`;}).join('')}
   </tbody></table></div>
   <button class="btn" style="margin-top:12px" onclick="saveClassThresholds()">Save class bands</button></div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Custom fields</h2><span class="sub">your own attributes — e.g. ISP, Purpose, Vendor, Cost centre</span></div>
+    <div class="small" style="margin-bottom:10px">Add any attribute you need. Each one becomes: a <b>mappable column</b> when importing a file (auto-matched by name, always editable), an <b>editable box</b> on every link (NOC → Link settings), and a <b>column/row in every Excel export and PDF report</b>. Values set per link override whatever came from the file.</div>
+    ${cfList().length?`<div style="overflow-x:auto"><table style="min-width:420px"><thead><tr><th>Field</th><th>Mapping key</th><th>Links with a value</th><th></th></tr></thead><tbody>
+    ${cfList().map((c,i)=>{const n=S.samples.length?A().ifs.filter(r=>cfVal(r,c.key)).length:0;
+      return `<tr><td><b>${esc(c.label)}</b></td><td class="mono small">${esc(c.key)}</td><td class="mono">${n}</td><td><button class="btn sm ghost" title="Remove this field (values are kept but no longer shown)" onclick="removeCustomField(${i})">✕</button></td></tr>`;}).join('')}
+    </tbody></table></div>`:'<div class="mini" style="margin-bottom:8px">No custom fields yet.</div>'}
+    <div class="flex" style="gap:10px;margin-top:10px;align-items:flex-end">
+      <label class="fld" style="margin:0;min-width:240px"><span>New field name</span><input type="text" id="cfNew" placeholder="e.g. ISP" onkeydown="if(event.key==='Enter')addCustomField()"></label>
+      <button class="btn sm" onclick="addCustomField()">＋ Add field</button>
+    </div>
+    <div class="mini" style="margin-top:8px">Adding a field does not change existing data — map it on your next upload, or fill it per link.</div>
+  </div>
   <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Compliance &amp; regulatory</h2><span class="sub">used by the Regulatory Capacity Report</span></div>
     <div class="grid g2">
       <label class="fld"><span>Institution / entity name</span><input type="text" id="regInst" value="${esc(S.cfg.institution||'')}" placeholder="e.g. Your Organization — Network Operations"></label>
@@ -2509,6 +2569,7 @@ function genUpgradePolicyXlsx(scope){
     if(twin)siblingNote=`⚠ Likely wrong link selected. The same interface exists under a device-name variant “${twin.dev} ${twin.intf}” with ${twin.count.toLocaleString()} samples (p95 ${(twin.p95*100).toFixed(0)}%, ${twin.upgradeNeeded?'upgrade trigger MET':'no upgrade'}) — this export is the smaller “${r0.dev} ${r0.intf}” (${r0.count.toLocaleString()} samples). Re-export with the larger one selected, or use “All links”.`;
   }
   const p2=n=>String(n).padStart(2,'0');
+  const CFS=cfList();
   const fmtTs=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())} ${tzLabel()}`;};
   const cStart=amin(list.map(r=>r.start)),cEnd=amax(list.map(r=>r.end));
   const covDays=Math.max(1,Math.round(days(cStart,cEnd)));
@@ -2525,12 +2586,12 @@ function genUpgradePolicyXlsx(scope){
     ...(list.some(r=>r.capChange)?[['NOTE: '+list.filter(r=>r.capChange).map(r=>`${r.dev} ${r.intf} capacity changed ${r.capChange.distinct.map(v=>(v/1e6).toFixed(0)+' Mbps').join('→')}`).join('; ')+'. Utilization is measured per-sample against the capacity in force at that time; the "Capacity (Mbps)" column shows the latest.']]:[]),
     ...(siblingNote?[[siblingNote]]:[]),
     [],
-    ['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)','Policy threshold %','Policy days','Policy counts','Days threshold hit','Market-hr hits','Non-market-hr hits','Total crossings','Last hit','Data through','Upgrade trigger met','Busy p95 %','Verdict']];
+    ['Device','Interface','Link name','Site',...CFS.map(c=>c.label),'Class','Impact','Capacity (Mbps)','Policy threshold %','Policy days','Policy counts','Days threshold hit','Market-hr hits','Non-market-hr hits','Total crossings','Last hit','Data through','Upgrade trigger met','Busy p95 %','Verdict']];
   // Detail log lists EVERY crossing of the threshold, tagged Market vs Non-market hours,
   // so overnight/backup peaks are visible even when the policy only counts market hours.
-  const hits=[['Device','Interface','Site','Timestamp','Period','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Counts toward policy','Policy threshold %']];
+  const hits=[['Device','Interface','Site',...CFS.map(c=>c.label),'Timestamp','Period','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Counts toward policy','Policy threshold %']];
   // Per-day roll-up: one row per day, market-hour and non-market-hour hits split out.
-  const perday=[['Device','Interface','Site','Date','Day of week','Market-hr hits','Non-market-hr hits','Total hits','Peak util %','First hit','Last hit','Policy threshold %']];
+  const perday=[['Device','Interface','Site',...CFS.map(c=>c.label),'Date','Day of week','Market-hr hits','Non-market-hr hits','Total hits','Peak util %','First hit','Last hit','Policy threshold %']];
   const hm=ts=>{const d=new Date(ts);return `${p2(d.getHours())}:${p2(d.getMinutes())}`;};
   const MAXH=50000;let truncated=false,totalHits=0;
   // Compute each link's crossings first, then sort so links that DID cross the threshold
@@ -2550,11 +2611,11 @@ function genUpgradePolicyXlsx(scope){
     // months ago is obviously NOT a link whose data stops there — coverage still runs
     // to the latest sample. Prevents reading a quiet recent stretch as missing data.
     const lastHitTs=policyHits.length?policyHits.reduce((m,x)=>x.ts>m?x.ts:m,0):null;
-    summary.push([r.dev,r.intf,r.linkname||'',r.site,r.cls,r.impact,r.speed?+(r.speed/1e6).toFixed(0):'',ur.utilPct,ur.days,ur.businessHoursOnly?'Market hours only':'All hours',daysHit,mkt.length,nonMkt.length,allCross.length,lastHitTs?fmtTs(lastHitTs):'—',fmtTs(r.end),met?'YES':'no',+(r.p95*100).toFixed(1),r.verdict.title]);
+    summary.push([r.dev,r.intf,r.linkname||'',r.site,...CFS.map(c=>cfVal(r,c.key)),r.cls,r.impact,r.speed?+(r.speed/1e6).toFixed(0):'',ur.utilPct,ur.days,ur.businessHoursOnly?'Market hours only':'All hours',daysHit,mkt.length,nonMkt.length,allCross.length,lastHitTs?fmtTs(lastHitTs):'—',fmtTs(r.end),met?'YES':'no',+(r.p95*100).toFixed(1),r.verdict.title]);
     for(const x of allCross){
       if(hits.length>MAXH){truncated=true;break;}
       const bh=isBH(x.ts);
-      hits.push([r.dev,r.intf,r.site,fmtTs(x.ts),bh?'Market hours':'Non-market hours',+((x.util*100).toFixed(2)),x.tx!=null?+((x.tx/1e6).toFixed(1)):'',x.rx!=null?+((x.rx/1e6).toFixed(1)):'',r.speed?+((r.speed/1e6).toFixed(0)):'',(!ur.businessHoursOnly||bh)?'Yes':'No',ur.utilPct]);
+      hits.push([r.dev,r.intf,r.site,...CFS.map(c=>cfVal(r,c.key)),fmtTs(x.ts),bh?'Market hours':'Non-market hours',+((x.util*100).toFixed(2)),x.tx!=null?+((x.tx/1e6).toFixed(1)):'',x.rx!=null?+((x.rx/1e6).toFixed(1)):'',r.speed?+((r.speed/1e6).toFixed(0)):'',(!ur.businessHoursOnly||bh)?'Yes':'No',ur.utilPct]);
     }
     // roll the crossings up per calendar day, market/non-market split, chronologically
     const byDay=new Map();
@@ -2562,7 +2623,7 @@ function genUpgradePolicyXlsx(scope){
       let o=byDay.get(key);if(!o){o={key,dow:DOW[d.getDay()],mkt:0,non:0,peak:0,first:x.ts,last:x.ts};byDay.set(key,o);}
       if(isBH(x.ts))o.mkt++;else o.non++;if(x.util>o.peak)o.peak=x.util;if(x.ts<o.first)o.first=x.ts;if(x.ts>o.last)o.last=x.ts;}
     for(const o of [...byDay.values()].sort((p,q)=>p.key.localeCompare(q.key)))
-      perday.push([r.dev,r.intf,r.site,o.key,o.dow,o.mkt,o.non,o.mkt+o.non,+((o.peak*100).toFixed(1)),hm(o.first),hm(o.last),ur.utilPct]);
+      perday.push([r.dev,r.intf,r.site,...CFS.map(c=>cfVal(r,c.key)),o.key,o.dow,o.mkt,o.non,o.mkt+o.non,+((o.peak*100).toFixed(1)),hm(o.first),hm(o.last),ur.utilPct]);
     if(truncated)break;
   }
   if(truncated)hits.push(['NOTE: hit list truncated at 50,000 rows — narrow the scope (single link or shorter window) for full detail']);
@@ -2644,12 +2705,12 @@ function genRegReport(scope,fmt){
       ['Classification','Confidential — regulatory']
     ];
     const ciPct=(S.cfg.forecastCI*100||80).toFixed(0);
-    const summ=[['Device','Interface','Link name','Site','Class','Impact','Capacity (Mbps)',`Peak %`,`p95 %`,`Avg %`,`% time > ${Tp}% (all)`,`% time > ${Tp}% (mkt hrs)`,`Days > ${Tp}%`,`Headroom to ${Tp}% (pp)`,`Headroom to 100% (pp)`,`Days to ${Tp}%`,`Days to ${Tp}% (${ciPct}% range)`,`Recommended capacity (${N}×peak, Mbps)`,`Meets ${N}× headroom`,'Augmentation required','Verdict']];
+    const summ=[['Device','Interface','Link name','Site',...cfList().map(c=>c.label),'Class','Impact','Capacity (Mbps)',`Peak %`,`p95 %`,`Avg %`,`% time > ${Tp}% (all)`,`% time > ${Tp}% (mkt hrs)`,`Days > ${Tp}%`,`Headroom to ${Tp}% (pp)`,`Headroom to 100% (pp)`,`Days to ${Tp}%`,`Days to ${Tp}% (${ciPct}% range)`,`Recommended capacity (${N}×peak, Mbps)`,`Meets ${N}× headroom`,'Augmentation required','Verdict']];
     for(const x of D.rows){const recMbps=x.r.speed?+((x.peak*x.r.speed*N)/1e6).toFixed(0):'';
       const headroomOK=x.r.speed?(x.peak*N<=1?'YES':'NO — below '+N+'×'):'—';
       const f=x.r.forecast,dTo=sl=>f.current>=D.T?0:(sl>1e-5?(D.T-f.current)/sl:null);const tLo=dTo(f.slopeHi),tHi=dTo(f.slopeLo);
       const tRange=x.tReg==null?'no trend':(x.tReg<=0?'AT/OVER':(tLo!=null?`${Math.round(Math.max(0,tLo))}–${tHi!=null&&tHi<3650?Math.round(tHi):'>365'}`:'—'));
-      summ.push([x.r.dev,x.r.intf,x.r.linkname||'',x.r.site,x.r.cls,x.r.impact,x.r.speed?+(x.r.speed/1e6).toFixed(0):'',
+      summ.push([x.r.dev,x.r.intf,x.r.linkname||'',x.r.site,...cfList().map(c=>cfVal(x.r,c.key)),x.r.cls,x.r.impact,x.r.speed?+(x.r.speed/1e6).toFixed(0):'',
       +(x.peak*100).toFixed(1),+(x.p95*100).toFixed(1),+(x.avg*100).toFixed(1),+(x.pctOver*100).toFixed(2),+(x.mktPctOver*100).toFixed(2),x.breachDays,
       +(x.headThr*100).toFixed(1),+(x.head100*100).toFixed(1),x.tReg==null?'no trend':(x.tReg<=0?'AT/OVER':Math.round(x.tReg)),tRange,recMbps,headroomOK,x.augment?'YES':'No',x.r.verdict.title]);}
     const breach=[['Device','Interface','Site','Timestamp','Utilization %','Transmit (Mbps)','Received (Mbps)','Capacity (Mbps)','Market hours',`Threshold %`]];
@@ -2793,6 +2854,7 @@ function linkReportHTML(r){
   <div class="banner"><div class="lvl">${r.verdict.level} — ${esc(r.verdict.title)}</div>
     <div style="margin:6px 0">${r.verdict.reason.replace(/<[^>]+>/g,'')}</div>
     <div><b>Recommended:</b> ${esc(steps)} <span class="muted">· confidence ${(r.verdict.confidence*100).toFixed(0)}%</span></div></div>
+  ${cfList().some(c=>cfVal(r,c.key))?`<h2>Link details</h2><table>${cfList().map(c=>{const v=cfVal(r,c.key);return v?kv(esc(c.label),esc(v)):'';}).join('')}</table>`:''}
   <h2>In plain terms</h2><div class="box">${aiSummarySimple(r).replace(/<[^>]+>/g,'')}</div>
   <h2>Technical summary</h2><div>${r.ai}</div>
   <h2>Key metrics</h2>${chart}
@@ -2896,6 +2958,15 @@ function breachReportHTML(r,hours){
     <div style="text-align:right;font-size:11px;color:#64748b">Generated<br><b style="color:#152238">${fmtT(Date.now())} ${tzLabel()}</b></div></div>
   <div style="margin-top:8px">${(r.tags||[]).map(t=>`<span class="chip">${esc(t)}</span>`).join('')}<span class="chip">${r.cls}</span><span class="chip">${r.impact} impact</span><span class="chip">Site ${esc(r.site)}</span><span class="chip">Capacity ${cap}</span>${r.ip?`<span class="chip">${esc(r.ip)}</span>`:''}</div>
 
+  <h2>Link details</h2>
+  <table class="kv">
+  ${kv('Device / Interface',esc(r.dev)+' · '+esc(r.intf))}
+  ${r.linkname?kv('Link name / circuit',esc(r.linkname)):''}
+  ${kv('Site',esc(r.site))}${r.ip?kv('IP address',esc(r.ip)):''}
+  ${kv('Capacity',cap)}${kv('Class / business impact',r.cls+' · '+r.impact+' impact')}
+  ${cfList().map(c=>{const v=cfVal(r,c.key);return v?kv(esc(c.label),esc(v)):'';}).join('')}
+  </table>
+
   <h2>Reporting parameters</h2>
   <table class="kv">
   ${kv('Reporting window','Last 6 months — '+fmtD(winStart)+' to '+fmtD(winEnd)+' ('+covDays+' days)')}
@@ -2944,6 +3015,8 @@ function saveIfMeta(ifid){
   if(Object.keys(thv).length)m.th=thv;
   const thvO={};[['warn','#metaWarnO'],['high','#metaHighO'],['crit','#metaCritO']].forEach(([b,sel])=>{const el=$(sel);if(el&&el.value.trim()!==''){const n=parseFloat(el.value);if(!isNaN(n))thvO[b]=clamp(n/100,0,2);}});
   if(Object.keys(thvO).length)m.thOff=thvO;
+  const cfv={};for(const c of cfList()){const el=$('#cfv_'+c.key);if(el&&el.value.trim()!=='')cfv[c.key]=el.value.trim();}
+  if(Object.keys(cfv).length)m.cf=cfv;
   S.ifmeta[ifid]=m;save('ifmeta');
   logAudit('interface.meta',ifid,JSON.stringify(m));
   S.analytics=null;render();toast('Link settings saved — analytics recomputed');
@@ -2962,6 +3035,23 @@ function saveThresholds(){
   const mu=parseFloat($('#maxUtil')?.value);if(!isNaN(mu))S.cfg.flagUtilAbove=clamp(mu/100,0.5,10);
   save('cfg');logAudit('config.thresholds','',JSON.stringify({business:S.cfg.thresholds,offHours:S.cfg.thresholdsOff,flagUtilAbove:S.cfg.flagUtilAbove}));
   S.analytics=null;toast('Thresholds saved — verdicts recomputed');render();}
+function addCustomField(){
+  const el=$('#cfNew');const label=(el?el.value:'').trim();
+  if(!label)return toast('Enter a field name');
+  const key=cfKey(label);
+  if(!key.replace('cf_',''))return toast('Use letters or numbers in the name');
+  if(cfList().some(c=>c.key===key))return toast('A field with that name already exists');
+  if(Object.prototype.hasOwnProperty.call(FIELD_LABELS,key))return toast('That name clashes with a built-in field');
+  S.cfg.customFields=cfList().concat([{key,label}]);
+  save('cfg');logAudit('config.customfield.add',label,key);
+  toast(`Custom field “${label}” added — map it on your next upload or fill it per link`);render();
+}
+function removeCustomField(i){
+  const c=cfList()[i];if(!c)return;
+  S.cfg.customFields=cfList().filter((_,j)=>j!==i);
+  save('cfg');logAudit('config.customfield.remove',c.label,c.key);
+  toast(`Removed “${c.label}” — stored values are kept if you add it back`);render();
+}
 function savePlanning(){S.cfg.businessHours.startHr=+$('#bhStart').value;S.cfg.businessHours.endHr=+$('#bhEnd').value;S.cfg.planHorizonDays=+$('#planH').value;S.cfg.upgradeLeadDays=+$('#leadD').value;save('cfg');logAudit('config.planning');S.analytics=null;toast('Saved');render();}
 function saveTimezone(){const prev=S.cfg.inputTz;S.cfg.tz=$('#tzSel').value;S.cfg.inputTz=$('#tzInput').value;save('cfg');logAudit('config.timezone','',S.cfg.tz+' · input '+S.cfg.inputTz);toast(prev!==S.cfg.inputTz&&S.samples.length?'Time zone saved — re-upload files to apply the new interpretation to existing data':'Time zone saved');render();}
 function saveForecastCfg(){S.cfg.forecastMetric=$('#fcMetric').value;S.cfg.forecastDirection=$('#fcDir').value;S.cfg.provisionFactor=Math.max(1,+$('#provN').value||1.5);
