@@ -26,7 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="tcpforensics",
         description="TCP session, sequence, SACK & nanosecond latency "
                     "forensics analyzer (PCAP/PCAPNG -> single-file HTML)")
-    p.add_argument("capture", help="input .pcap / .pcapng file")
+    p.add_argument("capture", nargs="+",
+                   help="input .pcap / .pcapng file(s); several files are "
+                        "merged into one timeline by timestamp, with a file "
+                        "boundary treated as an observation point")
     p.add_argument("-o", "--output", default="tcp_forensics_report.html",
                    help="output HTML report path (default: %(default)s)")
     p.add_argument("--json", help="also write the raw analysis model as JSON")
@@ -71,19 +74,20 @@ def main(argv: list[str] | None = None) -> int:
         repeated_holes=args.repeated_holes)
     try:
         model = analyze_capture(
-            args.capture, capture_id=args.capture_id,
+            args.capture[0] if len(args.capture) == 1 else args.capture,
+            capture_id=args.capture_id,
             capture_point=args.capture_point, retrans_cfg=retrans_cfg,
             verdict_cfg=verdict_cfg, max_packet_rows=args.max_packet_rows,
             quiet=args.quiet)
-    except FileNotFoundError:
-        print(f"error: capture not found: {args.capture}", file=sys.stderr)
-        return 2
-    except IsADirectoryError:
-        print(f"error: {args.capture} is a directory, not a capture file",
+    except FileNotFoundError as exc:
+        print(f"error: capture not found: {exc.filename or args.capture}",
               file=sys.stderr)
         return 2
+    except IsADirectoryError:
+        print("error: got a directory, not a capture file", file=sys.stderr)
+        return 2
     except CaptureError as exc:
-        print(f"error: cannot parse {args.capture}: {exc}", file=sys.stderr)
+        print(f"error: cannot parse capture: {exc}", file=sys.stderr)
         return 2
     if args.json:
         with open(args.json, "w", encoding="utf-8") as fh:

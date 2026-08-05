@@ -21,14 +21,22 @@ Two ways to run the same analysis:
 SACK, loss and latency analysis all run locally in the page; nothing leaves
 the machine. The browser engine is a line-for-line port of the Python
 engine, and `tools/parity_check.py` proves both produce identical analysis
-models on the same captures (verified on the synthetic scenario corpus and
-real Wireshark wiki captures). Built for scale: the file is parsed in
-streamed 8 MB slices inside a Web Worker (never loaded whole), embedded
-row listings are bounded while statistics cover all data, and the hot
-paths are amortized — a measured 1 GiB / 785k-packet capture analyzes in
-~18 s on ~38 MB of JS heap with a live progress bar. Rebuild after engine
-changes with `python tools/build_standalone.py`; generate scale-test
-captures with `python tools/make_bulk_capture.py out.pcap --gib 1`.
+models on the same captures (verified on the synthetic scenario corpus,
+real Wireshark wiki captures, and merged multi-file runs). Built for
+scale: files are parsed in streamed 8 MB slices inside a Web Worker
+(never loaded whole), embedded row listings are bounded while statistics
+cover all data, and the hot paths are amortized. Measured: a 1 GiB /
+785k-packet capture in ~18 s; a merged 2×2 GiB (4.3 GB, 3.14M-packet)
+pair in ~97 s — identical results to the Python CLI on the same input.
+Drop SEVERAL captures at once and they are k-way merged into one timeline
+by timestamp, with each file treated as an observation point so the
+multi-point duplicate recognition works across files (leaf-A capture +
+leaf-B capture merge cleanly, and the cross-file observation skew is
+measured per packet). The CLI merges the same way:
+`python -m tcpforensics leafA.pcap leafB.pcap -o report.html`. Rebuild
+after engine changes with `python tools/build_standalone.py`; generate
+scale-test captures with `python tools/make_bulk_capture.py out.pcap
+--gib 2 --ip-base 10.9`.
 
 **Command line** —
 

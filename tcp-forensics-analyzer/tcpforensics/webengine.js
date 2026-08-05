@@ -860,6 +860,7 @@ const MAX_OPEN_GAPS=1024;
 class Session{
   constructor(id,pkt,cfg,rowLimit){
     this.id=id;this.cfg=cfg;this.rowLimit=rowLimit;this.rowsDropped=0;
+    this.captureId=pkt.captureId||0;
     this.epA=[pkt.srcIp,pkt.srcPort];this.epB=[pkt.dstIp,pkt.dstPort];
     this.dirA=new DirectionState("A->B");this.dirB=new DirectionState("B->A");
     this.firstTs=null;this.lastTs=null;
@@ -1202,7 +1203,8 @@ class Session{
     const fpKey=[pkt.seqRaw,pkt.ackRaw,pkt.flags,pkt.payloadLen,
       pkt.payloadCrc,pkt.ipId,pkt.tsVal,pkt.tsEcr,pkt.windowRaw,
       pkt.sackBlocks.map(b=>b[0]+"-"+b[1]).join(",")].join("|");
-    const sig=[pkt.ttl,pkt.srcMac,pkt.dstMac,pkt.vlan].join("|");
+    // a different source capture file IS a different observation point
+    const sig=[pkt.captureId,pkt.ttl,pkt.srcMac,pkt.dstMac,pkt.vlan].join("|");
     const now=pkt.tsRel;
     if(now>=snd.fpPruneAt){
       const cutoff=now-this.cfg.observationWindowNs;
@@ -1211,7 +1213,7 @@ class Session{
     }
     const entry=snd.recentFp.get(fpKey);
     const fresh={frame:pkt.frame,ts:now,sigs:new Set([sig]),lastSig:
-      [pkt.ttl,pkt.srcMac,pkt.dstMac,pkt.vlan]};
+      [pkt.captureId,pkt.ttl,pkt.srcMac,pkt.dstMac,pkt.vlan]};
     if(!entry||now-entry.ts>this.cfg.observationWindowNs){
       snd.recentFp.set(fpKey,fresh);return null;
     }
@@ -1227,12 +1229,14 @@ class Session{
       snd.recentFp.set(fpKey,fresh);return null;
     }else confidence="likely";
     const ps=entry.lastSig, diffs=[];
-    if(pkt.ttl!=null&&ps[0]!=null&&pkt.ttl!==ps[0])
-      diffs.push(`TTL ${ps[0]}→${pkt.ttl}`);
-    if(pkt.srcMac&&ps[1]&&pkt.srcMac!==ps[1])diffs.push("src MAC rewritten");
-    if(pkt.dstMac&&ps[2]&&pkt.dstMac!==ps[2])diffs.push("dst MAC rewritten");
-    if(pkt.vlan!==ps[3]&&(pkt.vlan!=null||ps[3]!=null))
-      diffs.push(`VLAN ${ps[3]==null?"null":ps[3]}→${pkt.vlan==null?"null":pkt.vlan}`);
+    if(pkt.ttl!=null&&ps[1]!=null&&pkt.ttl!==ps[1])
+      diffs.push(`TTL ${ps[1]}→${pkt.ttl}`);
+    if(pkt.srcMac&&ps[2]&&pkt.srcMac!==ps[2])diffs.push("src MAC rewritten");
+    if(pkt.dstMac&&ps[3]&&pkt.dstMac!==ps[3])diffs.push("dst MAC rewritten");
+    if(pkt.vlan!==ps[4]&&(pkt.vlan!=null||ps[4]!=null))
+      diffs.push(`VLAN ${ps[4]==null?"null":ps[4]}→${pkt.vlan==null?"null":pkt.vlan}`);
+    if(pkt.captureId!==ps[0])
+      diffs.push(`capture file #${ps[0]}→#${pkt.captureId}`);
     const ev={frame:pkt.frame,ts:now,orig_frame:entry.frame,orig_ts:entry.ts,
       delta_ns:now-entry.ts,
       differs:diffs.length?diffs.join(", "):
@@ -1240,7 +1244,7 @@ class Session{
       confidence};
     snd.observationEvents.push(ev);
     entry.frame=pkt.frame;entry.ts=now;entry.sigs.add(sig);
-    entry.lastSig=[pkt.ttl,pkt.srcMac,pkt.dstMac,pkt.vlan];
+    entry.lastSig=[pkt.captureId,pkt.ttl,pkt.srcMac,pkt.dstMac,pkt.vlan];
     return ev;
   }
 
@@ -1249,7 +1253,7 @@ class Session{
     this.packetRows.push([pkt.frame,pkt.tsRel,d,
       snd.rel(seq64),snd.rel(end64),pkt.payloadLen,
       flagsToStr(pkt.flags),pkt.ackRaw,pkt.windowRaw,pkt.sackBlocks.length,
-      stateOverride?stateOverride:(seg?seg.state:"")]);
+      stateOverride?stateOverride:(seg?seg.state:""),pkt.captureId]);
   }
 }
 
@@ -1608,7 +1612,7 @@ function sessionToJson(sess,firstAbsNs){
     client_port:clientEp[1],server_port:serverEp[1],
     client_dir:clientDir,
     ep_a:`${sess.epA[0]}:${sess.epA[1]}`,ep_b:`${sess.epB[0]}:${sess.epB[1]}`,
-    capture_id:0,
+    capture_id:sess.captureId,
     start_ts:sess.firstTs,end_ts:sess.lastTs,
     start_str:fmtNsUtc(absStart),end_str:fmtNsUtc(absEnd),
     duration_ns:sess.firstTs!=null?sess.lastTs-sess.firstTs:0,
@@ -1635,31 +1639,65 @@ function sessionToJson(sess,firstAbsNs){
 /* --------------------------------------------------------------- driver */
 const SER_CAPS={segments:20000,rtt_samples:20000,sack_records:10000,
                 sack_snapshots:10000};
-async function analyze(bufOrFile,fileName,progress){
-  const src=new ChunkedSource(bufOrFile);
-  const rd=new CaptureReader();
+/* analyze one capture (File/ArrayBuffer) or SEVERAL (array): multiple
+ * captures are k-way merged into one timeline by timestamp — a file
+ * boundary is an observation point for multi-point duplicate recognition,
+ * exactly mirroring the Python engine. */
+async function analyze(input,fileName,progress){
+  const inputs=Array.isArray(input)?input:[input];
+  const names=inputs.map((f,i)=>(f&&f.name)||fileName||("capture"+i));
+  const multi=inputs.length>1;
+  const srcs=inputs.map(f=>new ChunkedSource(f));
+  const totalBytes=srcs.reduce((t,s)=>t+s.size,0);
+  const readers=srcs.map(()=>new CaptureReader());
+  const gens=srcs.map((s,i)=>readers[i].frames(s));
   const mgr=new SessionManager({...DEFAULT_CFG},20000);
-  let n=0;
+  // prime one pending frame per stream, then always consume the earliest
+  const pending=new Array(gens.length).fill(null);
+  for(let i=0;i<gens.length;i++){
+    const r=await gens[i].next();
+    pending[i]=r.done?null:r.value;
+  }
+  let n=0,globalFrame=0,anchor=null;
   const CHUNK=20000;let sinceYield=0;
-  for await (const f of rd.frames(src)){
+  const consumed=()=>readers.reduce(
+    (t,rd)=>t+(rd.window?rd.window.consumedBytes:0),0);
+  for(;;){
+    let best=-1;
+    for(let i=0;i<pending.length;i++){
+      if(pending[i]&&(best<0||pending[i].absNs<pending[best].absNs))best=i;
+    }
+    if(best<0)break;
+    const f=pending[best], rd=readers[best];
+    globalFrame++;
+    f.frameNo=globalFrame;
+    if(anchor==null){
+      for(const r of readers)
+        if(r.firstAbsNs!=null&&(anchor==null||r.firstAbsNs<anchor))
+          anchor=r.firstAbsNs;
+    }
     const pkt=decodeTcp(rd,f);
     if(pkt){
-      // capture-relative ns (anchored at the capture's first packet)
-      pkt.tsRel=Number(f.absNs-rd.firstAbsNs);
+      pkt.captureId=best;
+      // capture-relative ns anchored at the merged timeline's first packet
+      pkt.tsRel=Number(f.absNs-anchor);
       rd.tcpCount++;
       mgr.feed(pkt);
       n++;
     }
+    const r=await gens[best].next();
+    pending[best]=r.done?null:r.value;
     if(progress&&++sinceYield>=CHUNK){
       sinceYield=0;
-      progress(rd.packetCount,n,mgr.sessions.length,
-               rd.window?rd.window.consumedBytes:0,src.size);
+      progress(readers.reduce((t,x)=>t+x.packetCount,0),n,
+               mgr.sessions.length,consumed(),totalBytes);
       await new Promise(res=>setTimeout(res,0));
     }
   }
-  if(progress)progress(rd.packetCount,n,mgr.sessions.length,src.size,src.size);
+  if(progress)progress(readers.reduce((t,x)=>t+x.packetCount,0),n,
+                       mgr.sessions.length,totalBytes,totalBytes);
 
-  const firstAbsNs=rd.firstAbsNs!=null?rd.firstAbsNs:0n;
+  const firstAbsNs=anchor!=null?anchor:0n;
   const sessions=mgr.sessions.map(s=>sessionToJson(s,firstAbsNs));
   const totals={sessions:mgr.sessions.length,tcp_packets:n,
     payload_bytes:0,retrans_segments:0,data_segments:0,
@@ -1709,20 +1747,41 @@ async function analyze(bufOrFile,fileName,progress){
       }
     }
   }
-  const coarsest=rd.resolutions.length?Math.min(...rd.resolutions):null;
-  const durationNs=rd.lastAbsNs!=null&&rd.firstAbsNs!=null?
-    Number(rd.lastAbsNs-rd.firstAbsNs):0;
-  const capture={path:fileName,capture_id:0,capture_point:fileName,
-    format:rd.fileFormat,
-    resolution_label:coarsest!=null?rd.resLabel(coarsest):"unknown",
-    effective_precision_ns:coarsest!=null?rd.nsPerTick(coarsest):1000000000,
+  const rd0=readers[0];
+  const allRes=readers.flatMap(r=>r.resolutions);
+  const coarsest=allRes.length?Math.min(...allRes):null;
+  let lastAbs=null;
+  for(const r of readers)
+    if(r.lastAbsNs!=null&&(lastAbs==null||r.lastAbsNs>lastAbs))
+      lastAbs=r.lastAbsNs;
+  const durationNs=(anchor!=null&&lastAbs!=null)?Number(lastAbs-anchor):0;
+  const formats=[];
+  for(const r of readers)
+    if(!formats.includes(r.fileFormat))formats.push(r.fileFormat);
+  const snaplens=readers.map(r=>r.snaplen).filter(x=>x!=null);
+  let warnings=multi
+    ?readers.flatMap((r,i)=>r.warnings.map(w=>`${names[i]}: ${w}`))
+    :readers.flatMap(r=>r.warnings);
+  if(multi)
+    warnings=[`merged timeline of ${readers.length} capture files — frames `+
+      "interleaved by timestamp; a file boundary is treated as an "+
+      "observation point for multi-point duplicate recognition",...warnings];
+  const pathLabel=multi?names.join(" + "):names[0];
+  const capture={path:pathLabel,capture_id:0,capture_point:pathLabel,
+    format:formats.join("+"),
+    resolution_label:coarsest!=null?rd0.resLabel(coarsest):"unknown",
+    effective_precision_ns:coarsest!=null?rd0.nsPerTick(coarsest):1000000000,
     nanosecond_native:!!(coarsest&&coarsest>=1e9),
-    first_ts:0,first_ts_str:fmtNsUtc(rd.firstAbsNs),
-    last_ts:durationNs,last_ts_str:fmtNsUtc(rd.lastAbsNs),
+    first_ts:0,first_ts_str:fmtNsUtc(anchor),
+    last_ts:durationNs,last_ts_str:fmtNsUtc(lastAbs),
     duration_ns:durationNs,duration_str:fmtDurationNs(durationNs),
-    packets:rd.packetCount,tcp_packets:rd.tcpCount,
-    snaplen:rd.snaplen,truncated_frames:rd.truncatedFrames,
-    warnings:rd.warnings};
+    packets:readers.reduce((t,r)=>t+r.packetCount,0),
+    tcp_packets:readers.reduce((t,r)=>t+r.tcpCount,0),
+    snaplen:snaplens.length?Math.min(...snaplens):null,
+    truncated_frames:readers.reduce((t,r)=>t+r.truncatedFrames,0),
+    warnings,
+    files:names.map((nm,i)=>({name:nm,packets:readers[i].packetCount,
+      tcp_packets:readers[i].tcpCount,format:readers[i].fileFormat}))};
   return {tool:{name:"tcpforensics",version:"1.0.0-web"},
     capture,totals,
     rtt_summary:summarize(globalRtt),rtt_hist:histogram(globalRtt),

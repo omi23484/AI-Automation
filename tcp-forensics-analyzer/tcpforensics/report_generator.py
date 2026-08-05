@@ -408,6 +408,8 @@ function renderHeader(){
    '<h1>TCP Session, Sequence, SACK &amp; Nanosecond Latency Forensics</h1>'+
    '<div class="kv">'+
    '<div class="k">Capture file</div><div>'+esc(c.path)+' <span class="chip">'+esc(c.format)+'</span></div>'+
+   (c.files&&c.files.length>1?'<div class="k">Merged files</div><div>'+
+     c.files.map((f,i)=>'<span class="chip" title="'+esc(f.format)+'">#'+i+' '+esc(f.name)+' ('+fmtInt(f.tcp_packets)+' TCP)</span>').join(' ')+'</div>':'')+
    '<div class="k">Capture point</div><div>'+esc(c.capture_point)+' <span class="mut">capture_id='+c.capture_id+'</span></div>'+
    '<div class="k">Timestamp precision</div><div>'+precNote+'</div>'+
    '<div class="k">First packet</div><div>'+esc(c.first_ts_str)+' UTC</div>'+
@@ -1189,12 +1191,15 @@ function latHover(ev){
 function tabPackets(s){
   let h='';
   if(s.packets_truncated)h+='<div class="warnbox">'+fmtInt(s.packets_truncated)+' packet rows omitted from the embedded report (large session) — the sequence ledger and events above remain complete.</div>';
-  h+='<div class="scroll" style="max-height:560px"><table><tr><th>Frame</th><th>Time</th><th>Δ prev</th><th>Dir</th>'+
+  const multiSrc=M.capture.files&&M.capture.files.length>1;
+  h+='<div class="scroll" style="max-height:560px"><table><tr><th>Frame</th><th>Time</th><th>Δ prev</th>'+
+   (multiSrc?'<th>Src</th>':'')+'<th>Dir</th>'+
    '<th>SEQ('+SEQMODE+')</th><th>End</th><th>Len</th><th>Flags</th><th>ACK(raw)</th><th>Win(raw)</th><th>SACK</th><th>State</th></tr>';
   s.packets.slice(0,6000).forEach((p,i)=>{
     const dt=i>0?p[1]-s.packets[i-1][1]:null;
     h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+p[0]+'</td><td class="num">'+fmtTs(p[1])+'</td>'+
-     '<td class="num" style="color:var(--accent)">'+(dt==null?'-':'+'+fmtNs(dt))+'</td><td>'+p[2]+'</td>'+
+     '<td class="num" style="color:var(--accent)">'+(dt==null?'-':'+'+fmtNs(dt))+'</td>'+
+     (multiSrc?'<td class="num">#'+(p[11]??0)+'</td>':'')+'<td>'+p[2]+'</td>'+
      '<td class="num">'+fmtSeq(s,p[2],p[3])+'</td><td class="num">'+fmtSeq(s,p[2],p[4])+'</td><td class="num">'+p[5]+'</td>'+
      '<td>'+p[6]+'</td><td class="num">'+fmtInt(p[7])+'</td><td class="num">'+fmtInt(p[8])+'</td>'+
      '<td class="num">'+(p[9]||'-')+'</td><td class="state-'+String(p[10]).replace(/ /g,'-')+'">'+ (p[10]||'-')+'</td></tr>';

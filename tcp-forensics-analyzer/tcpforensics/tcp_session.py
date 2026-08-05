@@ -633,7 +633,10 @@ class Session:
         fp = (pkt.seq_raw, pkt.ack_raw, pkt.flags, pkt.payload_len,
               pkt.payload_crc, pkt.ip_id, pkt.ts_val, pkt.ts_ecr,
               pkt.window_raw, pkt.sack_blocks)
-        sig = (pkt.ttl, pkt.src_mac, pkt.dst_mac, pkt.vlan)
+        # the observation-point signature includes the source capture file:
+        # in merged multi-capture timelines a different file IS a different
+        # observation point, even when L2/TTL happen to be identical
+        sig = (pkt.capture_id, pkt.ttl, pkt.src_mac, pkt.dst_mac, pkt.vlan)
         now = pkt.timestamp_ns
         if now >= snd._fp_prune_at:          # amortized cadence pruning
             cutoff = now - self.cfg.observation_window_ns
@@ -668,15 +671,17 @@ class Session:
 
         prev_sig = entry["last_sig"]
         diffs = []
-        if pkt.ttl is not None and prev_sig[0] is not None and pkt.ttl != prev_sig[0]:
-            diffs.append(f"TTL {prev_sig[0]}→{pkt.ttl}")
-        if pkt.src_mac and prev_sig[1] and pkt.src_mac != prev_sig[1]:
+        if pkt.ttl is not None and prev_sig[1] is not None and pkt.ttl != prev_sig[1]:
+            diffs.append(f"TTL {prev_sig[1]}→{pkt.ttl}")
+        if pkt.src_mac and prev_sig[2] and pkt.src_mac != prev_sig[2]:
             diffs.append("src MAC rewritten")
-        if pkt.dst_mac and prev_sig[2] and pkt.dst_mac != prev_sig[2]:
+        if pkt.dst_mac and prev_sig[3] and pkt.dst_mac != prev_sig[3]:
             diffs.append("dst MAC rewritten")
-        if pkt.vlan != prev_sig[3] and (pkt.vlan is not None
-                                        or prev_sig[3] is not None):
-            diffs.append(f"VLAN {prev_sig[3]}→{pkt.vlan}")
+        if pkt.vlan != prev_sig[4] and (pkt.vlan is not None
+                                        or prev_sig[4] is not None):
+            diffs.append(f"VLAN {prev_sig[4]}→{pkt.vlan}")
+        if pkt.capture_id != prev_sig[0]:
+            diffs.append(f"capture file #{prev_sig[0]}→#{pkt.capture_id}")
         ev = {"frame": pkt.frame_number, "ts": now,
               "orig_frame": entry["frame"], "orig_ts": entry["ts"],
               "delta_ns": now - entry["ts"],
@@ -702,6 +707,7 @@ class Session:
             flags_to_str(pkt.flags), pkt.ack_raw, pkt.window_raw,
             len(pkt.sack_blocks),
             state_override if state_override else (seg.state if seg else ""),
+            pkt.capture_id,
         ))
 
 

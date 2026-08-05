@@ -34,6 +34,9 @@ def main() -> int:
     ap.add_argument("output")
     ap.add_argument("--gib", type=float, default=1.0)
     ap.add_argument("--sessions", type=int, default=4)
+    ap.add_argument("--ip-base", default="10.1",
+                    help="first two IPv4 octets for client subnets")
+    ap.add_argument("--t0-offset-us", type=int, default=0)
     args = ap.parse_args()
     target = int(args.gib * (1 << 30))
 
@@ -44,9 +47,9 @@ def main() -> int:
     payload = b"D" * MSS
     opts = opt_mss(MSS) + opt_sack_perm() + opt_wscale(7)
     sessions = []
-    ts = T0
+    ts = T0 + args.t0_offset_us * 1_000
     for i in range(args.sessions):
-        cip, cport = f"10.1.{i}.2", 40000 + i
+        cip, cport = f"{args.ip_base}.{i}.2", 40000 + i
         s = {"cip": cip, "cport": cport, "sip": "10.2.0.9", "sport": 9000,
              "seq": 1001, "ipid": 1, "sipid": 1, "sent": 0}
         out.write(rec(ts, tcp_frame(cip, s["sip"], cport, 9000, 1000, 0, SYN,

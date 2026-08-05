@@ -74,7 +74,7 @@ def diff(a, b, path="$", out=None):
     return out
 
 
-async def js_model(page_html: str, capture: Path) -> dict:
+async def js_model(page_html: str, capture) -> dict:
     from playwright.async_api import async_playwright
     with tempfile.TemporaryDirectory() as td:
         html_path = Path(td) / "standalone.html"
@@ -86,7 +86,9 @@ async def js_model(page_html: str, capture: Path) -> dict:
             errors = []
             page.on("pageerror", lambda e: errors.append(str(e)))
             await page.goto(html_path.as_uri())
-            await page.set_input_files("#fileInput", str(capture))
+            files = ([str(c) for c in capture] if isinstance(capture, list)
+                     else str(capture))
+            await page.set_input_files("#fileInput", files)
             await page.wait_for_function("typeof M !== 'undefined' && M !== null", timeout=600000)
             raw = await page.evaluate("JSON.stringify(M)")
             await browser.close()
@@ -96,18 +98,26 @@ async def js_model(page_html: str, capture: Path) -> dict:
 
 
 def main() -> int:
-    captures = [Path(x) for x in sys.argv[1:]]
+    argv = sys.argv[1:]
+    merge = "--merge" in argv
+    argv = [a for a in argv if a != "--merge"]
+    captures = [Path(x) for x in argv]
     if not captures:
-        print("usage: parity_check.py capture [capture ...]", file=sys.stderr)
+        print("usage: parity_check.py [--merge] capture [capture ...]",
+              file=sys.stderr)
         return 2
     html = build()
     failures = 0
-    for cap in captures:
-        py = normalize(analyze_capture(str(cap), quiet=True))
-        js = normalize(asyncio.run(js_model(html, cap)))
+    jobs = [captures] if merge else [[c] for c in captures]
+    for group in jobs:
+        py_in = str(group[0]) if len(group) == 1 else [str(c) for c in group]
+        js_in = group[0] if len(group) == 1 else list(group)
+        name = group[0].name if len(group) == 1 else             " + ".join(c.name for c in group)
+        py = normalize(analyze_capture(py_in, quiet=True))
+        js = normalize(asyncio.run(js_model(html, js_in)))
         diffs = diff(py, js)
         status = "MATCH" if not diffs else f"{len(diffs)}+ DIFFS"
-        print(f"{cap.name:<42} sessions={py['totals']['sessions']:<4} "
+        print(f"{name:<42} sessions={py['totals']['sessions']:<4} "
               f"tcp={py['capture']['tcp_packets']:<7} {status}")
         for d in diffs:
             print("   ", d)

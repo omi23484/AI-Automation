@@ -8,11 +8,13 @@ report generator serializes into the HTML.
 
 from __future__ import annotations
 
+import heapq
 import sys
+from pathlib import Path
 
 from . import __version__
 from .artifacts import session_artifacts
-from .capture_reader import CaptureReader
+from .capture_reader import CaptureReader, decode_tcp
 from .models import flags_to_str
 from .statistics import histogram, summarize
 from .tcp_retransmission import RetransConfig
@@ -28,7 +30,44 @@ def _progress(msg: str, quiet: bool) -> None:
         print(msg, file=sys.stderr, flush=True)
 
 
-def analyze_capture(path: str, *, capture_id: int = 0, capture_point: str = "",
+def _merged_tcp_packets(readers: list[CaptureReader]):
+    """K-way merge of several captures' frame streams by timestamp.
+
+    Frames get a single global numbering in merge order (ties broken by
+    file order), and every TCPPacket carries the capture_id of its source
+    file — a file boundary IS an observation point, so the multi-point
+    dedup treats "same packet in capture A and capture B" exactly like
+    "same packet on two leafs".  Per-file frame streams are assumed
+    time-ordered (as written by capture tools); k-way merging makes the
+    combined stream globally ordered.
+    """
+    heap: list = []
+    gens = []
+    for i, rd in enumerate(readers):
+        g = rd.frames()
+        gens.append(g)
+        try:
+            f = next(g)
+            heap.append((f[1], i, f))
+        except StopIteration:
+            pass
+    heapq.heapify(heap)
+    frame_no = 0
+    while heap:
+        _ts, i, f = heapq.heappop(heap)
+        frame_no += 1
+        pkt = decode_tcp(frame_no, f[1], f[2], f[3], f[4], i)
+        if pkt is not None:
+            readers[i].time_info.tcp_packet_count += 1
+            yield pkt
+        try:
+            nf = next(gens[i])
+            heapq.heappush(heap, (nf[1], i, nf))
+        except StopIteration:
+            pass
+
+
+def analyze_capture(path, *, capture_id: int = 0, capture_point: str = "",
                     retrans_cfg: RetransConfig | None = None,
                     verdict_cfg: VerdictConfig | None = None,
                     max_packet_rows: int = 20_000,
@@ -36,22 +75,27 @@ def analyze_capture(path: str, *, capture_id: int = 0, capture_point: str = "",
                     max_rtt_rows: int = 20_000,
                     max_sack_rows: int = 10_000,
                     quiet: bool = False) -> dict:
+    """Analyze one capture (str path) or several merged (list of paths)."""
+    paths = [path] if isinstance(path, (str, Path)) else [str(p) for p in path]
     retrans_cfg = retrans_cfg or RetransConfig()
     verdict_cfg = verdict_cfg or VerdictConfig()
 
-    reader = CaptureReader(path, capture_id=capture_id,
-                           capture_point=capture_point)
+    readers = [CaptureReader(p, capture_id=(capture_id if len(paths) == 1
+                                            else i),
+                             capture_point=capture_point)
+               for i, p in enumerate(paths)]
     mgr = SessionManager(retrans_cfg, row_limit=max_packet_rows)
 
     _progress("[1/4] Reading packets & reconstructing sessions ...", quiet)
     n = 0
-    for pkt in reader.tcp_packets():
+    for pkt in _merged_tcp_packets(readers):
         mgr.feed(pkt)
         n += 1
         if n % PROGRESS_EVERY == 0:
             _progress(f"      {n:,} TCP packets, "
                       f"{len(mgr.sessions):,} sessions ...", quiet)
-    _progress(f"      done: {reader.time_info.packet_count:,} packets, "
+    total_pkts = sum(rd.time_info.packet_count for rd in readers)
+    _progress(f"      done: {total_pkts:,} packets, "
               f"{n:,} TCP, {len(mgr.sessions):,} sessions", quiet)
 
     _progress("[2/4] Finalizing sequence space, SACK scoreboards, "
@@ -93,27 +137,57 @@ def analyze_capture(path: str, *, capture_id: int = 0, capture_point: str = "",
     totals["retrans_pct"] = (100.0 * totals["retrans_segments"]
                              / totals["data_segments"]
                              if totals["data_segments"] else 0.0)
-    ti = reader.time_info
-    res = ti.coarsest_resolution
+    multi = len(readers) > 1
+    names = [Path(p).name for p in paths]
+    all_res = [r for rd in readers for r in rd.time_info.resolutions]
+    res = min(all_res, key=lambda r: r.ticks_per_second) if all_res else None
+    firsts = [rd.time_info.first_ts_ns for rd in readers
+              if rd.time_info.first_ts_ns is not None]
+    lasts = [rd.time_info.last_ts_ns for rd in readers
+             if rd.time_info.last_ts_ns is not None]
+    first_ts = min(firsts) if firsts else None
+    last_ts = max(lasts) if lasts else None
+    formats = []
+    for rd in readers:
+        if rd.time_info.file_format not in formats:
+            formats.append(rd.time_info.file_format)
+    snaplens = [rd.snaplen for rd in readers if rd.snaplen is not None]
+    warnings = ([w for rd in readers for w in rd.warnings] if not multi else
+                [f"{Path(rd.path).name}: {w}"
+                 for rd in readers for w in rd.warnings])
+    if multi:
+        warnings.insert(0, f"merged timeline of {len(readers)} capture "
+                           "files — frames interleaved by timestamp; a file "
+                           "boundary is treated as an observation point for "
+                           "multi-point duplicate recognition")
     capture = {
-        "path": path,
+        "path": paths[0] if not multi else " + ".join(names),
         "capture_id": capture_id,
-        "capture_point": capture_point or path,
-        "format": ti.file_format,
+        "capture_point": capture_point or
+                         (paths[0] if not multi else " + ".join(names)),
+        "format": "+".join(formats),
         "resolution_label": res.label if res else "unknown",
-        "effective_precision_ns": ti.effective_precision_ns(),
+        "effective_precision_ns": res.ns_per_tick if res else 1_000_000_000,
         "nanosecond_native": bool(res and res.ticks_per_second >= 1_000_000_000),
-        "first_ts": ti.first_ts_ns,
-        "first_ts_str": format_ns_utc(ti.first_ts_ns),
-        "last_ts": ti.last_ts_ns,
-        "last_ts_str": format_ns_utc(ti.last_ts_ns),
-        "duration_ns": ti.duration_ns,
-        "duration_str": format_duration_ns(ti.duration_ns),
-        "packets": ti.packet_count,
-        "tcp_packets": ti.tcp_packet_count,
-        "snaplen": reader.snaplen,
-        "truncated_frames": reader.truncated_frames,
-        "warnings": reader.warnings,
+        "first_ts": first_ts,
+        "first_ts_str": format_ns_utc(first_ts),
+        "last_ts": last_ts,
+        "last_ts_str": format_ns_utc(last_ts),
+        "duration_ns": (last_ts - first_ts
+                        if first_ts is not None and last_ts is not None else 0),
+        "duration_str": format_duration_ns(
+            last_ts - first_ts
+            if first_ts is not None and last_ts is not None else 0),
+        "packets": sum(rd.time_info.packet_count for rd in readers),
+        "tcp_packets": sum(rd.time_info.tcp_packet_count for rd in readers),
+        "snaplen": min(snaplens) if snaplens else None,
+        "truncated_frames": sum(rd.truncated_frames for rd in readers),
+        "warnings": warnings,
+        "files": [{"name": nm,
+                   "packets": rd.time_info.packet_count,
+                   "tcp_packets": rd.time_info.tcp_packet_count,
+                   "format": rd.time_info.file_format}
+                  for nm, rd in zip(names, readers)],
     }
     model = {
         "tool": {"name": "tcpforensics", "version": __version__},

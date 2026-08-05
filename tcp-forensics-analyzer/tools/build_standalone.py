@@ -33,12 +33,15 @@ LANDING_HTML = """  <div class="panel" id="landing" style="--i:0">
     machine. (Streamed parsing in a background worker: multi-GB captures
     are practical — memory is bounded by per-session state, not file size.)</p>
     <div id="dropzone" tabindex="0" role="button"
-         aria-label="drop a capture file or press Enter to browse">
+         aria-label="drop capture files or press Enter to browse">
       <div style="font-size:30px;opacity:.6">⇣</div>
-      <div>Drop capture here — or <u>browse</u></div>
+      <div>Drop one or several captures here — or <u>browse</u></div>
+      <div class="mut" style="font-size:11px;margin-top:4px">multiple files are
+        merged into one timeline by timestamp — each file counts as an
+        observation point (multi-leaf SPAN aware)</div>
       <div class="mut" style="font-size:11px;margin-top:6px">.pcap · .pcapng ·
         nanosecond &amp; microsecond timestamps · Ethernet / SLL / RAW</div>
-      <input type="file" id="fileInput" accept=".pcap,.pcapng,.cap"
+      <input type="file" id="fileInput" accept=".pcap,.pcapng,.cap" multiple
              style="display:none">
     </div>
     <div id="anProgress" class="mut" style="display:none;margin-top:12px"></div>
@@ -95,7 +98,8 @@ function tfGetWorker(){
       'onmessage=async e=>{'+
       ' if(e.data&&e.data.cmd==="analyze"){'+
       '  try{'+
-      '   const model=await TFEngine.analyze(e.data.file,e.data.name,'+
+      '   const inp=e.data.files?(e.data.files.length===1?e.data.files[0]:e.data.files):e.data.file;'+
+      '   const model=await TFEngine.analyze(inp,e.data.name,'+
       '     (p,t,s,d,tot)=>postMessage({type:"progress",p,t,s,d,tot}));'+
       '   postMessage({type:"done",model});'+
       '  }catch(err){postMessage({type:"error",message:String(err&&err.message||err)});}'+
@@ -105,27 +109,31 @@ function tfGetWorker(){
   }catch(e){tfWorker=false;}          // blob workers unavailable: run inline
   return tfWorker;
 }
-async function tfAnalyzeFile(file){
+async function tfAnalyzeFiles(files){
+  files=Array.from(files);
+  if(!files.length)return;
+  const label={name:files.length===1?files[0].name:
+    files.length+' captures (merged)'};
   const prog=document.getElementById('anProgress');
   prog.style.display='block';
   document.getElementById('anBar').style.display='block';
-  prog.textContent='Reading '+file.name+' ...';
+  prog.textContent='Reading '+label.name+' ...';
   const w=tfGetWorker();
   if(w){
     w.onmessage=e=>{
       const m=e.data;
-      if(m.type==='progress')tfProgressText(file,m.p,m.t,m.s,m.d,m.tot);
+      if(m.type==='progress')tfProgressText(label,m.p,m.t,m.s,m.d,m.tot);
       else if(m.type==='done')tfShowModel(m.model);
-      else if(m.type==='error')tfFail(file,m.message);
+      else if(m.type==='error')tfFail(label,m.message);
     };
-    w.postMessage({cmd:'analyze',file,name:file.name});
+    w.postMessage({cmd:'analyze',files,name:label.name});
     return;
   }
   try{                                 // main-thread fallback (still streamed)
-    const model=await TFEngine.analyze(file,file.name,
-      (p,t,s,d,tot)=>tfProgressText(file,p,t,s,d,tot));
+    const model=await TFEngine.analyze(files.length===1?files[0]:files,
+      label.name,(p,t,s,d,tot)=>tfProgressText(label,p,t,s,d,tot));
     tfShowModel(model);
-  }catch(e){tfFail(file,e.message);console.error(e);}
+  }catch(e){tfFail(label,e.message);console.error(e);}
 }
 (function(){
   const dz=document.getElementById('dropzone');
@@ -133,21 +141,21 @@ async function tfAnalyzeFile(file){
   dz.addEventListener('click',()=>fi.click());
   dz.addEventListener('keydown',e=>{
     if(e.key==='Enter'||e.key===' '){e.preventDefault();fi.click();}});
-  fi.addEventListener('change',()=>{if(fi.files[0])tfAnalyzeFile(fi.files[0]);});
+  fi.addEventListener('change',()=>{if(fi.files.length)tfAnalyzeFiles(fi.files);});
   for(const ev of ['dragover','dragenter'])
     dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('drag');});
   for(const ev of ['dragleave','drop'])
     dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('drag');});
   dz.addEventListener('drop',e=>{
-    const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];
-    if(f)tfAnalyzeFile(f);
+    const fs=e.dataTransfer&&e.dataTransfer.files;
+    if(fs&&fs.length)tfAnalyzeFiles(fs);
   });
   // also accept a drop anywhere on the page
   document.addEventListener('dragover',e=>e.preventDefault());
   document.addEventListener('drop',e=>{
     e.preventDefault();
-    const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];
-    if(f)tfAnalyzeFile(f);
+    const fs=e.dataTransfer&&e.dataTransfer.files;
+    if(fs&&fs.length)tfAnalyzeFiles(fs);
   });
 })();
 """
