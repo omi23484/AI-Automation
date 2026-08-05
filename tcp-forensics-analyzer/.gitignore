@@ -3,4 +3,4 @@ __pycache__/
 *.pcap
 *.pcapng
 *.html
-!tcp-forensics-analyzer/**/templates/*.html
+!standalone/tcp-forensics-standalone.html

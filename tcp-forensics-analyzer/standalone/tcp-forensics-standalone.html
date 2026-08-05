@@ -1,0 +1,2985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TCP Forensics Analyzer</title>
+<style>
+:root{
+  --bg:#0a0e1a;--surface:#10141f;
+  --panel:rgba(22,28,42,.66);--panel2:rgba(30,37,54,.62);--solid:#161c2a;
+  --border:rgba(120,140,190,.16);--border2:rgba(120,140,190,.28);
+  --fg:#d4dae6;--bright:#eef2f8;--dim:#8b95a8;
+  --accent:#3987e5;--accent2:#9085e9;
+  --ok:#2fb35c;--warn:#d29922;--bad:#e66767;
+  --c-rtt:#3987e5;--c-ack:#199e70;--c-retx:#e66767;
+  --c-loss:#d95926;--c-dup:#d55181;--c-zw:#9085e9;
+  --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  --ui:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --glow:0 0 24px rgba(57,135,229,.25);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+/* Type system: UI sans carries structure (headings, labels, controls);
+   mono is reserved for data — numbers, timestamps, addresses, tables.
+   System stacks are a deliberate constraint: the report must stay a
+   zero-request single file, so no webfonts. */
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:13.5px/1.55 var(--ui);font-variant-numeric:tabular-nums;
+  overflow-x:hidden}
+table,.kv,.mono,td,.tile .v,.legend,.chip{font-family:var(--mono);font-size:12px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+/* ---- ambient background: aurora orbs + engineering grid ---- */
+body::before{content:'';position:fixed;inset:0;z-index:-3;background:
+  radial-gradient(60% 50% at 12% -5%, rgba(57,135,229,.17), transparent 62%),
+  radial-gradient(50% 42% at 88% 8%, rgba(144,133,233,.14), transparent 60%),
+  radial-gradient(45% 45% at 50% 105%, rgba(25,158,112,.08), transparent 60%)}
+body::after{content:'';position:fixed;inset:0;z-index:-2;pointer-events:none;
+  background:
+   linear-gradient(rgba(140,160,210,.035) 1px, transparent 1px),
+   linear-gradient(90deg, rgba(140,160,210,.035) 1px, transparent 1px);
+  background-size:44px 44px;
+  mask-image:radial-gradient(75% 60% at 50% 30%, #000 30%, transparent 100%)}
+.orb{position:fixed;border-radius:50%;filter:blur(90px);z-index:-1;
+  pointer-events:none;opacity:.5;will-change:transform}
+.orb.a{width:520px;height:520px;left:-160px;top:-140px;
+  background:radial-gradient(circle,rgba(57,135,229,.32),transparent 70%);
+  animation:orbA 26s ease-in-out infinite alternate}
+.orb.b{width:460px;height:460px;right:-140px;top:120px;
+  background:radial-gradient(circle,rgba(144,133,233,.26),transparent 70%);
+  animation:orbB 32s ease-in-out infinite alternate}
+@keyframes orbA{from{transform:translate(0,0) scale(1)}to{transform:translate(140px,90px) scale(1.15)}}
+@keyframes orbB{from{transform:translate(0,0) scale(1.1)}to{transform:translate(-120px,160px) scale(.95)}}
+
+h1,h2,h3{font-weight:650;margin:.4em 0;font-family:var(--ui);letter-spacing:.01em}
+h1{font-size:21px;background:linear-gradient(92deg,#eaf1fb 10%,#7fb3f5 45%,#b3a8f5 75%,#eaf1fb 95%);
+  background-size:220% 100%;-webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;animation:sheen 9s linear infinite}
+@keyframes sheen{from{background-position:0% 0}to{background-position:220% 0}}
+h2{font-size:16px;color:var(--bright)}
+h2::before{content:'';display:inline-block;width:9px;height:9px;margin-right:9px;
+  border-radius:3px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+  box-shadow:var(--glow)}
+h3{font-size:12.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+a{color:var(--accent);cursor:pointer;text-decoration:none;transition:color .15s}
+a:hover{color:#7fb3f5}
+.wrap{max-width:1520px;margin:0 auto;padding:64px 16px 16px}
+
+/* ---- sticky section nav ---- */
+.nav{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;
+  gap:4px;padding:8px 20px;background:rgba(10,14,26,.78);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border-bottom:1px solid var(--border);font-family:var(--ui);
+  animation:navIn .5s cubic-bezier(.22,1,.36,1)}
+@keyframes navIn{from{transform:translateY(-100%)}to{transform:none}}
+.nav .brand{font-weight:700;font-size:13px;letter-spacing:.02em;color:var(--bright);
+  margin-right:14px;white-space:nowrap}
+.nav .brand::before{content:'';display:inline-block;width:10px;height:10px;
+  border-radius:3px;margin-right:8px;vertical-align:-1px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:var(--glow)}
+.nav a{color:var(--dim);font-size:12.5px;padding:5px 11px;border-radius:7px;
+  transition:color .15s,background .15s}
+.nav a:hover{color:var(--bright);background:rgba(57,135,229,.10)}
+.nav .spacer{flex:1}
+.seg{display:inline-flex;background:rgba(30,37,54,.85);border:1px solid var(--border);
+  border-radius:8px;padding:2px;gap:2px}
+.seg button{border:none;background:transparent;box-shadow:none;padding:3px 12px;
+  border-radius:6px;color:var(--dim);font-family:var(--mono)}
+.seg button:hover{color:var(--bright);box-shadow:none}
+.seg button.on{background:linear-gradient(135deg,var(--accent),var(--accent2));
+  color:#fff;box-shadow:0 1px 8px rgba(57,135,229,.4)}
+
+/* ---- glass panels with staggered entrance ---- */
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;
+  padding:16px 18px;margin-bottom:16px;position:relative;
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  box-shadow:0 8px 32px rgba(0,0,0,.35);
+  animation:riseIn .6s cubic-bezier(.22,1,.36,1) both;
+  animation-delay:calc(var(--i,0)*90ms)}
+.panel::before{content:'';position:absolute;inset:0;border-radius:14px;padding:1px;
+  background:linear-gradient(135deg,rgba(57,135,229,.35),transparent 30%,transparent 70%,rgba(144,133,233,.25));
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none}
+@keyframes riseIn{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+
+/* ---- stat tiles ---- */
+.tiles{display:flex;flex-wrap:wrap;gap:10px}
+.tile{background:var(--panel2);border:1px solid var(--border);border-radius:11px;
+  padding:11px 15px;min-width:132px;position:relative;overflow:hidden;
+  transition:transform .22s cubic-bezier(.22,1,.36,1),box-shadow .22s,border-color .22s;
+  animation:riseIn .55s cubic-bezier(.22,1,.36,1) both;
+  animation-delay:calc(120ms + var(--i,0)*45ms)}
+.tile:hover{transform:translateY(-4px) scale(1.02);border-color:var(--border2);
+  box-shadow:0 12px 28px rgba(0,0,0,.45),var(--glow)}
+.tile::after{content:'';position:absolute;left:0;top:0;right:0;height:2px;
+  background:linear-gradient(90deg,var(--accent),var(--accent2));opacity:.5}
+.tile.ok::after{background:var(--ok)}
+.tile.warn::after{background:var(--warn)}
+.tile.bad::after{background:var(--bad)}
+.tile .v{font-size:18px;font-weight:700;color:var(--bright);letter-spacing:.01em}
+.tile .l{font-size:10.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;margin-top:2px}
+.tile.bad .v{color:var(--bad)}.tile.warn .v{color:var(--warn)}.tile.ok .v{color:var(--ok)}
+.tile.bad .l::after{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--bad);margin-left:6px;vertical-align:1px;animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.35;transform:scale(.8)}50%{opacity:1;transform:scale(1.15)}}
+
+/* ---- tables ---- */
+table{border-collapse:collapse;width:100%;font-size:12px}
+th,td{border-bottom:1px solid rgba(120,140,190,.10);padding:5px 9px;text-align:left;white-space:nowrap}
+th{color:var(--dim);cursor:pointer;user-select:none;position:sticky;top:0;z-index:2;
+  background:rgba(16,20,31,.92);backdrop-filter:blur(6px);
+  text-transform:uppercase;font-size:10.5px;letter-spacing:.05em;
+  transition:color .15s}
+th:hover{color:var(--accent)}
+tr{transition:background .15s}
+tbody tr,table tr{animation:rowIn .4s ease both;animation-delay:calc(var(--i,0)*22ms)}
+@keyframes rowIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+tr.clickable{cursor:pointer}
+tr.clickable:hover{background:linear-gradient(90deg,rgba(57,135,229,.14),rgba(57,135,229,.04));
+  box-shadow:inset 3px 0 0 var(--accent)}
+.num{text-align:right}
+.scroll{overflow:auto;max-height:480px;border:1px solid var(--border);border-radius:9px;
+  background:rgba(10,14,26,.35)}
+.scroll::-webkit-scrollbar{width:9px;height:9px}
+.scroll::-webkit-scrollbar-thumb{background:rgba(120,140,190,.25);border-radius:5px}
+.scroll::-webkit-scrollbar-thumb:hover{background:rgba(120,140,190,.45)}
+.scroll::-webkit-scrollbar-track{background:transparent}
+
+.badge{display:inline-block;border-radius:20px;padding:1px 9px;font-size:10.5px;margin:1px 2px;
+  border:1px solid;letter-spacing:.02em;font-family:var(--ui)}
+.hdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;
+  vertical-align:1px}
+.hdot.ok{background:var(--ok);box-shadow:0 0 6px rgba(47,179,92,.5)}
+.hdot.warn{background:var(--warn);box-shadow:0 0 6px rgba(210,153,34,.5)}
+.hdot.bad{background:var(--bad);box-shadow:0 0 6px rgba(230,103,103,.55)}
+.pill{display:inline-block;padding:1px 9px;border-radius:20px;font-size:10.5px;
+  font-family:var(--ui);letter-spacing:.03em;border:1px solid var(--border2);color:var(--dim)}
+.pill.closed{color:var(--ok);border-color:rgba(47,179,92,.4)}
+.pill.established{color:var(--accent);border-color:rgba(57,135,229,.4)}
+.pill.reset{color:var(--bad);border-color:rgba(230,103,103,.45)}
+.pill.half-closed{color:var(--warn);border-color:rgba(210,153,34,.4)}
+.pill.partial{color:var(--warn);border-color:rgba(210,153,34,.4)}
+.empty{padding:34px 10px;text-align:center;color:var(--dim);font-family:var(--ui);
+  font-size:13px}
+.empty::before{content:'∅';display:block;font-size:22px;opacity:.4;margin-bottom:6px}
+.b-ok{color:var(--ok);border-color:var(--ok);background:rgba(47,179,92,.09)}
+.b-warn{color:var(--warn);border-color:var(--warn);background:rgba(210,153,34,.09)}
+.b-bad{color:var(--bad);border-color:var(--bad);background:rgba(230,103,103,.09)}
+.b-info{color:var(--accent);border-color:var(--accent);background:rgba(57,135,229,.09)}
+
+/* ---- controls ---- */
+.controls{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:12px;align-items:center}
+.controls input,.controls select,button{background:rgba(30,37,54,.8);color:var(--fg);
+  border:1px solid var(--border);border-radius:7px;padding:5px 10px;font:12px var(--mono);
+  transition:border-color .18s,box-shadow .18s,transform .12s}
+.controls input:focus,.controls select:focus{outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(57,135,229,.18)}
+.controls label{color:var(--dim);font-size:11px}
+button{cursor:pointer}
+button:hover{border-color:var(--accent);box-shadow:0 0 12px rgba(57,135,229,.25)}
+button:active{transform:scale(.96)}
+button.primary{border-color:transparent;color:#fff;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  box-shadow:0 2px 12px rgba(57,135,229,.35)}
+input[type=range]{accent-color:var(--accent)}
+
+/* ---- tabs ---- */
+.tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border);
+  margin-bottom:12px;padding-bottom:0}
+.tabs div{padding:7px 15px;cursor:pointer;color:var(--dim);border-radius:8px 8px 0 0;
+  position:relative;transition:color .18s,background .18s;font-family:var(--ui);font-size:12.5px}
+.tabs div:hover{color:var(--bright);background:rgba(57,135,229,.07)}
+.tabs div.active{color:var(--bright);background:var(--panel2)}
+.tabs div.active::after{content:'';position:absolute;left:8px;right:8px;bottom:0;height:2px;
+  border-radius:2px;background:linear-gradient(90deg,var(--accent),var(--accent2));
+  animation:tabGlow .35s ease}
+@keyframes tabGlow{from{transform:scaleX(.3);opacity:0}to{transform:none;opacity:1}}
+.tabIn{animation:tabBody .3s cubic-bezier(.22,1,.36,1)}
+@keyframes tabBody{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 18px;font-size:12px}
+.kv .k{color:var(--dim)}
+canvas{background:var(--surface);border:1px solid var(--border);border-radius:9px;max-width:100%}
+.state-Original{color:var(--fg)}.state-ACKed{color:var(--ok)}.state-SACKed{color:var(--c-zw)}
+.state-Retransmitted{color:var(--c-retx)}.state-Duplicate{color:var(--c-loss)}
+.state-Out-of-order{color:var(--warn)}.state-Recovered{color:var(--ok)}
+.state-Ambiguous,.state-Missing{color:var(--warn)}
+.state-Keep-alive,.state-Window-probe,.state-Capture-dup{color:var(--dim)}
+.panel{scroll-margin-top:56px}
+.tooltip{position:fixed;background:rgba(10,14,26,.92);border:1px solid var(--border2);
+  border-radius:8px;padding:7px 10px;font-size:11px;pointer-events:none;z-index:99;
+  white-space:pre;display:none;backdrop-filter:blur(8px);
+  box-shadow:0 8px 24px rgba(0,0,0,.5);animation:ttIn .15s ease}
+@keyframes ttIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.warnbox{border-left:3px solid var(--warn);padding:7px 12px;margin:7px 0;
+  background:rgba(210,153,34,.06);font-size:12px;border-radius:0 8px 8px 0}
+.verdict{border-left:3px solid var(--border2);padding:8px 12px;margin:7px 0;
+  background:var(--panel2);border-radius:0 9px 9px 0;
+  animation:rowIn .45s ease both;animation-delay:calc(var(--i,0)*70ms);
+  transition:transform .18s,box-shadow .18s}
+.verdict:hover{transform:translateX(4px);box-shadow:0 4px 16px rgba(0,0,0,.3)}
+.verdict.ok{border-color:var(--ok)}.verdict.warn{border-color:var(--warn)}
+.verdict.bad{border-color:var(--bad)}.verdict.info{border-color:var(--accent)}
+.verdict{display:grid;grid-template-columns:24px 1fr;gap:2px 10px;font-family:var(--ui)}
+.verdict .glyph{grid-row:span 2;width:22px;height:22px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;font-size:12px;
+  font-weight:700;margin-top:1px}
+.verdict.ok .glyph{color:var(--ok);background:rgba(47,179,92,.13)}
+.verdict.warn .glyph{color:var(--warn);background:rgba(210,153,34,.13)}
+.verdict.bad .glyph{color:var(--bad);background:rgba(230,103,103,.13)}
+.verdict.info .glyph{color:var(--accent);background:rgba(57,135,229,.13)}
+.verdict .ev{color:var(--dim);font-size:12.5px;white-space:normal}
+.mut{color:var(--dim)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:1000px){.grid2{grid-template-columns:1fr}}
+#detail{display:none}
+#detail.pop{animation:detailIn .45s cubic-bezier(.22,1,.36,1)}
+@keyframes detailIn{from{opacity:0;transform:translateY(26px) scale(.985)}to{opacity:1;transform:none}}
+.legend{margin:6px 0}
+.legend span{margin-right:15px;font-size:11px;color:var(--dim)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px;vertical-align:middle}
+.chip{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11px;
+  background:rgba(57,135,229,.12);border:1px solid rgba(57,135,229,.3);color:#8fbcf2}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation:none !important;transition:none !important}
+  html{scroll-behavior:auto}
+}
+
+/* ---- standalone landing / loader ---- */
+body.noModel .nav a{display:none}
+#dropzone{border:2px dashed var(--border2);border-radius:14px;padding:44px 20px;
+  text-align:center;cursor:pointer;font-family:var(--ui);color:var(--fg);
+  transition:border-color .2s,background .2s,transform .2s;margin-top:14px}
+#dropzone:hover,#dropzone:focus-visible,#dropzone.drag{
+  border-color:var(--accent);background:rgba(57,135,229,.06);
+  transform:scale(1.005)}
+</style>
+</head>
+<body>
+<div class="orb a"></div><div class="orb b"></div>
+<div class="tooltip" id="tt"></div>
+<nav class="nav" aria-label="report sections">
+  <span class="brand">TCP Forensics</span>
+  <a href="#hdr">Capture</a>
+  <a href="#latPanel">Latency</a>
+  <a href="#sessPanel">Sessions</a>
+  <a href="#lossPanel">Loss</a>
+  <a href="#detail" id="navSess" style="display:none"></a>
+  <a onclick="location.reload()" title="analyze another capture">↺ new capture</a>
+  <span class="spacer"></span>
+  <span class="seg" role="group" aria-label="sequence display" id="seqSeg" title="relative or raw 32-bit SEQ/ACK numbers"></span>
+  <span class="seg" role="group" aria-label="display unit" id="unitSeg"></span>
+</nav>
+<div class="wrap">
+  <div class="panel" id="landing" style="--i:0">
+    <h1>TCP Session, Sequence, SACK &amp; Nanosecond Latency Forensics</h1>
+    <p style="color:var(--dim);max-width:760px">Fully offline in-browser
+    analyzer. Drop a <b>.pcap</b> / <b>.pcapng</b> capture below — parsing,
+    TCP session reconstruction, sequence-space, SACK, loss and nanosecond
+    latency analysis all run locally in this page. Nothing leaves this
+    machine. (Whole-file analysis in browser memory: captures up to a few
+    hundred MB are practical.)</p>
+    <div id="dropzone" tabindex="0" role="button"
+         aria-label="drop a capture file or press Enter to browse">
+      <div style="font-size:30px;opacity:.6">⇣</div>
+      <div>Drop capture here — or <u>browse</u></div>
+      <div class="mut" style="font-size:11px;margin-top:6px">.pcap · .pcapng ·
+        nanosecond &amp; microsecond timestamps · Ethernet / SLL / RAW</div>
+      <input type="file" id="fileInput" accept=".pcap,.pcapng,.cap"
+             style="display:none">
+    </div>
+    <div id="anProgress" class="mut" style="display:none;margin-top:12px"></div>
+  </div>
+
+  <div class="panel" style="--i:0" id="hdr"></div>
+  <div class="panel" style="--i:1"><div class="tiles" id="tiles"></div></div>
+  <div class="panel" style="--i:2" id="latPanel">
+    <h2>Capture Latency &amp; Recovery Distribution</h2>
+    <div class="grid2">
+      <div><h3>Valid RTT (Karn-filtered)</h3><div id="gRttStats"></div>
+        <canvas id="gRttHist" width="640" height="180"></canvas>
+        <canvas id="gRttCdf" width="640" height="150"></canvas></div>
+      <div><h3>Loss recovery (original TX &rarr; recovery ACK)</h3><div id="gRecStats"></div>
+        <canvas id="gRecHist" width="640" height="180"></canvas>
+        <canvas id="gRecCdf" width="640" height="150"></canvas></div>
+    </div>
+  </div>
+  <div class="panel" style="--i:3" id="sessPanel">
+    <h2>Session Explorer</h2>
+    <div class="controls" id="sessFilters"></div>
+    <div class="scroll" style="max-height:420px"><table id="sessTable"></table></div>
+  </div>
+  <div class="panel" style="--i:4" id="lossPanel">
+    <h2>Loss &amp; Recovery Dashboard</h2>
+    <div class="controls">
+      <button onclick="exportLossCsv()">Export loss CSV</button>
+      <button onclick="exportRetransCsv()">Export retransmissions CSV</button>
+      <button onclick="exportRttCsv()">Export RTT samples CSV</button>
+      <button onclick="exportSackCsv()">Export SACK events CSV</button>
+      <button onclick="exportSessionsCsv()">Export sessions CSV</button>
+    </div>
+    <div class="scroll" style="max-height:380px"><table id="lossTable"></table></div>
+  </div>
+  <div class="panel" id="detail"></div>
+</div>
+<script id="data" type="application/json">null</script>
+<script>
+"use strict";
+let M = null;
+try{const _d=document.getElementById('data').textContent.trim();
+  M=(_d&&_d!=='null')?JSON.parse(_d):null;}catch(_e){M=null;}
+const $ = s => document.querySelector(s);
+if(!CanvasRenderingContext2D.prototype.roundRect){ // older-browser fallback
+  CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h){this.rect(x,y,w,h);};
+}
+const MOTION = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const EASE = t => t < .5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2) / 2;
+// series palette — validated for CVD separation & contrast on the dark surface
+const C = {rtt:'#3987e5', ack:'#199e70', retx:'#e66767',
+           loss:'#d95926', dup:'#d55181', zw:'#9085e9',
+           acked:'#199e70', sacked:'#9085e9', hole:'#e66767', out:'#2a3040'};
+let UNIT = 'ns';           // ns | us | ms
+let SEQMODE = 'rel';       // rel | raw — display only; engine stays 64-bit
+let curSess = null, curTab = 'overview';
+let TILES_ANIMATED = false;
+
+/* ------------------------------------------------------ animation utils */
+function animCanvas(canvas, dur, draw){
+  if(canvas._tok) cancelAnimationFrame(canvas._tok);
+  if(!MOTION){ draw(1); return; }
+  const t0 = performance.now();
+  const step = now => {
+    const p = Math.min(1, (now - t0) / dur);
+    draw(EASE(p));
+    if(p < 1) canvas._tok = requestAnimationFrame(step);
+  };
+  canvas._tok = requestAnimationFrame(step);
+}
+function countUp(el, target, fmt, dur){
+  if(!MOTION || TILES_ANIMATED || typeof target !== 'number' || !isFinite(target)){
+    el.textContent = fmt(target); return;
+  }
+  const t0 = performance.now();
+  const step = now => {
+    const p = Math.min(1, (now - t0) / dur);
+    const v = Math.round(target * EASE(p));
+    el.textContent = fmt(Number.isInteger(target) ? v : target * EASE(p));
+    if(p < 1) requestAnimationFrame(step);
+    else el.textContent = fmt(target);
+  };
+  requestAnimationFrame(step);
+}
+
+/* ---------------------------------------------------------- formatting */
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function fmtInt(n){return n==null?'-':Number(n).toLocaleString('en-US');}
+function fmtNs(ns){ // duration in the selected unit; underlying value stays integer ns
+  if(ns==null)return '-';
+  if(UNIT==='ns')return fmtInt(Math.round(ns))+' ns';
+  if(UNIT==='us')return (ns/1000).toLocaleString('en-US',{maximumFractionDigits:3})+' µs';
+  return (ns/1e6).toLocaleString('en-US',{maximumFractionDigits:6})+' ms';
+}
+function fmtTs(ns){ // capture-start-relative, full ns precision
+  if(ns==null)return '-';
+  const rel = ns - (M.capture.first_ts||0);
+  const s = Math.floor(rel/1e9), f = String(rel-s*1e9).padStart(9,'0');
+  return 't+'+s+'.'+f+'s';
+}
+function fmtBytes(b){
+  if(b==null)return '-';
+  if(b>=1e9)return (b/1e9).toFixed(2)+' GB';
+  if(b>=1e6)return (b/1e6).toFixed(2)+' MB';
+  if(b>=1e3)return (b/1e3).toFixed(1)+' kB';
+  return Math.round(b)+' B';
+}
+function pct(x){return x==null?'-':x.toFixed(2)+'%';}
+function seqBase(s,dir){return (dir==='A->B'?s.dir_a:s.dir_b).seq_base_raw||0;}
+function fmtSeq(s,dir,v){ // relative <-> raw 32-bit sequence display
+  if(v==null)return '-';
+  if(SEQMODE==='rel')return fmtInt(v);
+  return fmtInt((seqBase(s,dir)+v)%4294967296);
+}
+function oppDir(d){return d==='A->B'?'B->A':'A->B';}
+function tri(v){return v==null?'unknown':(v?'yes':'no');}
+
+/* ------------------------------------------------------------- header */
+function renderHeader(){
+  const c = M.capture;
+  const precNote = c.nanosecond_native
+    ? 'Capture timestamp resolution: '+c.resolution_label+' &mdash; effective precision: nanosecond'
+    : 'Capture timestamp resolution: '+c.resolution_label+' &mdash; display unit: ns &mdash; effective precision: '
+      +fmtInt(c.effective_precision_ns)+' ns (nanosecond digits below this are not meaningful)';
+  $('#hdr').innerHTML =
+   '<h1>TCP Session, Sequence, SACK &amp; Nanosecond Latency Forensics</h1>'+
+   '<div class="kv">'+
+   '<div class="k">Capture file</div><div>'+esc(c.path)+' <span class="chip">'+esc(c.format)+'</span></div>'+
+   '<div class="k">Capture point</div><div>'+esc(c.capture_point)+' <span class="mut">capture_id='+c.capture_id+'</span></div>'+
+   '<div class="k">Timestamp precision</div><div>'+precNote+'</div>'+
+   '<div class="k">First packet</div><div>'+esc(c.first_ts_str)+' UTC</div>'+
+   '<div class="k">Last packet</div><div>'+esc(c.last_ts_str)+' UTC</div>'+
+   '<div class="k">Duration</div><div>'+esc(c.duration_str)+'</div>'+
+   '<div class="k">Packets</div><div>'+fmtInt(c.packets)+' total, '+fmtInt(c.tcp_packets)+' TCP'+
+     (c.truncated_frames?' <span class="b-warn badge">'+fmtInt(c.truncated_frames)+' truncated by snaplen</span>':'')+'</div>'+
+   '</div>'+
+   (c.warnings&&c.warnings.length?c.warnings.map(w=>'<div class="warnbox">⚠ '+esc(w)+'</div>').join(''):'')+
+   '<div class="mut" style="margin-top:8px;font-family:var(--ui)">'+esc(M.tool.name)+' v'+esc(M.tool.version)+
+   ' &mdash; display unit is presentation only; internal values remain integer nanoseconds</div>';
+}
+function renderNav(){
+  $('#seqSeg').innerHTML=['rel','raw'].map(m=>
+    '<button class="'+(SEQMODE===m?'on':'')+'" onclick="setSeqMode(\''+m+'\')" '+
+    'aria-pressed="'+(SEQMODE===m)+'">SEQ '+m+'</button>').join('');
+  $('#unitSeg').innerHTML=['ns','us','ms'].map(u=>
+    '<button class="'+(UNIT===u?'on':'')+'" onclick="setUnit(\''+u+'\')" '+
+    'aria-pressed="'+(UNIT===u)+'">'+(u==='us'?'µs':u)+'</button>').join('');
+  const nl=$('#navSess');
+  if(curSess){nl.style.display='';nl.textContent=curSess.label;}
+  else nl.style.display='none';
+}
+function setUnit(u){UNIT=u;renderAll();}
+function setSeqMode(m){SEQMODE=m;renderAll();}
+
+/* -------------------------------------------------------------- tiles */
+function renderTiles(){
+  const t=M.totals,r=M.rtt_summary,rec=M.recovery_summary;
+  const defs=[
+    ['Sessions',t.sessions,fmtInt,''],
+    ['TCP packets',t.tcp_packets,fmtInt,''],
+    ['TCP payload',t.payload_bytes,fmtBytes,''],
+    ['Retransmissions',t.retrans_segments,fmtInt,t.retrans_segments?'warn':'ok'],
+    ['Retrans %',t.retrans_pct,pct,t.retrans_pct>2?'bad':t.retrans_pct>0.5?'warn':'ok'],
+    ['SACK events',t.sack_events,fmtInt,''],
+    ['DSACK',t.dsack_events,fmtInt,''],
+    ['Loss events',t.loss_events,fmtInt,t.loss_events?'warn':'ok'],
+    ['Dup ACKs',t.dup_acks,fmtInt,''],
+    ['Out-of-order',t.ooo_packets,fmtInt,''],
+    ['Zero-window',t.zero_window_events,fmtInt,t.zero_window_events?'bad':'ok'],
+    ['Multi-point dups',t.network_dups,fmtInt,''],
+    ['Median RTT',r.median,fmtNs,''],
+    ['P95 RTT',r.p95,fmtNs,''],
+    ['P99 RTT',r.p99,fmtNs,''],
+    ['Max RTT',r.max,fmtNs,''],
+    ['Median recovery',rec.median,fmtNs,''],
+    ['P95 recovery',rec.p95,fmtNs,''],
+    ['Max recovery',rec.max,fmtNs,'']];
+  $('#tiles').innerHTML = defs.map((d,i)=>
+    '<div class="tile '+d[3]+'" style="--i:'+i+'"><div class="v" id="tv'+i+'"></div>'+
+    '<div class="l">'+d[0]+'</div></div>').join('');
+  defs.forEach((d,i)=>countUp($('#tv'+i), d[1], d[2], 700+i*40));
+  TILES_ANIMATED = true;
+}
+
+/* ------------------------------------------------------------- charts */
+function drawHist(canvas,h,color){
+  if(!canvas)return;   // tab switched away before a deferred draw ran
+  const ctx=canvas.getContext('2d');
+  if(!h||!h.counts||!h.counts.length){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='#8b95a8';ctx.fillText('no samples',10,20);return;
+  }
+  const W=canvas.width,H=canvas.height,pad=34,max=Math.max(...h.counts);
+  const bw=(W-pad-8)/h.counts.length, n=h.counts.length;
+  const total=h.counts.reduce((a,b)=>a+b,0);
+  canvas._hist={h,pad,bw,total};          // geometry for the hover layer
+  if(!canvas._histHover){canvas._histHover=true;
+    canvas.addEventListener('mousemove',histHover);
+    canvas.addEventListener('mouseleave',()=>{$('#tt').style.display='none';});}
+  animCanvas(canvas, 650, p=>{
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle='rgba(120,140,190,.14)';ctx.lineWidth=1;
+    [0.5,1].forEach(f=>{const y=H-18-(H-30)*f;
+      ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(W-8,y);ctx.stroke();});
+    h.counts.forEach((c,i)=>{
+      const pi=Math.max(0,Math.min(1,(p - (i/n)*0.35)/0.65));
+      const bh=max?(H-30)*c/max*pi:0;
+      const g=ctx.createLinearGradient(0,H-18-bh,0,H-18);
+      g.addColorStop(0,color);g.addColorStop(1,color+'55');
+      ctx.fillStyle=g;
+      const x=pad+i*bw, w=Math.max(1,bw-2);
+      ctx.beginPath();
+      ctx.roundRect(x,H-18-bh,w,Math.max(0,bh),[3,3,0,0]);
+      ctx.fill();
+    });
+    ctx.fillStyle='#8b95a8';ctx.font='10px monospace';
+    ctx.fillText(fmtNs(h.buckets[0]),pad,H-5);
+    const last=fmtNs(h.buckets[h.buckets.length-1]);
+    ctx.fillText(last,W-8-ctx.measureText(last).width,H-5);
+    ctx.save();ctx.translate(10,H/2);ctx.rotate(-Math.PI/2);ctx.fillText('count',0,0);ctx.restore();
+    ctx.fillText('max '+max,pad,12);
+  });
+}
+function drawCdf(canvas,h,color){
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  if(!h||!h.cdf||!h.cdf.length){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='#8b95a8';ctx.fillText('no samples',10,20);return;
+  }
+  const W=canvas.width,H=canvas.height,pad=34;
+  const xs=h.cdf.map(q=>q[0]);const lo=xs[0],hi=xs[xs.length-1]||1;
+  const X=v=>pad+(hi>lo?(v-lo)/(hi-lo):0)*(W-pad-8);
+  const Y=q=>H-16-(q/100)*(H-28);
+  canvas._cdf={cdf:h.cdf,lo,hi,pad};      // for the hover readout
+  if(!canvas._cdfHover){canvas._cdfHover=true;
+    canvas.addEventListener('mousemove',cdfHover);
+    canvas.addEventListener('mouseleave',()=>{$('#tt').style.display='none';});}
+  animCanvas(canvas, 750, p=>{
+    ctx.clearRect(0,0,W,H);
+    ctx.strokeStyle='rgba(120,140,190,.18)';ctx.lineWidth=1;
+    [50,90,95,99].forEach(q=>{ctx.beginPath();ctx.moveTo(pad,Y(q));ctx.lineTo(W-8,Y(q));ctx.stroke();});
+    const upto=Math.max(2,Math.ceil(h.cdf.length*p));
+    ctx.strokeStyle=color;ctx.lineWidth=2;ctx.lineJoin='round';
+    ctx.shadowColor=color;ctx.shadowBlur=6;
+    ctx.beginPath();
+    h.cdf.slice(0,upto).forEach((q,i)=>{i?ctx.lineTo(X(q[0]),Y(q[1])):ctx.moveTo(X(q[0]),Y(q[1]));});
+    ctx.stroke();ctx.shadowBlur=0;
+    ctx.fillStyle='#8b95a8';ctx.font='10px monospace';
+    [50,90,99].forEach(q=>ctx.fillText('P'+q,2,Y(q)+3));
+    ctx.fillText('CDF',pad,10);ctx.fillText(fmtNs(lo),pad,H-4);
+    const last=fmtNs(hi);ctx.fillText(last,W-8-ctx.measureText(last).width,H-4);
+  });
+}
+function histHover(ev){
+  const cv=ev.currentTarget,g=cv._hist,tt=$('#tt');
+  if(!g){tt.style.display='none';return;}
+  const r=cv.getBoundingClientRect();
+  const x=(ev.clientX-r.left)*cv.width/r.width;
+  const i=Math.floor((x-g.pad)/g.bw);
+  if(i<0||i>=g.h.counts.length||!g.h.counts[i]){tt.style.display='none';return;}
+  const lo=g.h.buckets[i], hi=g.h.buckets[i+1]??g.h.buckets[i];
+  const c=g.h.counts[i], pctv=g.total?(100*c/g.total).toFixed(1):'0';
+  tt.style.display='block';tt.style.left=(ev.clientX+12)+'px';tt.style.top=(ev.clientY+12)+'px';
+  tt.textContent=fmtNs(lo)+' – '+fmtNs(hi)+'\n'+fmtInt(c)+' samples ('+pctv+'%)';
+}
+function cdfHover(ev){
+  const cv=ev.currentTarget,g=cv._cdf,tt=$('#tt');
+  if(!g){tt.style.display='none';return;}
+  const r=cv.getBoundingClientRect();
+  const x=(ev.clientX-r.left)*cv.width/r.width;
+  const v=g.lo+Math.max(0,Math.min(1,(x-g.pad)/(cv.width-g.pad-8)))*(g.hi-g.lo);
+  let best=g.cdf[0];
+  for(const q of g.cdf){if(q[0]<=v)best=q;else break;}
+  tt.style.display='block';tt.style.left=(ev.clientX+12)+'px';tt.style.top=(ev.clientY+12)+'px';
+  tt.textContent='P'+best[1].toFixed(1)+' of samples ≤ '+fmtNs(best[0]);
+}
+function statLine(s){
+  if(!s||!s.count)return '<span class="mut">no valid samples</span>';
+  let t='n='+fmtInt(s.count)+' min='+fmtNs(s.min)+' med='+fmtNs(s.median)+' mean='+fmtNs(s.mean)+
+    ' p90='+fmtNs(s.p90)+' p95='+fmtNs(s.p95)+' p99='+fmtNs(s.p99);
+  if(s.p999!=null)t+=' p99.9='+fmtNs(s.p999);
+  t+=' max='+fmtNs(s.max)+' σ='+fmtNs(s.stddev);
+  return t;
+}
+function renderGlobalCharts(){
+  $('#gRttStats').innerHTML=statLine(M.rtt_summary);
+  $('#gRecStats').innerHTML=statLine(M.recovery_summary);
+  drawHist($('#gRttHist'),M.rtt_hist,C.rtt);drawCdf($('#gRttCdf'),M.rtt_hist,C.rtt);
+  drawHist($('#gRecHist'),M.recovery_hist,C.loss);drawCdf($('#gRecCdf'),M.recovery_hist,C.loss);
+}
+
+/* -------------------------------------------------- session explorer */
+let sortKey='id',sortDir=1;
+function renderSessFilters(){
+  $('#sessFilters').innerHTML =
+   '<label>search <input id="f_text" size="18" placeholder="IP / port / session id" oninput="applyF()"></label>'+
+   '<label>min duration(ms) <input id="f_dur" size="5" oninput="applyF()"></label>'+
+   '<label>min bytes <input id="f_bytes" size="7" oninput="applyF()"></label>'+
+   '<label>min retrans <input id="f_ret" size="4" oninput="applyF()"></label>'+
+   '<label>min retrans% <input id="f_retp" size="4" oninput="applyF()"></label>'+
+   '<label>min RTT p50(µs) <input id="f_rtt" size="5" oninput="applyF()"></label>'+
+   '<label>min RTT p99(µs) <input id="f_p99" size="5" oninput="applyF()"></label>'+
+   '<label>SACK <select id="f_sack" onchange="applyF()"><option value="">any</option><option>yes</option><option>no</option></select></label>'+
+   '<label><input type="checkbox" id="f_loss" onchange="applyF()">loss</label>'+
+   '<label><input type="checkbox" id="f_zw" onchange="applyF()">zero-win</label>'+
+   '<label><input type="checkbox" id="f_rst" onchange="applyF()">RST</label>'+
+   '<label><input type="checkbox" id="f_inc" onchange="applyF()">incomplete</label>';
+}
+function applyF(){renderSessTable();}
+function sessFiltered(){
+  const txt=($('#f_text')?.value||'').toLowerCase();
+  const dur=parseFloat($('#f_dur')?.value)||0, bytes=parseFloat($('#f_bytes')?.value)||0;
+  const ret=parseFloat($('#f_ret')?.value)||0, retp=parseFloat($('#f_retp')?.value)||0;
+  const rtt=(parseFloat($('#f_rtt')?.value)||0)*1000, p99=(parseFloat($('#f_p99')?.value)||0)*1000;
+  const sack=$('#f_sack')?.value||'';
+  return M.sessions.filter(s=>{
+    if(txt && !(s.client.toLowerCase().includes(txt)||s.server.toLowerCase().includes(txt)
+      ||String(s.id).includes(txt)||s.label.toLowerCase().includes(txt)
+      ||String(s.client_port).includes(txt)||String(s.server_port).includes(txt)))return false;
+    if(dur && s.duration_ns < dur*1e6)return false;
+    if(bytes && s.stats.payload_bytes < bytes)return false;
+    if(ret && s.stats.retrans_segments < ret)return false;
+    if(retp && s.stats.retrans_pct < retp)return false;
+    if(rtt && !(s.stats.rtt.median>=rtt))return false;
+    if(p99 && !(s.stats.rtt.p99>=p99))return false;
+    if(sack==='yes' && s.sack_active!==true)return false;
+    if(sack==='no' && s.sack_active!==false)return false;
+    if($('#f_loss')?.checked && !s.stats.loss_events)return false;
+    if($('#f_zw')?.checked && !s.stats.zero_window_events)return false;
+    if($('#f_rst')?.checked && !s.stats.rst)return false;
+    if($('#f_inc')?.checked && !s.partial)return false;
+    return true;
+  });
+}
+const SESS_COLS=[
+ ['id','ID',s=>s.id],['client','Client',s=>s.client],['server','Server',s=>s.server],
+ ['duration_ns','Duration',s=>s.duration_ns],['payload','Payload',s=>s.stats.payload_bytes],
+ ['segs','Data segs',s=>s.stats.data_segments],
+ ['retrans','Retx',s=>s.stats.retrans_segments],['retp','Retx %',s=>s.stats.retrans_pct],
+ ['loss','Loss',s=>s.stats.loss_events],['dup','DupACK',s=>s.stats.dup_acks],
+ ['ooo','OOO',s=>s.stats.ooo_packets],['sackev','SACK ev',s=>s.stats.sack_events],
+ ['rtt50','RTT p50',s=>s.stats.rtt.median??-1],['rtt99','RTT p99',s=>s.stats.rtt.p99??-1],
+ ['zw','ZeroWin',s=>s.stats.zero_window_events],['state','State',s=>s.state]];
+function renderSessTable(){
+  const rows=sessFiltered();
+  const col=SESS_COLS.find(c=>c[0]===sortKey)||SESS_COLS[0];
+  rows.sort((a,b)=>{const x=col[2](a),y=col[2](b);
+    return (x>y?1:x<y?-1:0)*sortDir;});
+  let h='<tr>'+SESS_COLS.map(c=>'<th onclick="setSort(\''+c[0]+'\')">'+c[1]+
+    (sortKey===c[0]?(sortDir>0?' ▲':' ▼'):'')+'</th>').join('')+'</tr>';
+  rows.forEach((s,i)=>{
+    const sev=s.verdicts.some(v=>v.severity==='bad')?'bad'
+             :s.verdicts.some(v=>v.severity==='warn')?'warn':'ok';
+    h+='<tr class="clickable" style="--i:'+Math.min(i,30)+'" onclick="openSession('+s.id+')">'+
+      '<td><span class="hdot '+sev+'" title="worst verdict severity: '+sev+'"></span>'+s.label+
+      (s.partial?' <span class="badge b-warn">partial</span>':'')+'</td>'+
+      '<td>'+esc(s.client)+'</td><td>'+esc(s.server)+'</td>'+
+      '<td class="num">'+fmtNs(s.duration_ns)+'</td>'+
+      '<td class="num">'+fmtBytes(s.stats.payload_bytes)+'</td>'+
+      '<td class="num">'+fmtInt(s.stats.data_segments)+'</td>'+
+      '<td class="num">'+fmtInt(s.stats.retrans_segments)+'</td>'+
+      '<td class="num">'+pct(s.stats.retrans_pct)+'</td>'+
+      '<td class="num">'+fmtInt(s.stats.loss_events)+'</td>'+
+      '<td class="num">'+fmtInt(s.stats.dup_acks)+'</td>'+
+      '<td class="num">'+fmtInt(s.stats.ooo_packets)+'</td>'+
+      '<td class="num">'+fmtInt(s.stats.sack_events)+'</td>'+
+      '<td class="num">'+fmtNs(s.stats.rtt.median)+'</td>'+
+      '<td class="num">'+fmtNs(s.stats.rtt.p99)+'</td>'+
+      '<td class="num">'+fmtInt(s.stats.zero_window_events)+'</td>'+
+      '<td><span class="pill '+esc(s.state)+'">'+esc(s.state)+'</span></td></tr>';
+  });
+  $('#sessTable').innerHTML=h+(rows.length?'':'<tr><td colspan="16"><div class="empty">no sessions match the filters</div></td></tr>');
+}
+function setSort(k){if(sortKey===k)sortDir=-sortDir;else{sortKey=k;sortDir=1;}renderSessTable();}
+
+/* ------------------------------------------------------ loss dashboard */
+function allLoss(){
+  const out=[];
+  for(const s of M.sessions)for(const e of s.loss_events)out.push({s,e});
+  return out;
+}
+function renderLossTable(){
+  let h='<tr><th>Loss ID</th><th>Session</th><th>Dir</th><th>SEQ range</th><th>Bytes</th>'+
+    '<th>Original TX</th><th>Detected</th><th>Retrans</th><th>Recovery</th>'+
+    '<th>Detection</th><th>Reaction</th><th>Post-retx</th><th>Total</th>'+
+    '<th>SACK</th><th>DupACKs</th><th>Class</th></tr>';
+  allLoss().forEach(({s,e},i)=>{
+    h+='<tr class="clickable" style="--i:'+Math.min(i,30)+'" onclick="openSession('+s.id+',\'loss\')">'+
+     '<td>'+esc(e.loss_id)+'</td><td>#'+s.id+'</td><td>'+e.dir+'</td>'+
+     '<td class="num">'+fmtSeq(s,e.dir,e.seq)+'–'+fmtSeq(s,e.dir,e.end)+'</td>'+
+     '<td class="num">'+fmtInt(e.bytes)+'</td>'+
+     '<td class="num">'+fmtTs(e.original_tx)+'</td>'+
+     '<td class="num">'+fmtTs(e.evidence_ts)+'</td>'+
+     '<td class="num">'+fmtTs(e.retrans_ts)+'</td>'+
+     '<td class="num">'+fmtTs(e.recovery_ts)+'</td>'+
+     '<td class="num">'+fmtNs(e.detection_ns)+'</td>'+
+     '<td class="num">'+fmtNs(e.reaction_ns)+'</td>'+
+     '<td class="num">'+fmtNs(e.post_retrans_ns)+'</td>'+
+     '<td class="num">'+fmtNs(e.total_ns)+'</td>'+
+     '<td>'+(e.sack?'yes':'no')+'</td><td class="num">'+e.dup_acks+'</td>'+
+     '<td>'+esc(e.classification)+(e.recovered?'':' <span class="badge b-bad">unrecovered</span>')+'</td></tr>';
+  });
+  $('#lossTable').innerHTML=h+(allLoss().length?'':'<tr><td colspan="16"><div class="empty">no loss events in this capture</div></td></tr>');
+}
+
+/* -------------------------------------------------------- session view */
+function openSession(id,tab){
+  curSess=M.sessions.find(s=>s.id===id);curTab=tab||'overview';
+  renderNav();
+  renderDetail(true);
+  $('#detail').scrollIntoView({behavior:MOTION?'smooth':'auto'});
+}
+const TABS=[['overview','Overview'],['sequence','Sequence'],['ack','ACK'],['sack','SACK'],
+ ['loss','Loss'],['retrans','Retransmissions'],['rtt','RTT'],['window','Window'],
+ ['timeline','Timeline'],['packets','Packets']];
+function renderDetail(pop){
+  const s=curSess;if(!s){$('#detail').style.display='none';return;}
+  const d=$('#detail');
+  d.style.display='block';
+  if(pop){d.classList.remove('pop');void d.offsetWidth;d.classList.add('pop');}
+  let h='<h2>'+s.label+' &mdash; '+esc(s.client)+' ⇄ '+esc(s.server)+'</h2>';
+  h+='<div class="tabs" role="tablist">'+TABS.map(t=>'<div class="'+(curTab===t[0]?'active':'')+
+    '" role="tab" tabindex="0" aria-selected="'+(curTab===t[0])+
+    '" onclick="switchTab(\''+t[0]+'\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();switchTab(\''+t[0]+'\');}">'+
+    t[1]+'</div>').join('')+'</div>';
+  h+='<div id="tabBody"></div>';
+  d.innerHTML=h;
+  renderTab();
+}
+function switchTab(t){curTab=t;renderDetail();}
+function renderTab(){
+  const body=$('#tabBody'),s=curSess;
+  const fn={overview:tabOverview,sequence:tabSequence,ack:tabAck,sack:tabSack,
+    loss:tabLoss,retrans:tabRetrans,rtt:tabRtt,window:tabWindow,
+    timeline:tabTimeline,packets:tabPackets}[curTab];
+  body.innerHTML='<div class="tabIn">'+fn(s)+'</div>';
+  const post={sack:postSack,timeline:postTimeline,rtt:postRtt,ack:postAck}[curTab];
+  if(post)post(s);
+}
+
+/* --- overview */
+function tabOverview(s){
+  const hs=s.handshake;
+  let h='<div class="grid2"><div><h3>Connection</h3><div class="kv">'+
+   '<div class="k">Client</div><div>'+esc(s.client)+'</div>'+
+   '<div class="k">Server</div><div>'+esc(s.server)+'</div>'+
+   '<div class="k">Start</div><div>'+esc(s.start_str)+' UTC</div>'+
+   '<div class="k">End</div><div>'+esc(s.end_str)+' UTC</div>'+
+   '<div class="k">Duration</div><div>'+fmtNs(s.duration_ns)+'</div>'+
+   '<div class="k">State</div><div>'+esc(s.state)+(s.partial?' <span class="badge b-warn">mid-capture / partial</span>':'')+'</div>'+
+   '<div class="k">SYN&rarr;SYN/ACK</div><div>'+fmtNs(hs.syn_synack_ns)+(hs.syn_frame?' <span class="mut">frames '+hs.syn_frame+'&rarr;'+hs.synack_frame+'</span>':'')+'</div>'+
+   '<div class="k">SYN/ACK&rarr;ACK</div><div>'+fmtNs(hs.synack_ack_ns)+'</div>'+
+   '<div class="k">Establishment</div><div>'+fmtNs(hs.total_ns)+'</div>'+
+   '<div class="k">SACK client</div><div>'+tri(s.sack_client)+'</div>'+
+   '<div class="k">SACK server</div><div>'+tri(s.sack_server)+'</div>'+
+   '<div class="k">SACK active</div><div>'+tri(s.sack_active)+'</div>'+
+   '</div></div>';
+  h+='<div><h3>Directions</h3><table><tr><th></th><th>A&rarr;B '+esc(s.ep_a)+'&rarr;'+esc(s.ep_b)+'</th><th>B&rarr;A</th></tr>';
+  const rows=[['Packets','packets'],['Bytes (IP)','bytes'],['Payload','payload_bytes'],
+   ['Unique bytes','unique_bytes'],['ACKed bytes','acked_bytes'],['Outstanding','outstanding_bytes'],
+   ['Data segments','data_segments'],['Retrans segs','retrans_segments'],['Retrans bytes','retrans_bytes'],
+   ['Out-of-order','ooo_packets'],['Duplicates','dup_packets'],['Keep-alives','keepalives'],
+   ['SACK events','sack_events'],
+   ['SACK blocks','sack_blocks'],['SACK holes','sack_holes'],['DSACK','dsack_events'],
+   ['Zero-window','zero_window_events'],['MSS','mss'],['Window scale','window_scale']];
+  rows.forEach((r,i)=>{h+='<tr style="--i:'+i+'"><td class="mut">'+r[0]+'</td><td class="num">'+fmtInt(s.dir_a[r[1]])+'</td><td class="num">'+fmtInt(s.dir_b[r[1]])+'</td></tr>';});
+  h+='</table></div></div>';
+  h+='<h3>Automated verdicts <span class="mut" style="text-transform:none">(thresholds: '+esc(JSON.stringify(M.verdict_config))+')</span></h3>';
+  const GLYPH={ok:'✓',warn:'!',bad:'✕',info:'i'};
+  s.verdicts.forEach((v,i)=>{h+='<div class="verdict '+v.severity+'" style="--i:'+i+'">'+
+    '<div class="glyph" aria-hidden="true">'+GLYPH[v.severity]+'</div>'+
+    '<b>'+esc(v.verdict)+'</b><div class="ev">'+esc(v.evidence)+'</div></div>';});
+  if(s.warnings.length){h+='<h3>Capture artifact warnings</h3>';
+    for(const w of s.warnings)h+='<div class="warnbox">⚠ '+esc(w)+'</div>';}
+  if(s.stats.network_dups){
+    h+='<h3>Multi-point observations <span class="mut" style="text-transform:none">— the same packet captured at more than one point (SPAN/leaf-to-leaf); excluded from retransmission &amp; dup-ACK statistics</span></h3>'+
+     '<div>Inter-observation skew: '+statLine(s.stats.observation_skew)+'</div>'+
+     '<div class="scroll" style="max-height:260px;margin-top:8px"><table><tr>'+
+     '<th>Frame</th><th>Observed</th><th>First seen (frame)</th><th>Skew Δ</th><th>Dir</th><th>What changed</th><th>Confidence</th></tr>';
+    s.observation_events.slice(0,2000).forEach((e,i)=>{
+      h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+e.frame+'</td>'+
+       '<td class="num">'+fmtTs(e.ts)+'</td>'+
+       '<td class="num">'+fmtTs(e.orig_ts)+' <span class="mut">#'+e.orig_frame+'</span></td>'+
+       '<td class="num" style="color:var(--accent)">'+fmtNs(e.delta_ns)+'</td>'+
+       '<td>'+e.dir+'</td><td style="white-space:normal">'+esc(e.differs)+'</td>'+
+       '<td>'+(e.confidence==='confirmed'
+         ?'<span class="badge b-ok">confirmed (same IP ID)</span>'
+         :'<span class="badge b-warn">likely (L2/TTL rewrite)</span>')+'</td></tr>';
+    });
+    h+='</table></div>';
+  }
+  return h;
+}
+
+/* --- sequence ledger */
+function tabSequence(s){
+  let h='<div class="controls"><label>search SEQ <input id="seqSearch" size="12" oninput="renderSeqRows()"></label>'+
+   '<label>direction <select id="seqDir" onchange="renderSeqRows()"><option value="">both</option><option>A-&gt;B</option><option>B-&gt;A</option></select></label>'+
+   '<label>state <select id="seqState" onchange="renderSeqRows()"><option value="">all</option>'+
+   ['Original','ACKed','SACKed','Retransmitted','Duplicate','Out-of-order','Recovered','Keep-alive','Window-probe'].map(x=>'<option>'+x+'</option>').join('')+'</select></label>'+
+   '<button onclick="exportSessionPackets()">Export session events CSV</button></div>'+
+   '<div class="scroll" style="max-height:520px"><table id="seqTable"></table></div>';
+  setTimeout(renderSeqRows,0);
+  return h;
+}
+function renderSeqRows(){
+  const s=curSess;if(!s)return;
+  const q=$('#seqSearch')?.value.trim();
+  const dir=($('#seqDir')?.value||'').replace('-&gt;','->');
+  const st=$('#seqState')?.value||'';
+  let rows=s.segments;
+  if(dir)rows=rows.filter(r=>r.dir===dir);
+  if(st)rows=rows.filter(r=>r.state===st);
+  if(q!==''&&!isNaN(+q)){const v=+q;rows=rows.filter(r=>{
+    let qq=v;
+    if(SEQMODE==='raw'){qq=(v-seqBase(s,r.dir))%4294967296;if(qq<0)qq+=4294967296;}
+    return r.seq<=qq&&qq<r.end||r.seq===qq||r.end===qq
+      ||(SEQMODE==='raw'&&(r.seq<=qq+4294967296&&qq+4294967296<r.end));});}
+  let h='<tr><th>Time</th><th>Frame</th><th>Dir</th><th>SEQ start</th><th>SEQ end</th><th>NEXTSEQ</th>'+
+   '<th>Len</th><th>Flags</th><th>State</th><th>Orig frame</th><th>Retx delay</th>'+
+   '<th>ACKed by</th><th>DATA→ACK</th><th>RTT</th><th>SACKed by</th></tr>';
+  rows.slice(0,4000).forEach((r,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+fmtTs(r.ts)+'</td><td class="num">'+r.frame+'</td><td>'+r.dir+'</td>'+
+     '<td class="num">'+fmtSeq(s,r.dir,r.seq)+'</td><td class="num">'+fmtSeq(s,r.dir,r.end)+'</td><td class="num">'+fmtSeq(s,r.dir,r.end)+'</td>'+
+     '<td class="num">'+r.len+'</td><td>'+r.flags+'</td>'+
+     '<td class="state-'+r.state.replace(/ /g,'-')+'">'+r.state+(r.retx_kind?' <span class="mut">('+r.retx_kind+')</span>':'')+'</td>'+
+     '<td class="num">'+(r.retx_of??'-')+'</td><td class="num">'+fmtNs(r.retx_delay)+'</td>'+
+     '<td class="num">'+(r.ack_frame??'-')+'</td><td class="num">'+fmtNs(r.ack_lat)+'</td>'+
+     '<td class="num">'+(r.rtt_ambiguous?'<span class="b-warn">AMBIGUOUS</span>':fmtNs(r.rtt))+'</td>'+
+     '<td class="num">'+(r.sack_frame??'-')+'</td></tr>';
+  });
+  if(rows.length>4000)h+='<tr><td colspan="15" class="mut">'+fmtInt(rows.length-4000)+' more rows not shown — refine the filter</td></tr>';
+  $('#seqTable').innerHTML=h;
+}
+
+/* --- ACK tab */
+function tabAck(s){
+  let h='<h3>DATA → cumulative ACK latency</h3><div>'+statLine(s.stats.ack_latency)+'</div>'+
+   '<canvas id="ackHist" width="700" height="170"></canvas>'+
+   '<h3>Duplicate ACK trains</h3><div class="scroll" style="max-height:300px"><table><tr>'+
+   '<th>Dir</th><th>ACK</th><th>First frame</th><th>First TS</th><th>Dup count</th><th>Inter-ACK gaps</th>'+
+   '<th>SACK blocks</th><th>Missing range</th><th>Retrans frame</th><th>Time to retrans</th><th>Time to recovery</th></tr>';
+  s.dup_ack_trains.forEach((t,i)=>{
+    h+='<tr style="--i:'+i+'"><td>'+t.dir+'</td><td class="num">'+fmtSeq(s,oppDir(t.dir),t.ack)+'</td><td class="num">'+t.first_frame+'</td>'+
+     '<td class="num">'+fmtTs(t.first_ts)+'</td><td class="num">'+t.count+'</td>'+
+     '<td class="num">'+t.gaps_ns.slice(0,6).map(g=>fmtNs(g)).join(', ')+(t.gaps_ns.length>6?' …':'')+'</td>'+
+     '<td class="num">'+t.sack_blocks+'</td>'+
+     '<td class="num">'+(t.missing_seq!=null?fmtSeq(s,oppDir(t.dir),t.missing_seq)+'–'+fmtSeq(s,oppDir(t.dir),t.missing_end):'-')+'</td>'+
+     '<td class="num">'+(t.retrans_frame??'-')+'</td><td class="num">'+fmtNs(t.time_to_retrans)+'</td>'+
+     '<td class="num">'+fmtNs(t.time_to_recovery)+'</td></tr>';
+  });
+  if(!s.dup_ack_trains.length)h+='<tr><td colspan="11" class="mut">no duplicate ACK trains</td></tr>';
+  return h+'</table></div>';
+}
+function postAck(s){drawHist($('#ackHist'),s.ack_hist,C.ack);}
+
+/* --- SACK tab */
+const sbState={};   // per-id previous drawn scoreboard (for fluid interpolation)
+const sbTimers={};
+function tabSack(s){
+  let h='<div class="kv">'+
+   '<div class="k">SACK client</div><div>'+tri(s.sack_client)+'</div>'+
+   '<div class="k">SACK server</div><div>'+tri(s.sack_server)+'</div>'+
+   '<div class="k">SACK active</div><div>'+tri(s.sack_active)+'</div></div>';
+  for(const dir of ['A->B','B->A']){
+    const snaps=s.sack_snapshots[dir]||[];
+    if(!snaps.length)continue;
+    const id=dir==='A->B'?'ab':'ba';
+    delete sbState[id];
+    h+='<h3>SACK scoreboard — data direction '+dir+' <span class="mut" style="text-transform:none">('+snaps.length+' SACK events; step chronologically)</span></h3>'+
+     '<div class="controls"><button onclick="sbStep(\''+id+'\',-1)">◀ prev</button>'+
+     '<input type="range" id="sb_'+id+'" min="0" max="'+(snaps.length-1)+'" value="0" style="width:340px" oninput="sbStop(\''+id+'\');sbDraw(\''+id+'\')">'+
+     '<button onclick="sbStep(\''+id+'\',1)">next ▶</button>'+
+     '<button id="sbPlayBtn_'+id+'" class="primary" onclick="sbPlay(\''+id+'\')">▶ play</button>'+
+     '<span id="sbInfo_'+id+'" class="mut"></span></div>'+
+     '<canvas id="sbCanvas_'+id+'" width="1100" height="110"></canvas>'+
+     '<div class="legend"><span><span class="dot" style="background:'+C.acked+'"></span>cumulatively ACKed</span>'+
+     '<span><span class="dot" style="background:'+C.sacked+'"></span>SACKed</span>'+
+     '<span><span class="dot" style="background:'+C.hole+'"></span>hole / missing</span>'+
+     '<span><span class="dot" style="background:'+C.out+'"></span>outstanding</span></div>';
+  }
+  h+='<h3>SACK option records</h3><div class="scroll" style="max-height:320px"><table><tr>'+
+   '<th>Frame</th><th>Time</th><th>Data dir</th><th>Cum ACK</th><th>#Blocks</th><th>Blocks (left–right)</th><th>DSACK</th></tr>';
+  s.sack_records.slice(0,3000).forEach((r,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+r.frame+'</td><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.data_dir+'</td>'+
+     '<td class="num">'+fmtSeq(s,r.data_dir,r.ack)+'</td><td class="num">'+r.blocks.length+'</td>'+
+     '<td class="num">'+r.blocks.map(b=>fmtSeq(s,r.data_dir,b[0])+'–'+fmtSeq(s,r.data_dir,b[1])).join(' | ')+'</td>'+
+     '<td>'+(r.dsack?'<span class="badge b-warn">DSACK</span> <span class="mut">'+esc(r.dsack_reason||'')+'</span>':'-')+'</td></tr>';
+  });
+  if(!s.sack_records.length)h+='<tr><td colspan="7" class="mut">no SACK options observed</td></tr>';
+  return h+'</table></div>';
+}
+function postSack(s){for(const id of ['ab','ba'])if($('#sb_'+id))sbDraw(id);}
+function sbStep(id,d){sbStop(id);const el=$('#sb_'+id);el.value=Math.max(0,Math.min(+el.max,+el.value+d));sbDraw(id);}
+function sbPlay(id){
+  if(sbTimers[id]){sbStop(id);return;}
+  const el=$('#sb_'+id);
+  if(+el.value>=+el.max)el.value=0;
+  $('#sbPlayBtn_'+id).textContent='⏸ pause';
+  sbTimers[id]=setInterval(()=>{
+    if(+el.value>=+el.max){sbStop(id);return;}
+    el.value=+el.value+1;sbDraw(id);
+  }, MOTION?750:400);
+  sbDraw(id);
+}
+function sbStop(id){
+  if(sbTimers[id]){clearInterval(sbTimers[id]);delete sbTimers[id];}
+  const b=$('#sbPlayBtn_'+id);if(b)b.textContent='▶ play';
+}
+function sbDraw(id){
+  const dir=id==='ab'?'A->B':'B->A';
+  const snaps=curSess.sack_snapshots[dir];const i=+$('#sb_'+id).value;const sn=snaps[i];
+  $('#sbInfo_'+id).textContent=' event '+(i+1)+'/'+snaps.length+' frame '+sn.frame+' '+fmtTs(sn.ts)+
+    ' ACK='+fmtSeq(curSess,dir,sn.ack)+(sn.dsack?' [DSACK]':'')+(sn.ack_advanced?' [ACK advanced]':'');
+  const cv=$('#sbCanvas_'+id),ctx=cv.getContext('2d');
+  let lo=sn.ack,hi=sn.ack+1;
+  for(const [a,b] of sn.sacked){lo=Math.min(lo,a);hi=Math.max(hi,b);}
+  for(const [a,b] of sn.holes){lo=Math.min(lo,a);hi=Math.max(hi,b);}
+  lo=Math.min(lo,Math.max(0,sn.ack-(hi-lo)*0.15));
+  const target={ack:sn.ack,lo,hi,sacked:sn.sacked,holes:sn.holes};
+  const prev=sbState[id];
+  sbState[id]=target;
+  const lerp=(a,b,p)=>a+(b-a)*p;
+  const render=p=>{
+    const L=prev?lerp(prev.lo,lo,p):lo, H=prev?lerp(prev.hi,hi,p):hi;
+    const A=prev?lerp(prev.ack,sn.ack,p):sn.ack;
+    const X=v=>30+(H>L?(v-L)/(H-L):0)*(cv.width-60);
+    ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.fillStyle=C.out;ctx.beginPath();ctx.roundRect(30,40,cv.width-60,28,5);ctx.fill();
+    ctx.fillStyle=C.acked;
+    ctx.beginPath();ctx.roundRect(30,40,Math.max(0,X(A)-30),28,[5,0,0,5]);ctx.fill();
+    const alpha=prev?Math.min(1,.35+.65*p):1;
+    ctx.globalAlpha=alpha;
+    for(const [a,b] of sn.sacked){ctx.fillStyle=C.sacked;ctx.fillRect(X(a),40,Math.max(2,X(b)-X(a)),28);}
+    for(const [a,b] of sn.holes){ctx.fillStyle=C.hole;ctx.fillRect(X(a),40,Math.max(2,X(b)-X(a)),28);}
+    ctx.globalAlpha=1;
+    ctx.fillStyle='#8b95a8';ctx.font='10px monospace';
+    ctx.fillText(fmtSeq(curSess,dir,Math.round(L)),30,92);
+    const t2=fmtSeq(curSess,dir,Math.round(H));ctx.fillText(t2,cv.width-30-ctx.measureText(t2).width,92);
+    ctx.fillStyle='#eef2f8';ctx.fillText('ACK '+fmtSeq(curSess,dir,sn.ack),Math.min(cv.width-100,Math.max(30,X(A))),30);
+    ctx.strokeStyle='#eef2f8';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(X(A),34);ctx.lineTo(X(A),72);ctx.stroke();
+    for(const [a,b] of sn.holes){ctx.fillStyle=C.hole;
+      ctx.fillText('hole '+fmtSeq(curSess,dir,a)+'–'+fmtSeq(curSess,dir,b),Math.max(30,Math.min(cv.width-170,X(a))),105);}
+  };
+  if(prev)animCanvas(cv,380,render);else render(1);
+}
+
+/* --- loss tab */
+function tabLoss(s){
+  let h='<div>'+statLine(s.stats.recovery)+' <span class="mut">(total recovery: original TX → recovery ACK)</span></div>'+
+   '<canvas id="recHist" width="700" height="150"></canvas>'+
+   '<div class="scroll" style="max-height:460px"><table><tr><th>Loss ID</th><th>Dir</th><th>SEQ range</th><th>Bytes</th>'+
+   '<th>Original TX</th><th>Evidence</th><th>Retrans</th><th>Recovery</th>'+
+   '<th>Detection</th><th>Reaction</th><th>Post-retx</th><th>Total</th>'+
+   '<th>Mechanism</th><th>SACK reports</th><th>DupACKs</th><th>Extra holes</th><th>Class</th><th></th></tr>';
+  s.loss_events.forEach((e,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td>'+esc(e.loss_id)+'</td><td>'+e.dir+'</td>'+
+     '<td class="num">'+fmtSeq(s,e.dir,e.seq)+'–'+fmtSeq(s,e.dir,e.end)+'</td><td class="num">'+e.bytes+'</td>'+
+     '<td class="num">'+fmtTs(e.original_tx)+(e.original_frame?' <span class="mut">#'+e.original_frame+'</span>':'')+'</td>'+
+     '<td class="num">'+fmtTs(e.evidence_ts)+' <span class="mut">'+esc(e.evidence_kind)+' #'+(e.evidence_frame??'-')+'</span></td>'+
+     '<td class="num">'+fmtTs(e.retrans_ts)+(e.retrans_frame?' <span class="mut">#'+e.retrans_frame+'</span>':'')+
+       (e.retrans_lost?' <span class="badge b-bad">retx lost too</span>':'')+'</td>'+
+     '<td class="num">'+fmtTs(e.recovery_ts)+(e.recovery_frame?' <span class="mut">#'+e.recovery_frame+'</span>':'')+
+       (e.partial?' <span class="badge b-warn">partial</span>':'')+'</td>'+
+     '<td class="num">'+fmtNs(e.detection_ns)+'</td><td class="num">'+fmtNs(e.reaction_ns)+'</td>'+
+     '<td class="num">'+fmtNs(e.post_retrans_ns)+'</td><td class="num">'+fmtNs(e.total_ns)+'</td>'+
+     '<td>'+esc(e.mechanism)+'</td><td class="num">'+e.sack_reports+'</td><td class="num">'+e.dup_acks+'</td>'+
+     '<td class="num">'+e.additional_holes+'</td>'+
+     '<td>'+esc(e.classification)+(e.classification_evidence?' <span class="mut" title="'+esc(e.classification_evidence)+'">ⓘ</span>':'')+'</td>'+
+     '<td><a onclick="jumpToSeq('+e.seq+')">sequence →</a></td></tr>';
+  });
+  if(!s.loss_events.length)h+='<tr><td colspan="18" class="mut">no loss events</td></tr>';
+  setTimeout(()=>drawHist($('#recHist'),s.recovery_hist,C.loss),0);
+  return h+'</table></div>';
+}
+function jumpToSeq(seq){switchTab('sequence');setTimeout(()=>{$('#seqSearch').value=seq;renderSeqRows();},50);}
+
+/* --- retransmissions tab */
+function tabRetrans(s){
+  let h='<div class="scroll" style="max-height:520px"><table><tr><th>Frame</th><th>Time</th><th>Dir</th>'+
+   '<th>SEQ range</th><th>Bytes</th><th>Classification</th><th>Original</th><th>Delay</th>'+
+   '<th>DupACKs before</th><th>SACK</th><th>Evidence</th></tr>';
+  s.retrans_events.forEach((r,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+r.frame+'</td><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.dir+'</td>'+
+     '<td class="num">'+fmtSeq(s,r.dir,r.seq)+'–'+fmtSeq(s,r.dir,r.end)+'</td><td class="num">'+r.bytes+'</td>'+
+     '<td class="state-Retransmitted">'+esc(r.class)+'</td>'+
+     '<td class="num">'+(r.orig_frame?'#'+r.orig_frame+' '+fmtTs(r.orig_ts):'-')+'</td>'+
+     '<td class="num">'+fmtNs(r.delay)+'</td><td class="num">'+r.dup_acks+'</td>'+
+     '<td>'+(r.sack?'yes':'no')+'</td><td style="white-space:normal;max-width:420px">'+esc(r.evidence)+'</td></tr>';
+  });
+  if(!s.retrans_events.length)h+='<tr><td colspan="11" class="mut">no retransmissions</td></tr>';
+  return h+'</table></div>';
+}
+
+/* --- RTT tab */
+function tabRtt(s){
+  let h='<div>'+statLine(s.stats.rtt)+' <span class="mut">valid samples only (Karn); '+
+    s.rtt_ambiguous.length+' ambiguous samples excluded</span></div>'+
+   '<canvas id="rttHist" width="700" height="170"></canvas><canvas id="rttCdf" width="700" height="150"></canvas>'+
+   '<h3>Valid RTT samples</h3><div class="scroll" style="max-height:280px"><table><tr>'+
+   '<th>Time</th><th>Kind</th><th>Dir</th><th>SEQ range</th><th>Data frame</th><th>ACK frame</th><th>RTT</th></tr>';
+  s.rtt_samples.slice(0,3000).forEach((r,i)=>{
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.kind+'</td><td>'+r.dir+'</td>'+
+     '<td class="num">'+fmtSeq(s,r.dir,r.seq)+'–'+fmtSeq(s,r.dir,r.end)+'</td>'+
+     '<td class="num">'+r.frame_data+'</td><td class="num">'+r.frame_ack+'</td>'+
+     '<td class="num">'+fmtNs(r.rtt)+'</td></tr>';
+  });
+  h+='</table></div>';
+  if(s.rtt_ambiguous.length){
+    h+='<h3>RTT AMBIGUOUS (excluded, retained for forensics)</h3><div class="scroll" style="max-height:200px"><table><tr>'+
+     '<th>ACK time</th><th>Dir</th><th>SEQ range</th><th>Data frame</th><th>ACK frame</th><th>Reason</th></tr>';
+    for(const r of s.rtt_ambiguous)
+      h+='<tr><td class="num">'+fmtTs(r.ts)+'</td><td>'+r.dir+'</td><td class="num">'+fmtSeq(s,r.dir,r.seq)+'–'+fmtSeq(s,r.dir,r.end)+'</td>'+
+       '<td class="num">'+r.frame_data+'</td><td class="num">'+r.frame_ack+'</td><td style="white-space:normal">'+esc(r.reason)+'</td></tr>';
+    h+='</table></div>';
+  }
+  return h;
+}
+function postRtt(s){drawHist($('#rttHist'),s.rtt_hist,C.rtt);drawCdf($('#rttCdf'),s.rtt_hist,C.rtt);}
+
+/* --- window tab */
+function tabWindow(s){
+  let h='<div class="kv">'+
+   '<div class="k">A&rarr;B advertised window</div><div>min '+fmtInt(s.dir_a.window_min)+' / max '+fmtInt(s.dir_a.window_max)+' bytes (scale '+fmtInt(s.dir_a.window_scale)+')</div>'+
+   '<div class="k">B&rarr;A advertised window</div><div>min '+fmtInt(s.dir_b.window_min)+' / max '+fmtInt(s.dir_b.window_max)+' bytes (scale '+fmtInt(s.dir_b.window_scale)+')</div></div>'+
+   '<div class="scroll" style="max-height:420px"><table><tr><th>Time</th><th>Frame</th><th>Advertiser dir</th><th>Kind</th><th>Window</th><th>Detail</th></tr>';
+  s.window_events.forEach((w,i)=>{
+    h+='<tr style="--i:'+i+'"><td class="num">'+fmtTs(w.ts)+'</td><td class="num">'+w.frame+'</td><td>'+w.dir+'</td>'+
+     '<td>'+esc(w.kind)+'</td><td class="num">'+fmtInt(w.window)+'</td><td style="white-space:normal">'+esc(w.detail)+'</td></tr>';
+  });
+  if(!s.window_events.length)h+='<tr><td colspan="6" class="mut">no window events</td></tr>';
+  return h+'</table></div>';
+}
+
+/* --- timeline tab: ladder + latency time-series */
+function tabTimeline(s){
+  const n=s.packets.length;
+  return '<h3>Sequence ladder ('+esc(s.ep_a)+' left, '+esc(s.ep_b)+' right) — click an arrow for full details</h3>'+
+   '<div class="controls"><label>window start <input type="range" id="tlStart" min="0" max="'+Math.max(0,n-1)+'" value="0" style="width:320px" oninput="drawLadder()"></label>'+
+   '<label>events <select id="tlCount" onchange="drawLadder(true)"><option>30</option><option selected>60</option><option>120</option><option>250</option></select></label>'+
+   '<span id="tlInfo" class="mut"></span></div>'+
+   '<canvas id="ladder" width="1100" height="600" onclick="ladderClick(event)" onmousemove="ladderHover(event)"></canvas>'+
+   '<div id="ladderDetail" class="warnbox" style="display:none;border-color:var(--accent);background:rgba(57,135,229,.07)"></div>'+
+   '<h3>Latency timeline — RTT / DATA→ACK samples with loss, retransmission, dup-ACK and zero-window markers</h3>'+
+   '<div class="legend">'+
+   '<span><span class="dot" style="background:'+C.dup+'"></span>dup-ACK train</span>'+
+   '<span><span class="dot" style="background:'+C.rtt+'"></span>RTT sample</span>'+
+   '<span><span class="dot" style="background:'+C.loss+'"></span>loss evidence</span>'+
+   '<span><span class="dot" style="background:'+C.ack+'"></span>DATA→ACK</span>'+
+   '<span><span class="dot" style="background:'+C.zw+'"></span>zero-window</span>'+
+   '<span><span class="dot" style="background:'+C.retx+'"></span>retransmission</span></div>'+
+   '<canvas id="latTl" width="1100" height="260" onmousemove="latHover(event)"></canvas>';
+}
+let ladderRows=[];
+function postTimeline(s){drawLadder(true);drawLatTimeline(s);}
+function drawLadder(animate){
+  const s=curSess,cv=$('#ladder'),ctx=cv.getContext('2d');
+  const start=+($('#tlStart')?.value||0),count=+($('#tlCount')?.value||60);
+  const rows=s.packets.slice(start,start+count);
+  ladderRows=[];
+  const L=180,R=cv.width-180,top=30,step=Math.max(9,(cv.height-60)/Math.max(1,rows.length));
+  $('#tlInfo').textContent=' showing '+(start+1)+'–'+(start+rows.length)+' of '+s.packets.length+' packets';
+  const rowMeta=rows.map((p,i)=>{
+    const y=top+i*step;
+    const [frame,ts,dir,seq,end,len,flags,ack,win,sackn,state]=p;
+    let color='#8b95a8';
+    if(state==='Retransmitted')color=C.retx;
+    else if(state==='Duplicate')color=C.loss;
+    else if(state==='Capture-dup')color='#5a6478';
+    else if(state==='Out-of-order')color=C.dup;
+    else if(len>0)color=C.rtt;
+    else if(sackn>0)color=C.zw;
+    else if(flags.includes('SYN')||flags.includes('FIN')||flags.includes('RST'))color='#eef2f8';
+    let lab=flags+(sackn>0?' +SACK×'+sackn:'');
+    if(state==='Capture-dup')lab+=' [same packet, 2nd observation]';
+    else if(len>0)lab=flags+' SEQ '+fmtSeq(s,dir,seq)+'–'+fmtSeq(s,dir,end)+' ('+len+'B)';
+    if(state==='Retransmitted')lab+=' [RETX]';
+    if(state==='Out-of-order')lab+=' [OOO]';
+    ladderRows.push({y,p});
+    return {y,p,color,lab,l2r:dir==='A->B'};
+  });
+  const render=pr=>{
+    ctx.clearRect(0,0,cv.width,cv.height);
+    ctx.strokeStyle='rgba(120,140,190,.28)';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(L,top-14);ctx.lineTo(L,cv.height-10);ctx.moveTo(R,top-14);ctx.lineTo(R,cv.height-10);ctx.stroke();
+    ctx.fillStyle='#eef2f8';ctx.font='11px monospace';
+    ctx.fillText(s.ep_a,L-ctx.measureText(s.ep_a).width/2,14);
+    ctx.fillText(s.ep_b,R-ctx.measureText(s.ep_b).width/2,14);
+    const visible=pr*rowMeta.length;
+    rowMeta.forEach((m,i)=>{
+      if(i>=visible)return;
+      const frac=Math.min(1,visible-i);            // arrow grows across
+      const [frame,ts]=m.p;
+      const x0=m.l2r?L:R, x1=m.l2r?R:L;
+      const xe=x0+(x1-x0)*frac;
+      ctx.strokeStyle=m.color;ctx.fillStyle=m.color;ctx.lineWidth=1.4;
+      ctx.beginPath();ctx.moveTo(x0,m.y);ctx.lineTo(xe,m.y);ctx.stroke();
+      if(frac>=1){
+        const dx=m.l2r?-7:7;
+        ctx.beginPath();ctx.moveTo(x1,m.y);ctx.lineTo(x1+dx,m.y-4);ctx.lineTo(x1+dx,m.y+4);ctx.closePath();ctx.fill();
+        ctx.fillText(m.lab,(L+R)/2-ctx.measureText(m.lab).width/2,m.y-3);
+        ctx.fillStyle='#8b95a8';
+        ctx.fillText(fmtTs(ts),8,m.y+3);
+        // inter-packet latency between this arrow and the previous one —
+        // the "SYN, +Δ, SYN/ACK, +Δ, ACK, +Δ, PSH ..." reading of the flow
+        if(i>0&&step>=15){
+          const dt=ts-rowMeta[i-1].p[1];
+          ctx.fillStyle='#7fb3f5';ctx.font='10px monospace';
+          ctx.fillText('Δ '+fmtNs(dt),8,m.y-step/2+3.5);
+          ctx.font='11px monospace';
+        }
+      }
+    });
+  };
+  if(animate&&MOTION)animCanvas(cv,Math.min(1200,140+rows.length*14),render);
+  else{if(cv._tok)cancelAnimationFrame(cv._tok);render(1);}
+}
+function ladderAt(ev){
+  const cv=$('#ladder'),r=cv.getBoundingClientRect();
+  const y=(ev.clientY-r.top)*cv.height/r.height;
+  let best=null,bd=8;
+  for(const row of ladderRows){const d=Math.abs(row.y-y);if(d<bd){bd=d;best=row;}}
+  return best;
+}
+function ladderHover(ev){const b=ladderAt(ev);$('#ladder').style.cursor=b?'pointer':'default';}
+function ladderClick(ev){
+  const b=ladderAt(ev);if(!b)return;
+  const [frame,ts,dir,seq,end,len,flags,ack,win,sackn,state]=b.p;
+  const seg=curSess.segments.find(g=>g.frame===frame);
+  let h='<b>Frame '+frame+'</b> '+fmtTs(ts)+' ('+esc(dir)+')<br>'+
+   'SEQ '+fmtSeq(curSess,dir,seq)+' → NEXTSEQ '+fmtSeq(curSess,dir,end)+' | payload '+len+' B | flags '+esc(flags)+
+   ' | ACK(raw) '+fmtInt(ack)+' | window(raw) '+fmtInt(win)+(sackn?' | SACK blocks: '+sackn:'');
+  if(seg){
+    h+='<br>state: '+esc(seg.state);
+    if(seg.retx)h+=' | retransmission of frame '+(seg.retx_of??'?')+' after '+fmtNs(seg.retx_delay)+' ('+esc(seg.retx_kind)+')';
+    if(seg.ack_frame)h+='<br>ACKed by frame '+seg.ack_frame+' | DATA→ACK '+fmtNs(seg.ack_lat);
+    if(seg.rtt!=null)h+=' | RTT '+fmtNs(seg.rtt);
+    if(seg.rtt_ambiguous)h+=' | RTT: AMBIGUOUS (Karn exclusion)';
+    if(seg.sack_frame)h+='<br>SACKed by frame '+seg.sack_frame;
+    const le=curSess.loss_events.find(e=>e.dir===seg.dir&&seg.seq<e.end&&e.seq<seg.end);
+    if(le)h+='<br>loss event '+esc(le.loss_id)+': detection '+fmtNs(le.detection_ns)+
+      ', reaction '+fmtNs(le.reaction_ns)+', total recovery '+fmtNs(le.total_ns);
+  }
+  const d=$('#ladderDetail');d.style.display='block';d.innerHTML=h;
+}
+let latPts=[];
+function drawLatTimeline(s){
+  const cv=$('#latTl'),ctx=cv.getContext('2d');
+  latPts=[];
+  const t0=s.start_ts,t1=Math.max(s.end_ts,t0+1);
+  const samples=s.rtt_samples.map(r=>({t:r.ts,v:r.rtt,c:C.rtt,lab:'RTT '+r.kind}));
+  for(const g of s.segments)if(g.ack_lat!=null&&g.ack_lat>=0&&g.len>0)
+    samples.push({t:g.acked_ts,v:g.ack_lat,c:C.ack,lab:'DATA→ACK frame '+g.frame});
+  samples.sort((a,b)=>a.t-b.t);
+  const vmax=Math.max(1,...samples.map(q=>q.v));
+  const X=t=>40+(t-t0)/(t1-t0)*(cv.width-56);
+  const Y=v=>cv.height-24-(v/vmax)*(cv.height-46);
+  const markers=[];
+  for(const r of s.retrans_events)markers.push([r.ts,C.retx]);
+  for(const e of s.loss_events)markers.push([e.evidence_ts,C.loss]);
+  for(const t of s.dup_ack_trains)if(t.count>=3)markers.push([t.first_ts,C.dup]);
+  for(const w of s.window_events)if(w.kind==='zero-window')markers.push([w.ts,C.zw]);
+  animCanvas(cv, 800, p=>{
+    ctx.clearRect(0,0,cv.width,cv.height);
+    markers.forEach(([ts,color])=>{
+      if(ts==null)return;
+      ctx.strokeStyle=color;ctx.globalAlpha=.7*p;ctx.lineWidth=1.5;
+      const yTop=12+(1-p)*(cv.height-32);
+      ctx.beginPath();ctx.moveTo(X(ts),yTop);ctx.lineTo(X(ts),cv.height-20);ctx.stroke();
+      ctx.globalAlpha=1;
+    });
+    const visible=p*samples.length;
+    latPts=[];
+    samples.forEach((q,i)=>{
+      if(i>=visible)return;
+      const pop=Math.min(1,visible-i);
+      const r=1.5+1.5*pop;
+      ctx.fillStyle=q.c;ctx.globalAlpha=pop;
+      ctx.beginPath();ctx.arc(X(q.t),Y(q.v),r,0,7);ctx.fill();
+      ctx.globalAlpha=1;
+      latPts.push({x:X(q.t),y:Y(q.v),p:q});
+    });
+    ctx.fillStyle='#8b95a8';ctx.font='10px monospace';
+    ctx.fillText(fmtNs(vmax),4,14);ctx.fillText('0',4,cv.height-22);
+    ctx.fillText(fmtTs(t0),40,cv.height-6);
+    const te=fmtTs(t1);ctx.fillText(te,cv.width-16-ctx.measureText(te).width,cv.height-6);
+  });
+}
+function latHover(ev){
+  const cv=$('#latTl'),r=cv.getBoundingClientRect(),tt=$('#tt');
+  const x=(ev.clientX-r.left)*cv.width/r.width,y=(ev.clientY-r.top)*cv.height/r.height;
+  let best=null,bd=9;
+  for(const q of latPts){const d=Math.hypot(q.x-x,q.y-y);if(d<bd){bd=d;best=q;}}
+  if(best){tt.style.display='block';tt.style.left=(ev.clientX+12)+'px';tt.style.top=(ev.clientY+12)+'px';
+    tt.textContent=best.p.lab+'\n'+fmtNs(best.p.v)+' @ '+fmtTs(best.p.t);}
+  else tt.style.display='none';
+}
+
+/* --- packets tab */
+function tabPackets(s){
+  let h='';
+  if(s.packets_truncated)h+='<div class="warnbox">'+fmtInt(s.packets_truncated)+' packet rows omitted from the embedded report (large session) — the sequence ledger and events above remain complete.</div>';
+  h+='<div class="scroll" style="max-height:560px"><table><tr><th>Frame</th><th>Time</th><th>Δ prev</th><th>Dir</th>'+
+   '<th>SEQ('+SEQMODE+')</th><th>End</th><th>Len</th><th>Flags</th><th>ACK(raw)</th><th>Win(raw)</th><th>SACK</th><th>State</th></tr>';
+  s.packets.slice(0,6000).forEach((p,i)=>{
+    const dt=i>0?p[1]-s.packets[i-1][1]:null;
+    h+='<tr style="--i:'+Math.min(i,30)+'"><td class="num">'+p[0]+'</td><td class="num">'+fmtTs(p[1])+'</td>'+
+     '<td class="num" style="color:var(--accent)">'+(dt==null?'-':'+'+fmtNs(dt))+'</td><td>'+p[2]+'</td>'+
+     '<td class="num">'+fmtSeq(s,p[2],p[3])+'</td><td class="num">'+fmtSeq(s,p[2],p[4])+'</td><td class="num">'+p[5]+'</td>'+
+     '<td>'+p[6]+'</td><td class="num">'+fmtInt(p[7])+'</td><td class="num">'+fmtInt(p[8])+'</td>'+
+     '<td class="num">'+(p[9]||'-')+'</td><td class="state-'+String(p[10]).replace(/ /g,'-')+'">'+ (p[10]||'-')+'</td></tr>';
+  });
+  return h+'</table></div>';
+}
+
+/* ------------------------------------------------------------- exports */
+function dl(name,text){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([text],{type:'text/csv'}));
+  a.download=name;a.click();URL.revokeObjectURL(a.href);
+}
+function csv(rows){return rows.map(r=>r.map(v=>{v=v==null?'':String(v);
+  return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}).join(',')).join('\n');}
+function exportSessionsCsv(){
+  const rows=[['session_id','client','server','start_rel_ns','end_rel_ns','duration_ns','state','partial',
+   'payload_bytes','data_segments','retrans_segments','retrans_bytes','retrans_pct','dup_acks','ooo','duplicates',
+   'sack_events','sack_blocks','sack_holes','dsack','loss_events','recovered','unrecovered','zero_window',
+   'rtt_min_ns','rtt_median_ns','rtt_p95_ns','rtt_p99_ns','rtt_max_ns','rtt_samples']];
+  for(const s of M.sessions){const t=s.stats,r=t.rtt;
+    rows.push([s.id,s.client,s.server,s.start_ts,s.end_ts,s.duration_ns,s.state,s.partial,
+     t.payload_bytes,t.data_segments,t.retrans_segments,t.retrans_bytes,t.retrans_pct.toFixed(4),
+     t.dup_acks,t.ooo_packets,t.dup_packets,t.sack_events,t.sack_blocks,t.sack_holes,t.dsack_events,
+     t.loss_events,t.recovered_losses,t.unrecovered_losses,t.zero_window_events,
+     r.min,r.median,r.p95,r.p99,r.max,r.count]);}
+  dl('sessions.csv',csv(rows));
+}
+function exportLossCsv(){
+  const rows=[['loss_id','session','direction','seq','end','bytes','original_tx_rel_ns','evidence_rel_ns','evidence_kind',
+   'retrans_rel_ns','recovery_rel_ns','detection_ns','reaction_ns','post_retrans_ns','total_ns',
+   'sack','dup_acks','mechanism','classification','recovered']];
+  for(const {s,e} of allLoss())
+    rows.push([e.loss_id,s.id,e.dir,e.seq,e.end,e.bytes,e.original_tx,e.evidence_ts,e.evidence_kind,
+     e.retrans_ts,e.recovery_ts,e.detection_ns,e.reaction_ns,e.post_retrans_ns,e.total_ns,
+     e.sack,e.dup_acks,e.mechanism,e.classification,e.recovered]);
+  dl('loss_events.csv',csv(rows));
+}
+function exportRetransCsv(){
+  const rows=[['session','frame','ts_rel_ns','direction','seq','end','bytes','classification',
+   'original_frame','original_rel_ns','delay_ns','dup_acks_before','sack_active','evidence']];
+  for(const s of M.sessions)for(const r of s.retrans_events)
+    rows.push([s.id,r.frame,r.ts,r.dir,r.seq,r.end,r.bytes,r.class,r.orig_frame,r.orig_ts,
+     r.delay,r.dup_acks,r.sack,r.evidence]);
+  dl('retransmissions.csv',csv(rows));
+}
+function exportRttCsv(){
+  const rows=[['session','ts_rel_ns','kind','direction','seq','end','frame_data','frame_ack','rtt_ns']];
+  for(const s of M.sessions)for(const r of s.rtt_samples)
+    rows.push([s.id,r.ts,r.kind,r.dir,r.seq,r.end,r.frame_data,r.frame_ack,r.rtt]);
+  dl('rtt_samples.csv',csv(rows));
+}
+function exportSackCsv(){
+  const rows=[['session','frame','ts_rel_ns','data_direction','cum_ack','n_blocks','blocks','dsack','dsack_reason']];
+  for(const s of M.sessions)for(const r of s.sack_records)
+    rows.push([s.id,r.frame,r.ts,r.data_dir,r.ack,r.blocks.length,
+     r.blocks.map(b=>b[0]+'-'+b[1]).join(';'),r.dsack,r.dsack_reason||'']);
+  dl('sack_events.csv',csv(rows));
+}
+function exportSessionPackets(){
+  const s=curSess;if(!s)return;
+  const rows=[['frame','ts_rel_ns','direction','seq_rel','end_rel','payload','flags','state',
+   'retransmission','retx_kind','retx_of_frame','retx_delay_ns','ack_frame','data_ack_latency_ns','rtt_ns','rtt_ambiguous']];
+  for(const g of s.segments)
+    rows.push([g.frame,g.ts,g.dir,g.seq,g.end,g.len,g.flags,g.state,g.retx,g.retx_kind||'',
+     g.retx_of,g.retx_delay,g.ack_frame,g.ack_lat,g.rtt,g.rtt_ambiguous]);
+  dl('session_'+s.id+'_events.csv',csv(rows));
+}
+
+/* --------------------------------------------------------------- boot */
+function renderAll(){
+  renderNav();renderHeader();renderTiles();renderGlobalCharts();
+  renderSessFilters();renderSessTable();renderLossTable();
+  if(curSess)renderDetail();
+}
+if(M){renderAll();}
+else{document.body.classList.add('noModel');
+  for(const el of document.querySelectorAll('.wrap>.panel'))
+    if(el.id!=='landing')el.style.display='none';
+  renderNav();}
+</script>
+<script>
+/* tcpforensics browser engine — a faithful JavaScript port of the Python
+ * analysis pipeline (capture_reader, tcp_sequence, tcp_session, tcp_ack,
+ * tcp_sack, tcp_loss, tcp_retransmission, tcp_window, statistics,
+ * verdicts, artifacts, analyzer).  It consumes an ArrayBuffer of a
+ * pcap/pcapng file and produces the SAME model object the HTML report
+ * consumes.  Parity with the Python engine is enforced by
+ * tools/parity_check.py, which runs both on identical captures and
+ * deep-compares the models.
+ *
+ * Numeric rules: all timestamps are converted to capture-relative integer
+ * nanoseconds at parse time (exact in a double for captures < ~104 days);
+ * absolute wall-clock values are kept as BigInt only for header strings.
+ * Sequence numbers are unwrapped into a 64-bit-style space anchored near
+ * 32-bit values (< 2^53).  Variance uses BigInt.
+ */
+"use strict";
+const TFEngine = (() => {
+
+/* ------------------------------------------------------------- helpers */
+const FIN=1, SYN=2, RST=4, PSH=8, ACK=16, URG=32, ECE=64, CWR=128;
+const FLAG_NAMES=[[SYN,"SYN"],[FIN,"FIN"],[RST,"RST"],[PSH,"PSH"],
+                  [ACK,"ACK"],[URG,"URG"],[ECE,"ECE"],[CWR,"CWR"]];
+function flagsToStr(f){
+  const out=FLAG_NAMES.filter(([b])=>f&b).map(([,n])=>n);
+  return out.length?out.join("/"):"-";
+}
+const CRC_TABLE=(()=>{const t=new Int32Array(256);
+  for(let n=0;n<256;n++){let c=n;
+    for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c;}return t;})();
+function crc32(bytes,off,len){
+  let c=0xFFFFFFFF;
+  for(let i=0;i<len;i++)c=CRC_TABLE[(c^bytes[off+i])&0xFF]^(c>>>8);
+  return (c^0xFFFFFFFF)>>>0;
+}
+const M32=4294967296, M31=2147483648;
+function unwrap32(value,reference){
+  if(reference==null)return value;
+  let candidate=Math.floor(reference/M32)*M32+(value%M32);
+  if(candidate+M31<reference)candidate+=M32;
+  else if(candidate>reference+M31)candidate-=M32;
+  return candidate;
+}
+class SeqUnwrapper{
+  constructor(){this.reference=null;}
+  unwrap(raw){const v=unwrap32(raw,this.reference);
+    if(this.reference==null||v>this.reference)this.reference=v;return v;}
+  unwrapNoAdvance(raw){return unwrap32(raw,this.reference);}
+}
+/* bisect helpers (Python bisect_left / bisect_right semantics) */
+function bisectLeft(a,x){let lo=0,hi=a.length;
+  while(lo<hi){const m=(lo+hi)>>1;if(a[m]<x)lo=m+1;else hi=m;}return lo;}
+function bisectRight(a,x){let lo=0,hi=a.length;
+  while(lo<hi){const m=(lo+hi)>>1;if(x<a[m])hi=m;else lo=m+1;}return lo;}
+
+class IntervalSet{
+  constructor(){this.starts=[];this.ends=[];}
+  get length(){return this.starts.length;}
+  intervals(){return this.starts.map((s,i)=>[s,this.ends[i]]);}
+  totalBytes(){let t=0;for(let i=0;i<this.starts.length;i++)t+=this.ends[i]-this.starts[i];return t;}
+  add(start,end){
+    if(end<=start)return;
+    const i=bisectLeft(this.ends,start), j=bisectRight(this.starts,end);
+    if(i<j){start=Math.min(start,this.starts[i]);end=Math.max(end,this.ends[j-1]);
+      this.starts.splice(i,j-i);this.ends.splice(i,j-i);}
+    this.starts.splice(i,0,start);this.ends.splice(i,0,end);
+  }
+  removeBelow(boundary){
+    const i=bisectRight(this.ends,boundary);
+    if(i){this.starts.splice(0,i);this.ends.splice(0,i);}
+    if(this.starts.length&&this.starts[0]<boundary)this.starts[0]=boundary;
+  }
+  overlap(start,end){
+    const out=[];let i=bisectRight(this.ends,start);
+    while(i<this.starts.length&&this.starts[i]<end){
+      out.push([Math.max(start,this.starts[i]),Math.min(end,this.ends[i])]);i++;}
+    return out;
+  }
+  containsRange(start,end){
+    const i=bisectRight(this.ends,start);
+    return i<this.starts.length&&this.starts[i]<=start&&this.ends[i]>=end;
+  }
+  gapsBetween(lo,hi){
+    const holes=[];let cur=lo,i=bisectRight(this.ends,lo);
+    while(cur<hi&&i<this.starts.length&&this.starts[i]<hi){
+      if(this.starts[i]>cur)holes.push([cur,this.starts[i]]);
+      cur=Math.max(cur,this.ends[i]);i++;}
+    if(cur<hi)holes.push([cur,hi]);
+    return holes;
+  }
+}
+class SegmentIndex{
+  constructor(){this.keys=[];this.maxLen=0;this._starts=[];}
+  add(start,end,segId){
+    const k=[start,end,segId];
+    const i=bisectRight(this._starts,start);
+    this.keys.splice(i,0,k);this._starts.splice(i,0,start);
+    this.maxLen=Math.max(this.maxLen,end-start);
+  }
+  overlapping(start,end){
+    const out=[];const lo=bisectLeft(this._starts,start-this.maxLen);
+    for(let i=lo;i<this.keys.length;i++){
+      const [s,e,sid]=this.keys[i];
+      if(s>=end)break;
+      if(e>start)out.push([s,e,sid]);
+    }
+    return out;
+  }
+}
+
+/* ---------------------------------------------------------- statistics */
+function percentile(sorted,p){
+  if(!sorted.length)return null;
+  if(p<=0)return sorted[0];
+  if(p>=100)return sorted[sorted.length-1];
+  const rank=Math.ceil(p/100*sorted.length);
+  return sorted[Math.max(0,rank-1)];
+}
+function bigintSqrt(n){                        // isqrt for BigInt
+  if(n<2n)return n;
+  let x=n,y=(x+1n)/2n;
+  while(y<x){x=y;y=(x+n/x)/2n;}
+  return x;
+}
+function summarize(values,minP999=100){
+  if(!values.length)return {count:0};
+  const vals=[...values].sort((a,b)=>a-b);
+  const n=vals.length;
+  let total=0;for(const v of vals)total+=v;
+  const mean=Math.floor(total/n);
+  let varB=0n;
+  if(n>1){const mB=BigInt(mean);
+    for(const v of vals){const d=BigInt(v)-mB;varB+=d*d;}
+    varB/=BigInt(n);}
+  const out={count:n,min:vals[0],max:vals[n-1],mean,
+    median:percentile(vals,50),p50:percentile(vals,50),
+    p90:percentile(vals,90),p95:percentile(vals,95),p99:percentile(vals,99),
+    stddev:Number(bigintSqrt(varB))};
+  if(n>=minP999)out.p999=percentile(vals,99.9);
+  return out;
+}
+function histogram(values,buckets=40){
+  if(!values.length)return {buckets:[],counts:[],cdf:[]};
+  const vals=[...values].sort((a,b)=>a-b);
+  const lo=vals[0],hi=vals[vals.length-1];
+  if(hi===lo)return {buckets:[lo],counts:[vals.length],cdf:[[lo,100.0]]};
+  const width=Math.max(1,Math.floor((hi-lo)/buckets));
+  const counts=new Array(buckets+1).fill(0);
+  for(const v of vals)counts[Math.min(buckets,Math.floor((v-lo)/width))]++;
+  const edges=counts.map((_,i)=>lo+i*width);
+  const n=vals.length,cdf=[],step=Math.max(1,Math.floor(n/200));
+  for(let i=0;i<n;i+=step)cdf.push([vals[i],Math.round((i+1)*100000/n)/1000]);
+  cdf.push([vals[n-1],100.0]);
+  return {buckets:edges,counts,cdf};
+}
+
+/* --------------------------------------------------------- time helpers */
+function fmtNsUtc(absNsBig){
+  if(absNsBig==null)return "-";
+  const sec=absNsBig/1000000000n, frac=absNsBig%1000000000n;
+  const d=new Date(Number(sec)*1000);
+  const p=(x,w)=>String(x).padStart(w,"0");
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1,2)}-${p(d.getUTCDate(),2)} `+
+         `${p(d.getUTCHours(),2)}:${p(d.getUTCMinutes(),2)}:${p(d.getUTCSeconds(),2)}`+
+         `.${p(frac,9)}`;
+}
+function fmtDurationNs(dur){
+  if(dur==null)return "-";
+  const sign=dur<0?"-":"";const a=Math.abs(dur);
+  const sec=Math.floor(a/1e9),frac=a-sec*1e9;
+  return `${sign}${sec}.${String(frac).padStart(9,"0")} s`;
+}
+
+/* ------------------------------------------------------- capture reader */
+const LT_NULL=0, LT_ETH=1, LT_RAW=101, LT_SLL=113, LT_SLL2=276;
+
+function macStr(u8,off){
+  const h=[];for(let i=0;i<6;i++)h.push(u8[off+i].toString(16).padStart(2,"0"));
+  return h.join(":");
+}
+function v6Str(u8,off){
+  const g=[];for(let i=0;i<8;i++)
+    g.push(((u8[off+i*2]<<8)|u8[off+i*2+1]).toString(16));
+  // canonical :: compression (best-effort match of Python ipaddress)
+  let best=-1,bestLen=0,cur=-1,curLen=0;
+  for(let i=0;i<8;i++){
+    if(g[i]==="0"){if(cur<0)cur=i;curLen++;
+      if(curLen>bestLen){best=cur;bestLen=curLen;}}
+    else {cur=-1;curLen=0;}
+  }
+  if(bestLen>1){
+    const a=g.slice(0,best).join(":"),b=g.slice(best+bestLen).join(":");
+    return a+"::"+b;
+  }
+  return g.join(":");
+}
+
+class CaptureReader{
+  constructor(buf){
+    this.u8=new Uint8Array(buf);
+    this.dv=new DataView(buf);
+    this.fileFormat="unknown";
+    this.resolutions=[];                 // ticksPerSecond numbers
+    this.packetCount=0;this.tcpCount=0;
+    this.snaplen=null;this.truncatedFrames=0;this.warnings=[];
+    this.firstAbsNs=null;this.lastAbsNs=null;   // BigInt
+  }
+  notePacket(absNs){
+    if(this.firstAbsNs==null||absNs<this.firstAbsNs)this.firstAbsNs=absNs;
+    if(this.lastAbsNs==null||absNs>this.lastAbsNs)this.lastAbsNs=absNs;
+  }
+  resLabel(tps){
+    if(tps>=1e9)return "1 ns";
+    if(tps===1e6)return "1 µs";
+    if(tps===1e3)return "1 ms";
+    return `1/${tps} s`;
+  }
+  nsPerTick(tps){return Math.max(1,Math.ceil(1e9/tps));}
+
+  *frames(){
+    const dv=this.dv;
+    if(this.u8.length<4)throw new Error("file too short to be a capture");
+    const magicBE=dv.getUint32(0,false);
+    if(magicBE===0xA1B2C3D4||magicBE===0xD4C3B2A1||
+       magicBE===0xA1B23C4D||magicBE===0x4D3CB2A1)
+      yield* this.readPcap(magicBE);
+    else if(magicBE===0x0A0D0D0A)
+      yield* this.readPcapng();
+    else throw new Error("unrecognized capture magic 0x"+
+      magicBE.toString(16).toUpperCase().padStart(8,"0"));
+  }
+  *readPcap(magicBE){
+    const dv=this.dv;
+    this.fileFormat="pcap";
+    const little=(magicBE===0xD4C3B2A1||magicBE===0x4D3CB2A1);
+    const nano=(magicBE===0xA1B23C4D||magicBE===0x4D3CB2A1);
+    this.resolutions=[nano?1e9:1e6];
+    if(this.u8.length<24)throw new Error("truncated pcap global header");
+    this.snaplen=dv.getUint32(16,little);
+    const linktype=dv.getUint32(20,little);
+    let off=24,frameNo=0;
+    while(off+16<=this.u8.length){
+      const tsSec=dv.getUint32(off,little), tsFrac=dv.getUint32(off+4,little);
+      const caplen=dv.getUint32(off+8,little), origlen=dv.getUint32(off+12,little);
+      if(off+16+caplen>this.u8.length){
+        this.warnings.push("capture file ends mid-record — the final packet "+
+          "was discarded (interrupted or copied-while-writing capture)");
+        break;
+      }
+      frameNo++;
+      const absNs=BigInt(tsSec)*1000000000n+BigInt(nano?tsFrac:tsFrac*1000);
+      const truncated=caplen<origlen;
+      if(truncated)this.truncatedFrames++;
+      this.packetCount++;this.notePacket(absNs);
+      yield {frameNo,absNs,linktype,off:off+16,caplen,truncated};
+      off+=16+caplen;
+    }
+  }
+  *readPcapng(){
+    const dv=this.dv,u8=this.u8;
+    this.fileFormat="pcapng";
+    let off=0,little=true,frameNo=0;
+    let interfaces=[];                       // [{linktype, tps}]
+    while(off+8<=u8.length){
+      let btype=dv.getUint32(off,little), blen=dv.getUint32(off+4,little);
+      if(dv.getUint32(off,false)===0x0A0D0D0A){    // SHB (palindromic type)
+        if(off+24>u8.length)break;
+        const bom=dv.getUint32(off+8,true);
+        little=(bom===0x1A2B3C4D);
+        blen=dv.getUint32(off+4,little);
+        interfaces=[];
+        if(blen<28||off+blen>u8.length)break;
+        off+=blen;continue;
+      }
+      if(blen<12||blen%4){
+        this.warnings.push(`corrupt pcapng block (type 0x${btype.toString(16)
+          .toUpperCase().padStart(8,"0")}, length ${blen}) after `+
+          `${this.packetCount} packets — remainder of the file skipped`);
+        break;
+      }
+      if(off+blen>u8.length){
+        this.warnings.push("capture file ends mid-block — the final block "+
+          "was discarded (interrupted or copied-while-writing capture)");
+        break;
+      }
+      const body=off+8, bodyLen=blen-12;
+      if(btype===0x00000001){                       // IDB
+        const linktype=dv.getUint16(body,little);
+        const snap=dv.getUint32(body+4,little);
+        if(this.snaplen==null||(snap&&snap<this.snaplen))this.snaplen=snap||null;
+        let tps=1e6, o=body+8;
+        while(o+4<=body+bodyLen){
+          const code=dv.getUint16(o,little), olen=dv.getUint16(o+2,little);
+          if(code===0)break;
+          if(code===9&&olen>=1){
+            const b=u8[o+4];
+            tps=(b&0x80)?Math.pow(2,b&0x7F):Math.pow(10,b);
+          }
+          o+=4+((olen+3)&~3);
+        }
+        interfaces.push({linktype,tps});
+        this.resolutions.push(tps);
+      } else if(btype===0x00000006){                // EPB
+        if(bodyLen>=20){
+          const ifId=dv.getUint32(body,little);
+          const tsHi=dv.getUint32(body+4,little), tsLo=dv.getUint32(body+8,little);
+          const caplen=dv.getUint32(body+12,little), origlen=dv.getUint32(body+16,little);
+          if(ifId<interfaces.length){
+            const {linktype,tps}=interfaces[ifId];
+            const ticks=BigInt(tsHi)*4294967296n+BigInt(tsLo);
+            const absNs=tps===1e9?ticks:(ticks*1000000000n)/BigInt(tps);
+            frameNo++;
+            const truncated=caplen<origlen;
+            if(truncated)this.truncatedFrames++;
+            this.packetCount++;this.notePacket(absNs);
+            yield {frameNo,absNs,linktype,off:body+20,
+                   caplen:Math.min(caplen,bodyLen-20),truncated};
+          }
+        }
+      } else if(btype===0x00000003){                // SPB — no timestamp
+        frameNo++;this.packetCount++;
+      }
+      off+=blen;
+    }
+  }
+}
+
+/* --------------------------------------------------------- tcp decoding */
+function decodeTcp(rd,f){
+  const u8=rd.u8,dv=rd.dv;
+  const end=f.off+f.caplen;
+  try{
+    if(f.linktype===LT_ETH){
+      if(f.caplen<14)return null;
+      const dstMac=macStr(u8,f.off), srcMac=macStr(u8,f.off+6);
+      let ethertype=dv.getUint16(f.off+12,false), o=f.off+14, vlan=null;
+      while((ethertype===0x8100||ethertype===0x88A8)&&o+4<=end){
+        if(vlan==null)vlan=dv.getUint16(o,false)&0x0FFF;
+        ethertype=dv.getUint16(o+2,false);o+=4;
+      }
+      const l2=[srcMac,dstMac,vlan];
+      if(ethertype===0x0800)return decodeIpv4(rd,f,o,end,l2);
+      if(ethertype===0x86DD)return decodeIpv6(rd,f,o,end,l2);
+      return null;
+    }
+    const noL2=[null,null,null];
+    if(f.linktype===LT_RAW)return decodeIpAuto(rd,f,f.off,end);
+    if(f.linktype===LT_NULL){
+      if(f.caplen<4)return null;
+      return decodeIpAuto(rd,f,f.off+4,end);
+    }
+    if(f.linktype===LT_SLL){
+      if(f.caplen<16)return null;
+      const proto=dv.getUint16(f.off+14,false);
+      if(proto===0x0800)return decodeIpv4(rd,f,f.off+16,end,noL2);
+      if(proto===0x86DD)return decodeIpv6(rd,f,f.off+16,end,noL2);
+      return null;
+    }
+    if(f.linktype===LT_SLL2){
+      if(f.caplen<20)return null;
+      const proto=dv.getUint16(f.off,false);
+      if(proto===0x0800)return decodeIpv4(rd,f,f.off+20,end,noL2);
+      if(proto===0x86DD)return decodeIpv6(rd,f,f.off+20,end,noL2);
+      return null;
+    }
+    return null;
+  }catch(e){return null;}
+}
+function decodeIpAuto(rd,f,o,end){
+  if(o>=end)return null;
+  const ver=rd.u8[o]>>4, noL2=[null,null,null];
+  if(ver===4)return decodeIpv4(rd,f,o,end,noL2);
+  if(ver===6)return decodeIpv6(rd,f,o,end,noL2);
+  return null;
+}
+function decodeIpv4(rd,f,o,end,l2){
+  const u8=rd.u8,dv=rd.dv;
+  if(end-o<20||(u8[o]>>4)!==4)return null;
+  const ihl=(u8[o]&0x0F)*4;
+  if(ihl<20||end-o<ihl)return null;
+  const totalLen=dv.getUint16(o+2,false);
+  const ipId=dv.getUint16(o+4,false);
+  const flagsFrag=dv.getUint16(o+6,false);
+  if(flagsFrag&0x1FFF)return null;
+  const ttl=u8[o+8];
+  if(u8[o+9]!==6)return null;
+  const src=`${u8[o+12]}.${u8[o+13]}.${u8[o+14]}.${u8[o+15]}`;
+  const dst=`${u8[o+16]}.${u8[o+17]}.${u8[o+18]}.${u8[o+19]}`;
+  const availTotal=Math.min(totalLen,end-o);
+  const tcpOff=o+ihl, tcpAvail=Math.max(0,availTotal-ihl);
+  return decodeTcpHeader(rd,f,src,dst,tcpOff,tcpAvail,totalLen,
+                         totalLen-ihl,ipId,ttl,l2);
+}
+function decodeIpv6(rd,f,o,end,l2){
+  const u8=rd.u8,dv=rd.dv;
+  if(end-o<40||(u8[o]>>4)!==6)return null;
+  const payloadLen=dv.getUint16(o+4,false);
+  let nxt=u8[o+6];
+  const hop=u8[o+7];
+  const src=v6Str(u8,o+8), dst=v6Str(u8,o+24);
+  let oo=o+40;
+  while((nxt===0||nxt===43||nxt===60)&&end-oo>=8){
+    const hdrLen=(u8[oo+1]+1)*8;
+    nxt=u8[oo];oo+=hdrLen;
+  }
+  if(nxt!==6)return null;
+  const declaredEnd=payloadLen?o+40+payloadLen:end;
+  const tcpAvail=Math.max(0,Math.min(declaredEnd,end)-oo);
+  return decodeTcpHeader(rd,f,src,dst,oo,tcpAvail,40+payloadLen,
+                         (40+payloadLen)-(oo-o),null,hop,l2);
+}
+function decodeTcpHeader(rd,f,src,dst,o,avail,ipTotalLen,declaredPayload,
+                         ipId,ttl,l2){
+  const u8=rd.u8,dv=rd.dv;
+  if(avail<20)return null;
+  const sport=dv.getUint16(o,false), dport=dv.getUint16(o+2,false);
+  const seq=dv.getUint32(o+4,false), ack=dv.getUint32(o+8,false);
+  const offFlags=dv.getUint16(o+12,false);
+  const window=dv.getUint16(o+14,false);
+  const dataOff=(offFlags>>12)*4, flags=offFlags&0x01FF;
+  if(dataOff<20)return null;
+  const payloadLen=Math.max(0,declaredPayload-dataOff);
+  let mss=null,wscale=null,tsVal=null,tsEcr=null,sackPermitted=false;
+  const sackBlocks=[];
+  let i=o+20;const optEnd=o+Math.min(dataOff,avail);
+  while(i<optEnd){
+    const kind=u8[i];
+    if(kind===0)break;
+    if(kind===1){i++;continue;}
+    if(i+1>=optEnd)break;
+    const olen=u8[i+1];
+    if(olen<2||i+olen>optEnd)break;
+    if(kind===2&&olen===4)mss=dv.getUint16(i+2,false);
+    else if(kind===3&&olen===3)wscale=u8[i+2];
+    else if(kind===4)sackPermitted=true;
+    else if(kind===5){
+      for(let j=i+2;j+8<=i+olen;j+=8)
+        sackBlocks.push([dv.getUint32(j,false),dv.getUint32(j+4,false)]);
+    }
+    else if(kind===8&&olen===10){
+      tsVal=dv.getUint32(i+2,false);tsEcr=dv.getUint32(i+6,false);
+    }
+    i+=olen;
+  }
+  const capPayload=Math.max(0,avail-dataOff);
+  const payloadCrc=payloadLen?crc32(u8,o+dataOff,capPayload):0;
+  return {
+    frame:f.frameNo, absNs:f.absNs, tsRel:0 /* filled by caller */,
+    srcIp:src,dstIp:dst,srcPort:sport,dstPort:dport,
+    seqRaw:seq,ackRaw:ack,flags:flags&0xFF,windowRaw:window,
+    payloadLen,ipTotalLen,truncated:f.truncated,
+    mss,windowScale:wscale,sackPermitted,sackBlocks,tsVal,tsEcr,
+    ipId,ttl,srcMac:l2[0],dstMac:l2[1],vlan:l2[2],payloadCrc,
+  };
+}
+
+/* ------------------------------------------------------- retrans config */
+const DEFAULT_CFG={
+  dupackThreshold:3,
+  rtoFloorNs:200000000,
+  duplicateWindowNs:2000000,
+  srttRtoMultiplier:3,
+  observationWindowNs:20000000,
+};
+function classifyRetrans(o,cfg){
+  const ev=[];
+  if(o.delay!=null)ev.push(`delay since previous transmission ${o.delay} ns`);
+  if(o.dupAcks)ev.push(`${o.dupAcks} duplicate ACKs observed before retransmission`);
+  if(o.sackHole)ev.push("open SACK hole covered the range");
+  if(o.alreadyAcked)ev.push("range was already cumulatively ACKed");
+  if(o.alreadySacked)ev.push("range was already SACKed");
+  if(o.alreadyAcked||o.alreadySacked){
+    if(o.delay!=null&&o.delay<=cfg.duplicateWindowNs)
+      return ["duplicate",[...ev,`re-seen within ${cfg.duplicateWindowNs} ns `+
+        "duplicate window (possible capture-level duplication)"].join("; ")];
+    return ["possible-spurious",ev.join("; ")];
+  }
+  let base=null;
+  if(!o.fullOverlap&&o.partialOverlap)base="partial-retransmission";
+  else if(!o.fullOverlap)base="overlapping-retransmission";
+  const fastSignal=o.dupAcks>=cfg.dupackThreshold||o.sackHole;
+  let rtoSignal=false;
+  if(o.delay!=null){
+    if(o.delay>=cfg.rtoFloorNs)rtoSignal=true;
+    else if(o.srtt&&o.delay>=cfg.srttRtoMultiplier*o.srtt&&!fastSignal)rtoSignal=true;
+  }
+  let kind;
+  if(fastSignal&&!rtoSignal)kind="fast-retransmission";
+  else if(rtoSignal&&!fastSignal){kind="rto-retransmission";
+    ev.push(`delay exceeded RTO heuristic (floor ${cfg.rtoFloorNs} ns / `+
+      `${cfg.srttRtoMultiplier}x sRTT)`);}
+  else if(fastSignal&&rtoSignal){kind="fast-retransmission";
+    ev.push("both fast-retx and RTO signals present; dup-ACK/SACK evidence "+
+      "takes precedence");}
+  else {kind="retransmission";
+    ev.push("no dup-ACK/SACK trigger visible and delay below RTO heuristic "+
+      "— mechanism ambiguous");}
+  if(base){
+    ev.push(`sequence overlap was ${base.replace(/-/g," ")}`);
+    if(kind==="retransmission")kind=base;
+  }
+  return [kind,ev.join("; ")];
+}
+
+/* ----------------------------------------------------------- rtt/window */
+class RTTTracker{
+  constructor(direction){this.direction=direction;this.samples=[];this.ambiguous=[];}
+  addSample(ts,rtt,kind,frameData,frameAck,seq,end){
+    if(rtt<0)return;
+    this.samples.push({ts,rtt,kind,dir:this.direction,frameData,frameAck,seq,end});
+  }
+  addAmbiguous(ts,frameData,frameAck,seq,end,reason){
+    this.ambiguous.push({ts,frame_data:frameData,frame_ack:frameAck,seq,end,reason});
+  }
+}
+class WindowTracker{
+  constructor(direction){
+    this.direction=direction;this.scale=null;this.scaleKnown=false;
+    this.lastWindow=null;this.zeroOpenTs=null;this.events=[];
+    this.zeroCount=0;this.updateCount=0;this.minW=null;this.maxW=null;
+  }
+  effective(raw,inSyn){
+    if(inSyn||!this.scaleKnown||this.scale==null)return raw;
+    return raw*Math.pow(2,this.scale);
+  }
+  process(frame,ts,raw,inSyn){
+    const win=this.effective(raw,inSyn);
+    this.minW=this.minW==null?win:Math.min(this.minW,win);
+    this.maxW=this.maxW==null?win:Math.max(this.maxW,win);
+    const prev=this.lastWindow;this.lastWindow=win;
+    if(win===0&&!inSyn){
+      if(this.zeroOpenTs==null){
+        this.zeroOpenTs=ts;this.zeroCount++;
+        this.events.push({kind:"zero-window",dir:this.direction,frame,ts,
+          window:0,detail:"advertised receive window dropped to 0"});
+      }
+      return;
+    }
+    if(this.zeroOpenTs!=null&&win>0){
+      this.events.push({kind:"window-recovery",dir:this.direction,frame,ts,
+        window:win,detail:`zero-window episode ended after ${ts-this.zeroOpenTs} ns`});
+      this.zeroOpenTs=null;
+    }
+    if(prev!=null&&win>prev)this.updateCount++;
+  }
+  noteProbe(frame,ts){
+    this.events.push({kind:"zero-window-probe",dir:this.direction,frame,ts,
+      window:0,detail:"probe into a zero receive window"});
+  }
+  noteWindowFull(frame,ts,inFlight,win){
+    this.events.push({kind:"window-full",dir:this.direction,frame,ts,
+      window:win,detail:`bytes in flight ${inFlight} reached advertised window ${win}`});
+  }
+}
+
+/* ------------------------------------------------------- ack correlator */
+class AckCorrelator{
+  constructor(direction,rtt){
+    this.direction=direction;this.rtt=rtt;
+    this.unacked=[];                 // sorted by end: [end, segId]
+    this.retransmittedRanges=new IntervalSet();
+    this.sndUna=null;this.srtt=null;
+  }
+  registerSegment(seg){
+    const ends=this.unacked.map(x=>x[0]);
+    const i=bisectRight(ends,seg.end);
+    this.unacked.splice(i,0,[seg.end,seg.segId]);
+  }
+  noteRetransmission(start,end){this.retransmittedRanges.add(start,end);}
+  processAck(ack64,ackFrame,ackTs,segments){
+    if(this.sndUna!=null&&ack64<=this.sndUna)return [];
+    this.sndUna=ack64;
+    const newly=[];
+    while(this.unacked.length&&this.unacked[0][0]<=ack64){
+      const [,segId]=this.unacked.shift();
+      const seg=segments[segId];
+      if(seg.ackedTs!=null)continue;
+      seg.ackedTs=ackTs;seg.ackedBy=ackFrame;
+      seg.ackLat=ackTs-seg.ts;
+      if(seg.retx)seg.state="Recovered";
+      else if(seg.state==="Original"||seg.state==="SACKed")seg.state="ACKed";
+      newly.push(seg);
+    }
+    if(!newly.length)return newly;
+    newly.sort((a,b)=>a.end-b.end);
+    const dataNewly=newly.filter(s=>s.payloadLen>0);
+    for(const seg of newly){
+      const amb=seg.retx||this.retransmittedRanges.overlap(seg.seq,seg.end).length>0;
+      if(amb&&seg.payloadLen>0)seg.rttAmb=true;
+    }
+    if(!dataNewly.length)return newly;
+    let sampleSeg=null;
+    for(const seg of dataNewly)if(seg.end===ack64)sampleSeg=seg;
+    if(sampleSeg==null)sampleSeg=dataNewly[dataNewly.length-1];
+    const amb=sampleSeg.retx||
+      this.retransmittedRanges.overlap(sampleSeg.seq,sampleSeg.end).length>0;
+    if(amb){
+      this.rtt.addAmbiguous(ackTs,sampleSeg.frame,ackFrame,
+        sampleSeg.seq,sampleSeg.end,
+        "range retransmitted; ACK could match either transmission "+
+        "(Karn's algorithm exclusion)");
+    }else{
+      const rtt=ackTs-sampleSeg.ts;
+      if(rtt>=0){
+        sampleSeg.rtt=rtt;
+        this.rtt.addSample(ackTs,rtt,"data-ack",sampleSeg.frame,ackFrame,
+          sampleSeg.seq,sampleSeg.end);
+        this.srtt=this.srtt==null?rtt:Math.floor((7*this.srtt+rtt)/8);
+      }
+    }
+    return newly;
+  }
+}
+
+/* ------------------------------------------------------ sack scoreboard */
+class SackScoreboard{
+  constructor(direction){
+    this.direction=direction;
+    this.sacked=new IntervalSet();
+    this.cumAck=null;this.records=[];this.holes=new Map();
+    this.holeHistory=[];this.snapshots=[];
+    this.dsackCount=0;this.sackBlockTotal=0;
+  }
+  processAck(frame,ts,ack64,blocks64){
+    const prevAck=this.cumAck;
+    if(this.cumAck==null||ack64>this.cumAck)this.cumAck=ack64;
+    if(this.cumAck!=null){
+      for(const h of this.holes.values())
+        if(!h.closed&&h.end<=this.cumAck){
+          h.closed=true;h.closed_ts=ts;h.closed_frame=frame;
+        }
+      this.sacked.removeBelow(this.cumAck);
+    }
+    if(!blocks64.length)return null;
+    const [isDsack,reason]=this.detectDsack(ack64,blocks64);
+    const rec={frame,ts,ack:ack64,blocks:blocks64,dsack:isDsack,
+               dsack_reason:reason};
+    this.records.push(rec);
+    this.sackBlockTotal+=blocks64.length;
+    const board=isDsack?blocks64.slice(1):blocks64;
+    if(isDsack)this.dsackCount++;
+    for(const [l,r] of board)if(r>l)this.sacked.add(l,r);
+    if(this.cumAck!=null)this.sacked.removeBelow(this.cumAck);
+    this.updateHoles(frame,ts);
+    this.snapshots.push({frame,ts,ack:this.cumAck,
+      sacked:this.sacked.intervals(),
+      holes:this.openHoles().map(h=>[h.start,h.end]),
+      dsack:isDsack,
+      ack_advanced:prevAck!=null&&this.cumAck!=null&&this.cumAck>prevAck});
+    return rec;
+  }
+  updateHoles(frame,ts){
+    if(this.cumAck==null||!this.sacked.length)return;
+    const hi=this.sacked.ends[this.sacked.ends.length-1];
+    for(const [start,end] of this.sacked.gapsBetween(this.cumAck,hi)){
+      const existing=this.holes.get(start);
+      if(existing&&!existing.closed){
+        if(end!==existing.end)existing.end=Math.min(existing.end,end);
+        continue;
+      }
+      if(!this.holes.has(start)){
+        const h={start,end,first_ts:ts,first_frame:frame,closed:false,
+                 closed_ts:null,closed_frame:null};
+        this.holes.set(start,h);this.holeHistory.push(h);
+      }
+    }
+    for(const h of this.holes.values())
+      if(!h.closed&&this.sacked.containsRange(h.start,h.end)){
+        h.closed=true;h.closed_ts=ts;h.closed_frame=frame;
+      }
+  }
+  openHoles(){return [...this.holes.values()].filter(h=>!h.closed);}
+  detectDsack(ack64,blocks){
+    const [l0,r0]=blocks[0];
+    if(r0<=ack64)return [true,"first SACK block entirely below cumulative ACK"];
+    if(blocks.length>=2){
+      const [l1,r1]=blocks[1];
+      if(l1<=l0&&r0<=r1)return [true,"first SACK block contained in second block"];
+    }
+    return [false,null];
+  }
+}
+
+/* --------------------------------------------------------- loss manager */
+class LossManager{
+  constructor(direction){
+    this.direction=direction;this.events=[];this.openByStart=new Map();
+    this.nextId=0;
+  }
+  openEvent(o){
+    const ex=this.findOverlap(o.seq,o.end);
+    if(ex){
+      if(ex.first_evidence_ns==null||o.evidenceTs<ex.first_evidence_ns){
+        ex.first_evidence_ns=o.evidenceTs;ex.first_evidence_frame=o.evidenceFrame;
+        ex.evidence_kind=o.evidenceKind;
+      }
+      ex.sack_involved=ex.sack_involved||!!o.sackInvolved;
+      return ex;
+    }
+    const ev={loss_id:this.nextId++,direction:this.direction,
+      seq:o.seq,end:o.end,bytes:o.end-o.seq,
+      original_tx_ns:o.originalTx??null,original_frame:o.originalFrame??null,
+      first_evidence_ns:o.evidenceTs,first_evidence_frame:o.evidenceFrame,
+      evidence_kind:o.evidenceKind,
+      retrans_ns:null,retrans_frame:null,retrans_lost:false,
+      recovery_ns:null,recovery_frame:null,recovered:false,partial:false,
+      sack_involved:!!o.sackInvolved,dup_ack_count:0,sack_report_count:0,
+      additional_holes:0,likely_mechanism:"unknown",
+      classification:o.classification||"loss",
+      classification_evidence:o.classificationEvidence||""};
+    this.events.push(ev);this.openByStart.set(o.seq,ev);
+    return ev;
+  }
+  findOverlap(seq,end){
+    for(const ev of this.openByStart.values())
+      if(ev.seq<end&&seq<ev.end&&!ev.recovered)return ev;
+    return null;
+  }
+  noteRetransmission(seq,end,frame,ts,mechanism){
+    const ev=this.findOverlap(seq,end);
+    if(!ev)return null;
+    if(ev.retrans_ns==null){
+      ev.retrans_ns=ts;ev.retrans_frame=frame;ev.likely_mechanism=mechanism;
+    }else ev.retrans_lost=true;
+    return ev;
+  }
+  noteDupAcks(seq,end,count){
+    const ev=this.findOverlap(seq,end);
+    if(ev)ev.dup_ack_count=Math.max(ev.dup_ack_count,count);
+  }
+  noteSackReport(seq,end){
+    const ev=this.findOverlap(seq,end);
+    if(ev){ev.sack_report_count++;ev.sack_involved=true;}
+  }
+  noteAdditionalHole(ts){
+    for(const ev of this.openByStart.values())
+      if(!ev.recovered&&ev.first_evidence_ns!=null&&ev.first_evidence_ns<ts)
+        ev.additional_holes++;
+  }
+  noteCumAck(ack64,frame,ts){
+    const recovered=[];
+    for(const [start,ev] of [...this.openByStart]){
+      if(ev.end<=ack64){
+        ev.recovered=true;ev.recovery_ns=ts;ev.recovery_frame=frame;
+        ev.partial=false;
+        this.openByStart.delete(start);
+        recovered.push(ev);
+      }else if(ev.seq<ack64&&ack64<ev.end)ev.partial=true;
+    }
+    return recovered;
+  }
+  reclassify(seq,end,classification,evidence,evidenceTs){
+    for(const ev of this.events)
+      if(ev.seq<end&&seq<ev.end){
+        if(evidenceTs!=null&&ev.recovered&&ev.recovery_ns!=null&&
+           ev.recovery_ns<evidenceTs)continue;
+        ev.classification=classification;
+        ev.classification_evidence=evidence;
+      }
+  }
+}
+
+/* ------------------------------------------------------------- session */
+class DirectionState{
+  constructor(direction){
+    this.direction=direction;
+    this.unwrapper=new SeqUnwrapper();
+    this.isn=null;this.isnRaw=null;this.relBase=null;
+    this.synSeen=false;this.synFrames=[];
+    this.finSeen=false;this.rstSeen=false;
+    this.segments=[];this.segIndex=new SegmentIndex();
+    this.transmitted=new IntervalSet();this.sndMax=null;
+    this.rtt=new RTTTracker(direction);
+    this.ackCorr=new AckCorrelator(direction,this.rtt);
+    this.scoreboard=new SackScoreboard(direction);
+    this.loss=new LossManager(direction);
+    this.window=new WindowTracker(direction);
+    this.openGaps=[];this.retransEvents=[];
+    this.dupLastAck=null;this.dupLastWin=null;this.dupTrain=null;
+    this.dupAckTrains=[];
+    this.mss=null;this.ws=null;this.sackPermitted=null;this.tsopt=false;
+    this.packets=0;this.bytes=0;this.payloadBytes=0;
+    this.retransSegments=0;this.retransBytes=0;
+    this.dupPackets=0;this.oooPackets=0;this.keepaliveCount=0;
+    this.oversizeSegments=0;this.gapOverflow=0;this.windowFull=false;
+    this.recentFp=new Map();this.fpPruneAt=0;
+    this.networkDups=0;this.observationEvents=[];
+  }
+  rel(seq64){
+    if(seq64==null)return null;
+    return seq64-(this.relBase!=null?this.relBase:0);
+  }
+  contiguousEnd(){
+    if(!this.transmitted.length)return null;
+    return this.transmitted.ends[0];
+  }
+}
+const MAX_OPEN_GAPS=1024;
+
+class Session{
+  constructor(id,pkt,cfg,rowLimit){
+    this.id=id;this.cfg=cfg;this.rowLimit=rowLimit;this.rowsDropped=0;
+    this.epA=[pkt.srcIp,pkt.srcPort];this.epB=[pkt.dstIp,pkt.dstPort];
+    this.dirA=new DirectionState("A->B");this.dirB=new DirectionState("B->A");
+    this.firstTs=null;this.lastTs=null;
+    this.clientDir=null;this.handshakeComplete=false;this.partial=true;
+    this.synTs=null;this.synFrame=null;this.synackTs=null;this.synackFrame=null;
+    this.estAckTs=null;this.estAckFrame=null;
+    this.rstFrame=null;this.finFrames=[];
+    this.packetRows=[];this.truncatedFrames=0;
+  }
+  directionOf(pkt){
+    return (pkt.srcIp===this.epA[0]&&pkt.srcPort===this.epA[1])?"A->B":"B->A";
+  }
+  dstate(d){return d==="A->B"?this.dirA:this.dirB;}
+  get closed(){
+    return this.dirA.rstSeen||this.dirB.rstSeen||
+           (this.dirA.finSeen&&this.dirB.finSeen);
+  }
+  addPacket(pkt){
+    const d=this.directionOf(pkt), r=d==="A->B"?"B->A":"A->B";
+    const snd=this.dstate(d), rcv=this.dstate(r);
+    if(this.firstTs==null)this.firstTs=pkt.tsRel;
+    this.lastTs=pkt.tsRel;
+    if(pkt.truncated)this.truncatedFrames++;
+
+    const dup=this.observationDuplicate(pkt,snd);
+    if(dup){
+      snd.networkDups++;snd.packets++;snd.bytes+=pkt.ipTotalLen;
+      this.storeRow(pkt,d,snd,snd.unwrapper.unwrapNoAdvance(pkt.seqRaw),
+                    null,null,"Capture-dup");
+      return;
+    }
+    snd.packets++;snd.bytes+=pkt.ipTotalLen;snd.payloadBytes+=pkt.payloadLen;
+
+    const seq64=snd.unwrapper.unwrap(pkt.seqRaw);
+    if(snd.relBase==null)snd.relBase=seq64;
+    let consumed=pkt.payloadLen;
+    if(pkt.flags&SYN)consumed++;
+    if(pkt.flags&FIN)consumed++;
+    const end64=seq64+consumed;
+
+    this.handshake(pkt,d,snd,rcv,seq64);
+    if(pkt.flags&RST){snd.rstSeen=true;
+      if(this.rstFrame==null)this.rstFrame=pkt.frame;}
+    if(pkt.flags&FIN){snd.finSeen=true;this.finFrames.push(pkt.frame);}
+
+    if(!this.dirA.window.scaleKnown&&this.dirA.synSeen&&this.dirB.synSeen&&
+       !(pkt.flags&SYN)){
+      const both=this.dirA.ws!=null&&this.dirB.ws!=null;
+      for(const ds of [this.dirA,this.dirB]){
+        ds.window.scale=both?ds.ws:null;ds.window.scaleKnown=true;
+      }
+    }
+    snd.window.process(pkt.frame,pkt.tsRel,pkt.windowRaw,!!(pkt.flags&SYN));
+
+    let seg=null;
+    if(consumed>0)seg=this.dataSegment(pkt,d,r,snd,rcv,seq64,end64);
+    if(pkt.flags&ACK)this.processAck(pkt,d,r,snd,rcv);
+    if(consumed>0&&pkt.payloadLen<=1&&rcv.window.zeroOpenTs!=null&&
+       !(pkt.flags&(SYN|FIN|RST)))
+      rcv.window.noteProbe(pkt.frame,pkt.tsRel);
+    this.storeRow(pkt,d,snd,seq64,end64,seg,null);
+  }
+
+  handshake(pkt,d,snd,rcv,seq64){
+    const f=pkt.flags;
+    if((f&SYN)&&!(f&ACK)){
+      if(!snd.synSeen){
+        snd.synSeen=true;snd.isn=seq64;snd.isnRaw=pkt.seqRaw;snd.relBase=seq64;
+        if(this.clientDir==null)this.clientDir=d;
+        this.partial=false;
+        this.synTs=pkt.tsRel;this.synFrame=pkt.frame;
+        snd.mss=pkt.mss;snd.ws=pkt.windowScale;
+        snd.sackPermitted=pkt.sackPermitted;snd.tsopt=pkt.tsVal!=null;
+      }
+      snd.synFrames.push(pkt.frame);
+    }else if((f&SYN)&&(f&ACK)){
+      if(!snd.synSeen){
+        snd.synSeen=true;snd.isn=seq64;snd.isnRaw=pkt.seqRaw;snd.relBase=seq64;
+        if(this.clientDir==null)this.clientDir=d==="A->B"?"B->A":"A->B";
+        this.synackTs=pkt.tsRel;this.synackFrame=pkt.frame;
+        snd.mss=pkt.mss;snd.ws=pkt.windowScale;
+        snd.sackPermitted=pkt.sackPermitted;snd.tsopt=pkt.tsVal!=null;
+        if(this.synTs!=null&&this.clientDir!=null){
+          const cds=this.dstate(this.clientDir);
+          const rtt=pkt.tsRel-this.synTs;
+          if(cds.synFrames.length>1)
+            cds.rtt.addAmbiguous(pkt.tsRel,this.synFrame,pkt.frame,0,1,
+              "SYN was retransmitted; SYN/ACK could answer either SYN "+
+              "(Karn's algorithm exclusion)");
+          else if(rtt>=0)
+            cds.rtt.addSample(pkt.tsRel,rtt,"syn-synack",
+              this.synFrame,pkt.frame,0,1);
+        }
+      }
+      snd.synFrames.push(pkt.frame);
+    }else if((f&ACK)&&!(f&SYN)&&!this.handshakeComplete&&
+             this.synackTs!=null&&d===this.clientDir){
+      this.handshakeComplete=true;
+      this.estAckTs=pkt.tsRel;this.estAckFrame=pkt.frame;
+      const rtt=pkt.tsRel-this.synackTs;
+      const sdir=this.clientDir==="A->B"?"B->A":"A->B";
+      const sds=this.dstate(sdir);
+      if(sds.synFrames.length>1)
+        sds.rtt.addAmbiguous(pkt.tsRel,this.synackFrame,pkt.frame,0,1,
+          "SYN/ACK was retransmitted; the ACK could answer either copy "+
+          "(Karn's algorithm exclusion)");
+      else if(rtt>=0)
+        sds.rtt.addSample(pkt.tsRel,rtt,"synack-ack",
+          this.synackFrame,pkt.frame,0,1);
+      const both=this.dirA.ws!=null&&this.dirB.ws!=null;
+      for(const ds of [this.dirA,this.dirB]){
+        ds.window.scale=both?ds.ws:null;ds.window.scaleKnown=true;
+      }
+    }
+  }
+
+  dataSegment(pkt,d,r,snd,rcv,seq64,end64){
+    const overlaps=snd.transmitted.overlap(seq64,end64);
+    const fullOverlap=snd.transmitted.containsRange(seq64,end64);
+    const seg={segId:snd.segments.length,frame:pkt.frame,ts:pkt.tsRel,
+      seq:seq64,end:end64,payloadLen:pkt.payloadLen,len:pkt.payloadLen,
+      flags:pkt.flags,ackRaw:pkt.ackRaw,winRaw:pkt.windowRaw,
+      state:"Original",retx:false,retxKind:null,retxOf:null,retxDelay:null,
+      ackedTs:null,ackedBy:null,ackLat:null,rtt:null,rttAmb:false,
+      sackedTs:null,sackedBy:null};
+    snd.segments.push(seg);
+    if(snd.mss&&pkt.payloadLen>snd.mss)snd.oversizeSegments++;
+
+    const una=snd.ackCorr.sndUna;
+    const tiny=pkt.payloadLen<=1&&!(pkt.flags&(SYN|FIN|RST))&&
+               una!=null&&seq64<=una;
+    if(tiny&&rcv.window.zeroOpenTs!=null){
+      seg.state="Window-probe";
+    }else if(tiny&&overlaps.length&&pkt.payloadLen>0&&end64<=una){
+      seg.state="Keep-alive";snd.keepaliveCount++;
+    }else if(overlaps.length&&pkt.payloadLen>0){
+      this.retransmission(pkt,d,snd,rcv,seg,overlaps,fullOverlap);
+    }else{
+      this.originalData(pkt,snd,seg,seq64,end64);
+    }
+    snd.transmitted.add(seq64,end64);
+    snd.segIndex.add(seq64,end64,seg.segId);
+    snd.sndMax=snd.sndMax==null?end64:Math.max(snd.sndMax,end64);
+    if(seg.state!=="Keep-alive"&&seg.state!=="Window-probe")
+      snd.ackCorr.registerSegment(seg);
+
+    const una2=snd.ackCorr.sndUna, adv=rcv.window.lastWindow;
+    if(una2!=null&&adv){
+      const inFlight=snd.sndMax-una2;
+      if(inFlight>=adv&&!snd.windowFull){
+        snd.windowFull=true;
+        rcv.window.noteWindowFull(pkt.frame,pkt.tsRel,inFlight,adv);
+      }else if(inFlight<adv)snd.windowFull=false;
+    }
+    return seg;
+  }
+
+  originalData(pkt,snd,seg,seq64,end64){
+    const contig=snd.contiguousEnd();
+    if(contig!=null&&seq64>contig){
+      if(snd.openGaps.length<MAX_OPEN_GAPS)
+        snd.openGaps.push({start:contig,end:seq64,ts:pkt.tsRel,frame:pkt.frame});
+      else snd.gapOverflow++;
+    }
+    for(const gap of snd.openGaps){
+      if(gap.resolved)continue;
+      if((seq64<=gap.start&&gap.start<end64)||(seq64<gap.end&&end64>gap.start)){
+        gap.resolved=true;gap.fill_frame=pkt.frame;gap.fill_ts=pkt.tsRel;
+        gap.fill_kind="new-data";
+        seg.state="Out-of-order";snd.oooPackets++;
+        const delay=pkt.tsRel-gap.ts;
+        const ev=snd.loss.openEvent({
+          seq:Math.max(gap.start,seq64),end:Math.min(gap.end,end64),
+          evidenceKind:"seq-gap",evidenceTs:gap.ts,evidenceFrame:gap.frame,
+          originalTx:null,originalFrame:null,classification:"reordering",
+          classificationEvidence:`gap filled after ${delay} ns by frame `+
+            `${pkt.frame} carrying data never seen before in the capture — `+
+            "consistent with out-of-order delivery, not retransmitted loss"});
+        ev.recovered=true;ev.recovery_ns=pkt.tsRel;ev.recovery_frame=pkt.frame;
+        snd.loss.openByStart.delete(ev.seq);
+      }
+    }
+  }
+
+  retransmission(pkt,d,snd,rcv,seg,overlaps,fullOverlap){
+    const cands=snd.segIndex.overlapping(seg.seq,seg.end);
+    let orig=null,lastTx=null;
+    for(const [,,sid] of cands){
+      const cand=snd.segments[sid];
+      if(cand===seg)continue;
+      if(cand.payloadLen>0&&(orig==null||cand.ts<orig.ts))orig=cand;
+      if(lastTx==null||cand.ts>lastTx)lastTx=cand.ts;
+    }
+    const una=snd.ackCorr.sndUna;
+    const alreadyAcked=una!=null&&seg.end<=una;
+    const alreadySacked=snd.scoreboard.sacked.containsRange(seg.seq,seg.end);
+    const dupAcks=rcv.dupTrain?rcv.dupTrain.count:0;
+    const hole=snd.scoreboard.openHoles().some(
+      h=>h.start<seg.end&&seg.seq<h.end);
+    const partialOverlap=overlaps.length>0&&!fullOverlap;
+    const [kind,evidence]=classifyRetrans({
+      delay:lastTx!=null?pkt.tsRel-lastTx:null,
+      dupAcks,sackHole:hole,alreadyAcked,alreadySacked,
+      fullOverlap,partialOverlap,srtt:snd.ackCorr.srtt},this.cfg);
+    seg.retx=true;seg.retxKind=kind;
+    seg.state=kind==="duplicate"?"Duplicate":"Retransmitted";
+    if(orig){seg.retxOf=orig.frame;seg.retxDelay=pkt.tsRel-orig.ts;}
+    snd.ackCorr.noteRetransmission(seg.seq,seg.end);
+    if(kind==="duplicate")snd.dupPackets++;
+    else {snd.retransSegments++;snd.retransBytes+=seg.payloadLen;}
+    snd.retransEvents.push({frame:pkt.frame,ts:pkt.tsRel,dir:d,
+      seq:seg.seq,end:seg.end,bytes:seg.payloadLen,cls:kind,
+      origFrame:orig?orig.frame:null,origTs:orig?orig.ts:null,
+      delay:seg.retxDelay,dupAcks,sack:hole||alreadySacked,evidence});
+    for(const gap of snd.openGaps)
+      if(!gap.resolved&&seg.seq<gap.end&&gap.start<seg.end){
+        gap.resolved=true;gap.fill_kind="retransmission";
+      }
+    if(kind==="duplicate"||kind==="possible-spurious")return;
+    const mech=kind==="fast-retransmission"?"fast-retransmit":
+               kind==="rto-retransmission"?"rto":"unknown";
+    let ev=snd.loss.noteRetransmission(seg.seq,seg.end,pkt.frame,pkt.tsRel,mech);
+    if(!ev){
+      let evTs=pkt.tsRel,evFrame=pkt.frame;
+      if(rcv.dupTrain&&rcv.dupTrain.count>=1){
+        evTs=rcv.dupTrain.first_ts;evFrame=rcv.dupTrain.first_frame;
+      }
+      ev=snd.loss.openEvent({seq:seg.seq,end:seg.end,
+        evidenceKind:"retransmission",evidenceTs:evTs,evidenceFrame:evFrame,
+        originalTx:orig?orig.ts:null,originalFrame:orig?orig.frame:null});
+      snd.loss.noteRetransmission(seg.seq,seg.end,pkt.frame,pkt.tsRel,mech);
+    }
+    if(ev){
+      ev.dup_ack_count=Math.max(ev.dup_ack_count,dupAcks);
+      if(rcv.dupTrain&&rcv.dupTrain.retrans_frame==null){
+        rcv.dupTrain.retrans_frame=pkt.frame;
+        rcv.dupTrain.time_to_retrans=pkt.tsRel-rcv.dupTrain.first_ts;
+      }
+    }
+  }
+
+  processAck(pkt,d,r,snd,rcv){
+    const ack64=rcv.unwrapper.unwrapNoAdvance(pkt.ackRaw);
+    const pureAck=pkt.payloadLen===0&&!(pkt.flags&(SYN|FIN|RST));
+    if(pureAck){
+      if(snd.dupLastAck!=null&&ack64===snd.dupLastAck&&
+         pkt.windowRaw===snd.dupLastWin){
+        if(snd.dupTrain==null){
+          snd.dupTrain={dir:d,ack:ack64,first_frame:pkt.frame,
+            first_ts:pkt.tsRel,count:1,last_ts:pkt.tsRel,gaps_ns:[],
+            sack_blocks:0,missing_seq:null,missing_end:null,
+            retrans_frame:null,time_to_retrans:null,time_to_recovery:null};
+          snd.dupAckTrains.push(snd.dupTrain);
+        }else{
+          snd.dupTrain.count++;
+          snd.dupTrain.gaps_ns.push(pkt.tsRel-snd.dupTrain.last_ts);
+          snd.dupTrain.last_ts=pkt.tsRel;
+        }
+        if(pkt.sackBlocks.length)snd.dupTrain.sack_blocks+=pkt.sackBlocks.length;
+        if(snd.dupTrain.count>=this.cfg.dupackThreshold){
+          let missEnd=rcv.sndMax!=null?rcv.sndMax:ack64;
+          for(const h of rcv.scoreboard.openHoles())
+            if(h.start>=ack64){missEnd=Math.min(missEnd,h.end);break;}
+          snd.dupTrain.missing_seq=ack64;snd.dupTrain.missing_end=missEnd;
+          if(missEnd>ack64){
+            const ft=this.firstTx(rcv,ack64,missEnd);
+            rcv.loss.openEvent({seq:ack64,end:missEnd,evidenceKind:"dup-ack",
+              evidenceTs:snd.dupTrain.first_ts,
+              evidenceFrame:snd.dupTrain.first_frame,
+              originalTx:ft?ft.ts:null,originalFrame:ft?ft.frame:null});
+            rcv.loss.noteDupAcks(ack64,missEnd,snd.dupTrain.count);
+          }
+        }
+      }else snd.dupTrain=null;
+      snd.dupLastAck=ack64;snd.dupLastWin=pkt.windowRaw;
+    }else if(pkt.payloadLen>0)snd.dupTrain=null;
+
+    rcv.ackCorr.processAck(ack64,pkt.frame,pkt.tsRel,rcv.segments);
+    const recovered=rcv.loss.noteCumAck(ack64,pkt.frame,pkt.tsRel);
+    for(const ev of recovered)
+      for(const train of snd.dupAckTrains)
+        if(train.missing_seq!=null&&train.missing_seq>=ev.seq&&
+           train.missing_seq<ev.end&&train.time_to_recovery==null)
+          train.time_to_recovery=pkt.tsRel-train.first_ts;
+
+    const blocks64=[];
+    for(const [l,rr] of pkt.sackBlocks){
+      const l64=rcv.unwrapper.unwrapNoAdvance(l);
+      const r64=rcv.unwrapper.unwrapNoAdvance(rr);
+      if(r64>l64)blocks64.push([l64,r64]);
+    }
+    const prevHoles=new Set(rcv.scoreboard.openHoles().map(h=>h.start));
+    const rec=rcv.scoreboard.processAck(pkt.frame,pkt.tsRel,ack64,blocks64);
+    if(rec){
+      if(rec.dsack){
+        const [l64,r64]=rec.blocks[0];
+        for(const rt of rcv.retransEvents)
+          if(rt.seq<r64&&l64<rt.end&&
+             rt.cls!=="possible-spurious"&&rt.cls!=="duplicate"){
+            rt.cls="possible-spurious";
+            rt.evidence+=`; DSACK reported the range as already received `+
+              `(frame ${pkt.frame}: ${rec.dsack_reason})`;
+          }
+        rcv.loss.reclassify(l64,r64,"duplicate",
+          `DSACK in frame ${pkt.frame}: ${rec.dsack_reason}`,pkt.tsRel);
+      }
+      const board=rec.dsack?rec.blocks.slice(1):rec.blocks;
+      for(const [l64,r64] of board)
+        for(const [,,sid] of rcv.segIndex.overlapping(l64,r64)){
+          const segr=rcv.segments[sid];
+          if(segr.sackedTs==null&&l64<=segr.seq&&segr.end<=r64){
+            segr.sackedTs=pkt.tsRel;segr.sackedBy=pkt.frame;
+            if(segr.state==="Original")segr.state="SACKed";
+          }
+        }
+    }
+    for(const h of rcv.scoreboard.openHoles()){
+      rcv.loss.noteSackReport(h.start,h.end);
+      if(!prevHoles.has(h.start)){
+        if(prevHoles.size)rcv.loss.noteAdditionalHole(pkt.tsRel);
+        const ft=this.firstTx(rcv,h.start,h.end);
+        rcv.loss.openEvent({seq:h.start,end:h.end,evidenceKind:"sack-hole",
+          evidenceTs:h.first_ts,evidenceFrame:h.first_frame,
+          originalTx:ft?ft.ts:null,originalFrame:ft?ft.frame:null,
+          sackInvolved:true});
+      }
+    }
+  }
+
+  firstTx(rcv,start,end){
+    let best=null;
+    for(const [,,sid] of rcv.segIndex.overlapping(start,end)){
+      const seg=rcv.segments[sid];
+      if(best==null||seg.ts<best.ts)best=seg;
+    }
+    return best;
+  }
+
+  observationDuplicate(pkt,snd){
+    const fpKey=[pkt.seqRaw,pkt.ackRaw,pkt.flags,pkt.payloadLen,
+      pkt.payloadCrc,pkt.ipId,pkt.tsVal,pkt.tsEcr,pkt.windowRaw,
+      pkt.sackBlocks.map(b=>b[0]+"-"+b[1]).join(",")].join("|");
+    const sig=[pkt.ttl,pkt.srcMac,pkt.dstMac,pkt.vlan].join("|");
+    const now=pkt.tsRel;
+    if(now>=snd.fpPruneAt){
+      const cutoff=now-this.cfg.observationWindowNs;
+      for(const [k,v] of snd.recentFp)if(v.ts<cutoff)snd.recentFp.delete(k);
+      snd.fpPruneAt=now+Math.floor(this.cfg.observationWindowNs/2);
+    }
+    const entry=snd.recentFp.get(fpKey);
+    const fresh={frame:pkt.frame,ts:now,sigs:new Set([sig]),lastSig:
+      [pkt.ttl,pkt.srcMac,pkt.dstMac,pkt.vlan]};
+    if(!entry||now-entry.ts>this.cfg.observationWindowNs){
+      snd.recentFp.set(fpKey,fresh);return null;
+    }
+    const strong=pkt.ipId!=null&&pkt.ipId!==0;
+    const seenSig=entry.sigs.has(sig);
+    let confidence;
+    if(strong){
+      if(seenSig&&now-entry.ts>this.cfg.duplicateWindowNs){
+        snd.recentFp.set(fpKey,fresh);return null;
+      }
+      confidence="confirmed";
+    }else if(seenSig){
+      snd.recentFp.set(fpKey,fresh);return null;
+    }else confidence="likely";
+    const ps=entry.lastSig, diffs=[];
+    if(pkt.ttl!=null&&ps[0]!=null&&pkt.ttl!==ps[0])
+      diffs.push(`TTL ${ps[0]}→${pkt.ttl}`);
+    if(pkt.srcMac&&ps[1]&&pkt.srcMac!==ps[1])diffs.push("src MAC rewritten");
+    if(pkt.dstMac&&ps[2]&&pkt.dstMac!==ps[2])diffs.push("dst MAC rewritten");
+    if(pkt.vlan!==ps[3]&&(pkt.vlan!=null||ps[3]!=null))
+      diffs.push(`VLAN ${ps[3]==null?"null":ps[3]}→${pkt.vlan==null?"null":pkt.vlan}`);
+    const ev={frame:pkt.frame,ts:now,orig_frame:entry.frame,orig_ts:entry.ts,
+      delta_ns:now-entry.ts,
+      differs:diffs.length?diffs.join(", "):
+        "L2/TTL identical (same-point SPAN duplication)",
+      confidence};
+    snd.observationEvents.push(ev);
+    entry.frame=pkt.frame;entry.ts=now;entry.sigs.add(sig);
+    entry.lastSig=[pkt.ttl,pkt.srcMac,pkt.dstMac,pkt.vlan];
+    return ev;
+  }
+
+  storeRow(pkt,d,snd,seq64,end64,seg,stateOverride){
+    if(this.packetRows.length>=this.rowLimit){this.rowsDropped++;return;}
+    this.packetRows.push([pkt.frame,pkt.tsRel,d,
+      snd.rel(seq64),snd.rel(end64),pkt.payloadLen,
+      flagsToStr(pkt.flags),pkt.ackRaw,pkt.windowRaw,pkt.sackBlocks.length,
+      stateOverride?stateOverride:(seg?seg.state:"")]);
+  }
+}
+
+class SessionManager{
+  constructor(cfg,rowLimit){
+    this.cfg=cfg;this.rowLimit=rowLimit;
+    this.sessions=[];this.active=new Map();
+  }
+  key(pkt){
+    const a=pkt.srcIp+"~"+pkt.srcPort, b=pkt.dstIp+"~"+pkt.dstPort;
+    return a<=b?a+"|"+b:b+"|"+a;
+  }
+  feed(pkt){
+    const key=this.key(pkt);
+    let sess=this.active.get(key);
+    if(sess&&this.isNewConnection(sess,pkt))sess=null;
+    if(!sess){
+      sess=new Session(this.sessions.length,pkt,this.cfg,this.rowLimit);
+      this.sessions.push(sess);this.active.set(key,sess);
+    }
+    sess.addPacket(pkt);
+  }
+  isNewConnection(sess,pkt){
+    if(!(pkt.flags&SYN)||(pkt.flags&ACK))return false;
+    const d=sess.directionOf(pkt), ds=sess.dstate(d);
+    if(ds.synSeen&&ds.isnRaw===pkt.seqRaw)return false;
+    if(sess.closed)return true;
+    if(sess.handshakeComplete)return true;
+    if(ds.synSeen&&ds.isnRaw!==pkt.seqRaw)return true;
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------ verdicts */
+const VERDICT_CFG={low_retrans_pct:0.5,high_retrans_pct:2.0,
+  high_rtt_ns:100000000,rtt_outlier_ratio:10.0,repeated_holes:3,
+  reordering_events:1,zero_window_events:1,spurious_retrans:1};
+function evaluateVerdicts(st,cfg){
+  const out=[];
+  const add=(verdict,severity,evidence)=>out.push({verdict,severity,evidence});
+  if(st.partial)
+    add("INCOMPLETE CAPTURE","info","Connection establishment was not "+
+      "observed — the capture begins mid-session; byte accounting and "+
+      "negotiation state are partial.");
+  if(st.rst)
+    add("SESSION RESET","warn",`RST observed (frame ${st.rst_frame}); the `+
+      "session was aborted rather than closed with FIN.");
+  const rp=st.retrans_pct, segs=st.retrans_segments||0;
+  if(rp!=null&&(st.data_segments||0)>0){
+    if(segs===0)
+      add("HEALTHY","ok",`No retransmitted segments detected in `+
+        `${st.data_segments} data segments.`);
+    else if(rp<cfg.low_retrans_pct)
+      add("LOW RETRANSMISSION","ok",`${segs} retransmitted segments = `+
+        `${rp.toFixed(2)}% of data segments (threshold: below `+
+        `${cfg.low_retrans_pct}%).`);
+    else if(rp>=cfg.high_retrans_pct)
+      add("HIGH RETRANSMISSION","bad",`${segs} retransmitted segments = `+
+        `${rp.toFixed(2)}% of data segments (threshold: `+
+        `${cfg.high_retrans_pct}%). ${st.retrans_bytes||0} bytes retransmitted.`);
+  }
+  const rtt=st.rtt||{}, med=rtt.median, p99=rtt.p99;
+  if(med!=null&&med>cfg.high_rtt_ns)
+    add("HIGH RTT","bad",`Median valid RTT ${med} ns exceeds threshold `+
+      `${cfg.high_rtt_ns} ns (${rtt.count} valid samples; ambiguous samples `+
+      "excluded per Karn's algorithm).");
+  if(med&&p99&&med>0&&p99/med>=cfg.rtt_outlier_ratio)
+    add("RTT OUTLIERS","warn",`P99 RTT ${p99} ns is ${(p99/med).toFixed(1)}x `+
+      `the median ${med} ns (threshold ratio: ${cfg.rtt_outlier_ratio}).`);
+  const sackRec=st.sack_recovered_losses||0, lossTotal=st.loss_events||0;
+  if(sackRec){
+    const rec=st.recovery||{};
+    let extra="";
+    if(rec.median!=null)
+      extra=` Median recovery ${rec.median} ns, P95 ${rec.p95} ns.`;
+    add("SACK-BASED LOSS RECOVERY OBSERVED","info",
+      `${sackRec} of ${lossTotal} loss events show SACK involvement during `+
+      `recovery.${extra}`);
+  }
+  if((st.sack_holes||0)>=cfg.repeated_holes)
+    add("REPEATED SEQUENCE HOLES","warn",`${st.sack_holes} distinct SACK `+
+      `holes observed (threshold: ${cfg.repeated_holes}).`);
+  if((st.ooo_packets||0)>=cfg.reordering_events)
+    add("POSSIBLE PACKET REORDERING","warn",`${st.ooo_packets} segments `+
+      "filled sequence gaps with data never previously seen in the capture "+
+      "— consistent with reordering rather than loss.");
+  if((st.spurious_retrans||0)>=cfg.spurious_retrans)
+    add("POSSIBLE SPURIOUS RETRANSMISSION","warn",`${st.spurious_retrans} `+
+      "retransmissions of data that was already ACKed/SACKed or was "+
+      "DSACK-reported as received.");
+  if((st.zero_window_events||0)>=cfg.zero_window_events)
+    add("ZERO-WINDOW BOTTLENECK","bad",`${st.zero_window_events} zero-window `+
+      "episodes observed — the receiver stalled the sender "+
+      "(application-side bottleneck).");
+  if(st.unrecovered_losses)
+    add("UNRECOVERED LOSS","bad",`${st.unrecovered_losses} loss events were `+
+      "never covered by a cumulative ACK within the capture.");
+  if(!out.length)
+    add("NO FINDINGS","ok","No rule produced a finding for this session.");
+  return out;
+}
+
+/* ------------------------------------------------------------ artifacts */
+function sessionArtifacts(sess){
+  const warns=[], a=sess.dirA, b=sess.dirB;
+  if(a.oversizeSegments||b.oversizeSegments){
+    const n=a.oversizeSegments+b.oversizeSegments;
+    warns.push(`${n} segments exceed the negotiated MSS — likely `+
+      "TSO/GSO/GRO/LRO offload in a host-based capture; segment boundaries "+
+      "and per-segment timing may not reflect on-wire packets.");
+  }
+  if(sess.truncatedFrames)
+    warns.push(`${sess.truncatedFrames} frames truncated by snap length — `+
+      "TCP payloads incomplete (analysis uses IP-declared lengths).");
+  if(sess.partial)
+    warns.push("Capture begins mid-session (no handshake observed): "+
+      "negotiation state is Unknown and relative sequence numbers are "+
+      "anchored at the first observed segment.");
+  for(const [ds,name] of [[a,"A->B"],[b,"B->A"]]){
+    const una=ds.ackCorr.sndUna;
+    if(una!=null&&ds.sndMax!=null&&una>ds.sndMax)
+      warns.push(`ACKs in direction ${name==="A->B"?"B->A":"A->B"} cover `+
+        `${una-ds.sndMax} bytes never seen in ${name} — asymmetric capture `+
+        "or capture drops; missing data must not be interpreted as network "+
+        "loss.");
+    if(una!=null&&ds.sndMax==null&&ds.packets===0)
+      warns.push(`Direction ${name} carried no packets — one-sided `+
+        "(asymmetric) capture for this session.");
+  }
+  const ndups=a.networkDups+b.networkDups;
+  if(ndups){
+    const deltas=[...a.observationEvents,...b.observationEvents]
+      .map(e=>e.delta_ns).sort((x,y)=>x-y);
+    const med=percentile(deltas,50);
+    warns.push(`${ndups} frames are the SAME packet observed more than once `+
+      "(multi-point SPAN / mirrored feed / routed-hop capture) — recognized "+
+      "by identical TCP content and IP ID with unchanged or rewritten "+
+      "MAC/VLAN/TTL, and excluded from retransmission, duplicate and "+
+      `dup-ACK statistics. Median inter-observation skew: ${med} ns `+
+      "(see Overview → Multi-point observations).");
+  }
+  if(a.gapOverflow||b.gapOverflow){
+    const n=a.gapOverflow+b.gapOverflow;
+    warns.push(`${n} additional sequence gaps beyond the per-session `+
+      "tracking bound were not individually tracked — gap-level "+
+      "classification for this session is partial.");
+  }
+  for(const [ds,name] of [[a,"A->B"],[b,"B->A"]]){
+    const unresolved=ds.openGaps.filter(g=>!g.resolved);
+    if(unresolved.length){
+      const bytes=unresolved.reduce((t,g)=>t+(g.end-g.start),0);
+      warns.push(`${unresolved.length} sequence gap(s) in ${name} `+
+        `(${bytes} bytes) were never filled within the capture — possible `+
+        "capture drop or truncated capture; classified as Unknown, not as "+
+        "network loss.");
+    }
+  }
+  return warns;
+}
+
+/* --------------------------------------------------------- serialization */
+function dirStats(ds){
+  let dataSegs=0;
+  for(const s of ds.segments)
+    if(s.payloadLen>0&&!s.retx&&s.state!=="Keep-alive"&&
+       s.state!=="Window-probe")dataSegs++;
+  let acked=0;
+  if(ds.ackCorr.sndUna!=null&&ds.relBase!=null)
+    acked=Math.max(0,ds.ackCorr.sndUna-ds.relBase);
+  let outstanding=0;
+  if(ds.sndMax!=null&&ds.ackCorr.sndUna!=null)
+    outstanding=Math.max(0,ds.sndMax-ds.ackCorr.sndUna);
+  return {packets:ds.packets,bytes:ds.bytes,payload_bytes:ds.payloadBytes,
+    unique_bytes:ds.transmitted.totalBytes(),
+    acked_bytes:acked,outstanding_bytes:outstanding,
+    data_segments:dataSegs,retrans_segments:ds.retransSegments,
+    retrans_bytes:ds.retransBytes,dup_packets:ds.dupPackets,
+    ooo_packets:ds.oooPackets,keepalives:ds.keepaliveCount,
+    network_dups:ds.networkDups,
+    sack_events:ds.scoreboard.records.length,
+    sack_blocks:ds.scoreboard.sackBlockTotal,
+    sack_holes:ds.scoreboard.holeHistory.length,
+    dsack_events:ds.scoreboard.dsackCount,
+    zero_window_events:ds.window.zeroCount,
+    seq_base_raw:ds.relBase!=null?(ds.relBase%M32+M32)%M32:0,
+    window_min:ds.window.minW,window_max:ds.window.maxW,
+    window_scale:ds.ws,mss:ds.mss,sack_permitted:ds.sackPermitted,
+    tcp_timestamps:ds.tsopt};
+}
+function segmentsJson(ds,direction){
+  return ds.segments.map(s=>({frame:s.frame,ts:s.ts,dir:direction,
+    seq:ds.rel(s.seq),end:ds.rel(s.end),seq_raw:s.seq,len:s.payloadLen,
+    flags:flagsToStr(s.flags),state:s.state,retx:s.retx,
+    retx_kind:s.retxKind,retx_of:s.retxOf,retx_delay:s.retxDelay,
+    acked_ts:s.ackedTs,ack_frame:s.ackedBy,ack_lat:s.ackLat,
+    rtt:s.rtt,rtt_ambiguous:s.rttAmb,
+    sacked_ts:s.sackedTs,sack_frame:s.sackedBy}));
+}
+function sessionToJson(sess,firstAbsNs){
+  const a=sess.dirA,b=sess.dirB;
+  const da=dirStats(a),db=dirStats(b);
+  let clientEp,serverEp,cd,sd,clientDir;
+  if(sess.clientDir==null||sess.clientDir==="A->B"){
+    clientEp=sess.epA;serverEp=sess.epB;cd=da;sd=db;clientDir="A->B";
+  }else{
+    clientEp=sess.epB;serverEp=sess.epA;cd=db;sd=da;clientDir="B->A";
+  }
+  const rttSamples=[];
+  for(const ds of [a,b])
+    for(const s of ds.rtt.samples)
+      rttSamples.push({ts:s.ts,rtt:s.rtt,kind:s.kind,dir:s.dir,
+        frame_data:s.frameData,frame_ack:s.frameAck,
+        seq:ds.rel(s.seq),end:ds.rel(s.end)});
+  const rttAmbiguous=[];
+  for(const ds of [a,b])
+    for(const x of ds.rtt.ambiguous)
+      rttAmbiguous.push({...x,dir:ds.direction});
+  const ackLat=[];
+  for(const ds of [a,b])
+    for(const s of ds.segments)
+      if(s.ackLat!=null&&s.ackLat>=0&&s.payloadLen>0)ackLat.push(s.ackLat);
+  const rttVals=rttSamples.map(s=>s.rtt);
+
+  const lossEvents=[],recoveryVals=[];
+  let sackRecovered=0;
+  for(const ds of [a,b])
+    for(const ev of ds.loss.events){
+      const detection=(ev.original_tx_ns!=null&&ev.first_evidence_ns!=null)?
+        ev.first_evidence_ns-ev.original_tx_ns:null;
+      const reaction=(ev.first_evidence_ns!=null&&ev.retrans_ns!=null)?
+        ev.retrans_ns-ev.first_evidence_ns:null;
+      const postRetrans=(ev.retrans_ns!=null&&ev.recovery_ns!=null)?
+        ev.recovery_ns-ev.retrans_ns:null;
+      const total=(ev.original_tx_ns!=null&&ev.recovery_ns!=null)?
+        ev.recovery_ns-ev.original_tx_ns:null;
+      lossEvents.push({
+        loss_id:`S${sess.id}-L${ev.loss_id}-${ds.direction}`,
+        dir:ev.direction,seq:ds.rel(ev.seq),end:ds.rel(ev.end),
+        bytes:ev.bytes,original_tx:ev.original_tx_ns,
+        original_frame:ev.original_frame,
+        evidence_ts:ev.first_evidence_ns,evidence_frame:ev.first_evidence_frame,
+        evidence_kind:ev.evidence_kind,
+        retrans_ts:ev.retrans_ns,retrans_frame:ev.retrans_frame,
+        retrans_lost:ev.retrans_lost,
+        recovery_ts:ev.recovery_ns,recovery_frame:ev.recovery_frame,
+        recovered:ev.recovered,partial:ev.partial,
+        detection_ns:detection,reaction_ns:reaction,
+        post_retrans_ns:postRetrans,total_ns:total,
+        sack:ev.sack_involved,dup_acks:ev.dup_ack_count,
+        sack_reports:ev.sack_report_count,
+        additional_holes:ev.additional_holes,
+        mechanism:ev.likely_mechanism,classification:ev.classification,
+        classification_evidence:ev.classification_evidence});
+      if(ev.classification==="loss"&&ev.recovered){
+        if(ev.sack_involved)sackRecovered++;
+        if(total!=null)recoveryVals.push(total);
+      }
+    }
+  const retransEvents=[];let spurious=0;
+  for(const ds of [a,b])
+    for(const rt of ds.retransEvents){
+      if(rt.cls==="possible-spurious")spurious++;
+      retransEvents.push({frame:rt.frame,ts:rt.ts,dir:rt.dir,
+        seq:ds.rel(rt.seq),end:ds.rel(rt.end),bytes:rt.bytes,"class":rt.cls,
+        orig_frame:rt.origFrame,orig_ts:rt.origTs,delay:rt.delay,
+        dup_acks:rt.dupAcks,sack:rt.sack,evidence:rt.evidence});
+    }
+  const dupTrains=[];let totalDupAcks=0;
+  for(const [ds,dname] of [[a,"A->B"],[b,"B->A"]]){
+    const peer=ds===a?b:a;
+    for(const t of ds.dupAckTrains){
+      totalDupAcks+=t.count;
+      dupTrains.push({dir:dname,ack:peer.rel(t.ack),
+        first_frame:t.first_frame,first_ts:t.first_ts,count:t.count,
+        gaps_ns:t.gaps_ns,sack_blocks:t.sack_blocks,
+        missing_seq:peer.rel(t.missing_seq),missing_end:peer.rel(t.missing_end),
+        retrans_frame:t.retrans_frame,time_to_retrans:t.time_to_retrans,
+        time_to_recovery:t.time_to_recovery});
+    }
+  }
+  const windowEvents=[];
+  for(const ds of [a,b])
+    for(const w of ds.window.events)
+      windowEvents.push({kind:w.kind,dir:w.dir,frame:w.frame,ts:w.ts,
+        window:w.window,detail:w.detail});
+  const observationEvents=[];
+  for(const [ds,dname] of [[a,"A->B"],[b,"B->A"]])
+    for(const ev of ds.observationEvents)
+      observationEvents.push({...ev,dir:dname});
+  const obsDeltas=observationEvents.map(e=>e.delta_ns);
+  const sackRecords=[];
+  for(const ds of [a,b])
+    for(const rec of ds.scoreboard.records)
+      sackRecords.push({frame:rec.frame,ts:rec.ts,data_dir:ds.direction,
+        ack:ds.rel(rec.ack),
+        blocks:rec.blocks.map(([l,r])=>[ds.rel(l),ds.rel(r)]),
+        dsack:rec.dsack,dsack_reason:rec.dsack_reason});
+  const sackSnapshots={};
+  for(const [ds,dname] of [[a,"A->B"],[b,"B->A"]])
+    sackSnapshots[dname]=ds.scoreboard.snapshots.map(s=>({
+      frame:s.frame,ts:s.ts,ack:ds.rel(s.ack),
+      sacked:s.sacked.map(([x,y])=>[ds.rel(x),ds.rel(y)]),
+      holes:s.holes.map(([x,y])=>[ds.rel(x),ds.rel(y)]),
+      dsack:s.dsack,ack_advanced:s.ack_advanced}));
+  const hs={complete:sess.handshakeComplete,
+    syn_frame:sess.synFrame,syn_ts:sess.synTs,
+    synack_frame:sess.synackFrame,synack_ts:sess.synackTs,
+    ack_frame:sess.estAckFrame,ack_ts:sess.estAckTs,
+    syn_synack_ns:(sess.synTs!=null&&sess.synackTs!=null)?
+      sess.synackTs-sess.synTs:null,
+    synack_ack_ns:(sess.synackTs!=null&&sess.estAckTs!=null)?
+      sess.estAckTs-sess.synackTs:null,
+    total_ns:(sess.synTs!=null&&sess.estAckTs!=null)?
+      sess.estAckTs-sess.synTs:null};
+  let sackActive=null;
+  if(a.sackPermitted!=null&&b.sackPermitted!=null)
+    sackActive=!!(a.sackPermitted&&b.sackPermitted);
+  else if(a.scoreboard.records.length||b.scoreboard.records.length)
+    sackActive=true;
+  let lossCount=0,recoveredCount=0;
+  for(const e of lossEvents)
+    if(e.classification==="loss"){lossCount++;if(e.recovered)recoveredCount++;}
+  const dataSegments=da.data_segments+db.data_segments;
+  const retransSegments=da.retrans_segments+db.retrans_segments;
+  const denom=dataSegments+retransSegments;
+  const stats={payload_bytes:da.payload_bytes+db.payload_bytes,
+    data_segments:denom,retrans_segments:retransSegments,
+    retrans_bytes:da.retrans_bytes+db.retrans_bytes,
+    retrans_pct:denom?100.0*retransSegments/denom:0.0,
+    dup_acks:totalDupAcks,
+    ooo_packets:da.ooo_packets+db.ooo_packets,
+    dup_packets:da.dup_packets+db.dup_packets,
+    sack_events:da.sack_events+db.sack_events,
+    sack_blocks:da.sack_blocks+db.sack_blocks,
+    sack_holes:da.sack_holes+db.sack_holes,
+    dsack_events:da.dsack_events+db.dsack_events,
+    loss_events:lossCount,recovered_losses:recoveredCount,
+    unrecovered_losses:lossCount-recoveredCount,
+    sack_recovered_losses:sackRecovered,spurious_retrans:spurious,
+    zero_window_events:da.zero_window_events+db.zero_window_events,
+    network_dups:da.network_dups+db.network_dups,
+    observation_skew:summarize(obsDeltas),
+    rst:a.rstSeen||b.rstSeen,rst_frame:sess.rstFrame,
+    fin:a.finSeen||b.finSeen,partial:sess.partial,
+    rtt:summarize(rttVals),ack_latency:summarize(ackLat),
+    recovery:summarize(recoveryVals)};
+  const verdicts=evaluateVerdicts(stats,VERDICT_CFG);
+  const warnings=sessionArtifacts(sess);
+  const absStart=sess.firstTs!=null?firstAbsNs+BigInt(sess.firstTs):null;
+  const absEnd=sess.lastTs!=null?firstAbsNs+BigInt(sess.lastTs):null;
+  return {id:sess.id,
+    label:`Session #${String(sess.id).padStart(5,"0")}`,
+    client:`${clientEp[0]}:${clientEp[1]}`,
+    server:`${serverEp[0]}:${serverEp[1]}`,
+    client_ip:clientEp[0],server_ip:serverEp[0],
+    client_port:clientEp[1],server_port:serverEp[1],
+    client_dir:clientDir,
+    ep_a:`${sess.epA[0]}:${sess.epA[1]}`,ep_b:`${sess.epB[0]}:${sess.epB[1]}`,
+    capture_id:0,
+    start_ts:sess.firstTs,end_ts:sess.lastTs,
+    start_str:fmtNsUtc(absStart),end_str:fmtNsUtc(absEnd),
+    duration_ns:sess.firstTs!=null?sess.lastTs-sess.firstTs:0,
+    partial:sess.partial,
+    state:stats.rst?"reset":
+          (a.finSeen&&b.finSeen)?"closed":
+          stats.fin?"half-closed":
+          sess.handshakeComplete?"established":"partial",
+    handshake:hs,
+    sack_client:cd.sack_permitted,sack_server:sd.sack_permitted,
+    sack_active:sackActive,
+    dir_a:da,dir_b:db,stats,verdicts,warnings,
+    segments:[...segmentsJson(a,"A->B"),...segmentsJson(b,"B->A")],
+    rtt_samples:rttSamples,rtt_ambiguous:rttAmbiguous,
+    rtt_hist:histogram(rttVals),ack_hist:histogram(ackLat),
+    recovery_hist:histogram(recoveryVals),
+    loss_events:lossEvents,retrans_events:retransEvents,
+    dup_ack_trains:dupTrains,window_events:windowEvents,
+    observation_events:observationEvents,
+    sack_records:sackRecords,sack_snapshots:sackSnapshots,
+    packets:sess.packetRows,packets_truncated:sess.rowsDropped};
+}
+
+/* --------------------------------------------------------------- driver */
+async function analyze(buf,fileName,progress){
+  const rd=new CaptureReader(buf);
+  const mgr=new SessionManager({...DEFAULT_CFG},20000);
+  let n=0,firstAbs=null;
+  const CHUNK=20000;let sinceYield=0;
+  for(const f of rd.frames()){
+    const pkt=decodeTcp(rd,f);
+    if(pkt){
+      if(firstAbs==null)firstAbs=rd.firstAbsNs;
+      // capture-relative ns (anchored at the capture's first packet)
+      pkt.tsRel=Number(f.absNs-rd.firstAbsNs);
+      rd.tcpCount++;
+      mgr.feed(pkt);
+      n++;
+    }
+    if(progress&&++sinceYield>=CHUNK){
+      sinceYield=0;
+      progress(rd.packetCount,n,mgr.sessions.length);
+      await new Promise(res=>setTimeout(res,0));
+    }
+  }
+  if(progress)progress(rd.packetCount,n,mgr.sessions.length);
+
+  const firstAbsNs=rd.firstAbsNs!=null?rd.firstAbsNs:0n;
+  const sessions=mgr.sessions.map(s=>sessionToJson(s,firstAbsNs));
+  const totals={sessions:mgr.sessions.length,tcp_packets:n,
+    payload_bytes:0,retrans_segments:0,data_segments:0,
+    sack_events:0,dsack_events:0,loss_events:0,recovered_losses:0,
+    dup_acks:0,ooo_packets:0,dup_packets:0,zero_window_events:0,resets:0,
+    network_dups:0};
+  const globalRtt=[],globalRecovery=[];
+  for(const sj of sessions){
+    const st=sj.stats;
+    totals.payload_bytes+=st.payload_bytes;
+    totals.retrans_segments+=st.retrans_segments;
+    totals.data_segments+=st.data_segments;
+    totals.sack_events+=st.sack_events;
+    totals.dsack_events+=st.dsack_events;
+    totals.loss_events+=st.loss_events;
+    totals.recovered_losses+=st.recovered_losses;
+    totals.dup_acks+=st.dup_acks;
+    totals.ooo_packets+=st.ooo_packets;
+    totals.dup_packets+=st.dup_packets;
+    totals.zero_window_events+=st.zero_window_events;
+    totals.network_dups+=st.network_dups;
+    if(st.rst)totals.resets++;
+    for(const s of sj.rtt_samples)globalRtt.push(s.rtt);
+    for(const e of sj.loss_events)
+      if(e.total_ns!=null&&e.classification==="loss")
+        globalRecovery.push(e.total_ns);
+  }
+  totals.retrans_pct=totals.data_segments?
+    100.0*totals.retrans_segments/totals.data_segments:0.0;
+  const coarsest=rd.resolutions.length?Math.min(...rd.resolutions):null;
+  const durationNs=rd.lastAbsNs!=null&&rd.firstAbsNs!=null?
+    Number(rd.lastAbsNs-rd.firstAbsNs):0;
+  const capture={path:fileName,capture_id:0,capture_point:fileName,
+    format:rd.fileFormat,
+    resolution_label:coarsest!=null?rd.resLabel(coarsest):"unknown",
+    effective_precision_ns:coarsest!=null?rd.nsPerTick(coarsest):1000000000,
+    nanosecond_native:!!(coarsest&&coarsest>=1e9),
+    first_ts:0,first_ts_str:fmtNsUtc(rd.firstAbsNs),
+    last_ts:durationNs,last_ts_str:fmtNsUtc(rd.lastAbsNs),
+    duration_ns:durationNs,duration_str:fmtDurationNs(durationNs),
+    packets:rd.packetCount,tcp_packets:rd.tcpCount,
+    snaplen:rd.snaplen,truncated_frames:rd.truncatedFrames,
+    warnings:rd.warnings};
+  return {tool:{name:"tcpforensics",version:"1.0.0-web"},
+    capture,totals,
+    rtt_summary:summarize(globalRtt),rtt_hist:histogram(globalRtt),
+    recovery_summary:summarize(globalRecovery),
+    recovery_hist:histogram(globalRecovery),
+    verdict_config:{...VERDICT_CFG},
+    sessions};
+}
+
+return {analyze};
+})();
+
+</script>
+<script>
+
+/* ---- standalone loader ---- */
+async function tfAnalyzeFile(file){
+  const prog=document.getElementById('anProgress');
+  prog.style.display='block';
+  prog.textContent='Reading '+file.name+' ...';
+  try{
+    const buf=await file.arrayBuffer();
+    const model=await TFEngine.analyze(buf,file.name,(pkts,tcp,sess)=>{
+      prog.textContent='Analyzing '+file.name+': '+pkts.toLocaleString()+
+        ' packets, '+tcp.toLocaleString()+' TCP, '+sess+' sessions ...';
+    });
+    M=model;curSess=null;curTab='overview';TILES_ANIMATED=false;
+    document.body.classList.remove('noModel');
+    for(const el of document.querySelectorAll('.wrap>.panel'))
+      el.style.display=el.id==='landing'?'none':'';
+    renderAll();
+    window.scrollTo({top:0});
+  }catch(e){
+    prog.textContent='Could not analyze '+file.name+': '+e.message;
+    console.error(e);
+  }
+}
+(function(){
+  const dz=document.getElementById('dropzone');
+  const fi=document.getElementById('fileInput');
+  dz.addEventListener('click',()=>fi.click());
+  dz.addEventListener('keydown',e=>{
+    if(e.key==='Enter'||e.key===' '){e.preventDefault();fi.click();}});
+  fi.addEventListener('change',()=>{if(fi.files[0])tfAnalyzeFile(fi.files[0]);});
+  for(const ev of ['dragover','dragenter'])
+    dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('drag');});
+  for(const ev of ['dragleave','drop'])
+    dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('drag');});
+  dz.addEventListener('drop',e=>{
+    const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];
+    if(f)tfAnalyzeFile(f);
+  });
+  // also accept a drop anywhere on the page
+  document.addEventListener('dragover',e=>e.preventDefault());
+  document.addEventListener('drop',e=>{
+    e.preventDefault();
+    const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];
+    if(f)tfAnalyzeFile(f);
+  });
+})();
+
+</script>
+</body>
+</html>

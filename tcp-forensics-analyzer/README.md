@@ -13,6 +13,21 @@ Capture → TCP Session → Direction → Sequence Range → Packet transmission
 
 ## Quick start
 
+Two ways to run the same analysis:
+
+**In the browser (zero install)** — open
+`standalone/tcp-forensics-standalone.html` in any modern browser and drop a
+`.pcap`/`.pcapng` on it. Parsing, session reconstruction, sequence-space,
+SACK, loss and latency analysis all run locally in the page; nothing leaves
+the machine. The browser engine is a line-for-line port of the Python
+engine, and `tools/parity_check.py` proves both produce identical analysis
+models on the same captures (verified on the synthetic scenario corpus and
+real Wireshark wiki captures). Practical for captures up to a few hundred
+MB (whole-file analysis in browser memory); use the CLI for bigger files.
+Rebuild after engine changes with `python tools/build_standalone.py`.
+
+**Command line** —
+
 ```bash
 # no dependencies to install — Python 3.10+
 python -m tcpforensics capture.pcapng -o report.html
