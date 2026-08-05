@@ -194,10 +194,51 @@ function v6Str(u8,off){
   return g.join(":");
 }
 
+/* Chunked byte source: constant-memory streaming over a File/Blob (8 MB
+ * slices) or a whole ArrayBuffer.  The reader keeps a rolling window of
+ * unparsed bytes, so a 1 GB capture never needs a 1 GB allocation. */
+const STREAM_CHUNK=8*1024*1024;
+const MAX_RECORD=128*1024*1024;          // sanity bound for one record/block
+class ChunkedSource{
+  constructor(fileOrBuf){
+    this.isBlob=typeof Blob!=="undefined"&&fileOrBuf instanceof Blob;
+    this.buf=this.isBlob?null:new Uint8Array(fileOrBuf);
+    this.size=this.isBlob?fileOrBuf.size:this.buf.length;
+    this.file=this.isBlob?fileOrBuf:null;
+  }
+  async read(off,len){
+    if(!this.isBlob)return this.buf.subarray(off,Math.min(this.size,off+len));
+    const ab=await this.file.slice(off,Math.min(this.size,off+len)).arrayBuffer();
+    return new Uint8Array(ab);
+  }
+}
+class RollingWindow{
+  constructor(src){this.src=src;this.buf=new Uint8Array(0);this.p=0;
+    this.fileOff=0;this.dv=new DataView(this.buf.buffer);}
+  get avail(){return this.buf.length-this.p;}
+  get consumedBytes(){return this.fileOff-this.avail;}
+  async ensure(n){                        // true if n bytes are available
+    if(n>MAX_RECORD)return false;
+    while(this.avail<n){
+      if(this.fileOff>=this.src.size)return false;
+      const chunk=await this.src.read(this.fileOff,
+        Math.max(STREAM_CHUNK,n-this.avail));
+      if(!chunk.length)return false;
+      this.fileOff+=chunk.length;
+      const merged=new Uint8Array(this.avail+chunk.length);
+      merged.set(this.buf.subarray(this.p),0);
+      merged.set(chunk,this.avail);
+      this.buf=merged;this.p=0;
+      this.dv=new DataView(merged.buffer,merged.byteOffset,merged.byteLength);
+    }
+    return true;
+  }
+  advance(n){this.p+=n;}
+}
+
 class CaptureReader{
-  constructor(buf){
-    this.u8=new Uint8Array(buf);
-    this.dv=new DataView(buf);
+  constructor(){
+    this.u8=null;this.dv=null;           // current window (for decodeTcp)
     this.fileFormat="unknown";
     this.resolutions=[];                 // ticksPerSecond numbers
     this.packetCount=0;this.tcpCount=0;
@@ -216,32 +257,36 @@ class CaptureReader{
   }
   nsPerTick(tps){return Math.max(1,Math.ceil(1e9/tps));}
 
-  *frames(){
-    const dv=this.dv;
-    if(this.u8.length<4)throw new Error("file too short to be a capture");
-    const magicBE=dv.getUint32(0,false);
+  async *frames(src){
+    const w=new RollingWindow(src);
+    this.window=w;
+    if(!await w.ensure(4))throw new Error("file too short to be a capture");
+    this.u8=w.buf;this.dv=w.dv;
+    const magicBE=w.dv.getUint32(w.p,false);
     if(magicBE===0xA1B2C3D4||magicBE===0xD4C3B2A1||
        magicBE===0xA1B23C4D||magicBE===0x4D3CB2A1)
-      yield* this.readPcap(magicBE);
+      yield* this.readPcap(w,magicBE);
     else if(magicBE===0x0A0D0D0A)
-      yield* this.readPcapng();
+      yield* this.readPcapng(w);
     else throw new Error("unrecognized capture magic 0x"+
       magicBE.toString(16).toUpperCase().padStart(8,"0"));
   }
-  *readPcap(magicBE){
-    const dv=this.dv;
+  async *readPcap(w,magicBE){
     this.fileFormat="pcap";
     const little=(magicBE===0xD4C3B2A1||magicBE===0x4D3CB2A1);
     const nano=(magicBE===0xA1B23C4D||magicBE===0x4D3CB2A1);
     this.resolutions=[nano?1e9:1e6];
-    if(this.u8.length<24)throw new Error("truncated pcap global header");
-    this.snaplen=dv.getUint32(16,little);
-    const linktype=dv.getUint32(20,little);
-    let off=24,frameNo=0;
-    while(off+16<=this.u8.length){
-      const tsSec=dv.getUint32(off,little), tsFrac=dv.getUint32(off+4,little);
-      const caplen=dv.getUint32(off+8,little), origlen=dv.getUint32(off+12,little);
-      if(off+16+caplen>this.u8.length){
+    if(!await w.ensure(24))throw new Error("truncated pcap global header");
+    this.snaplen=w.dv.getUint32(w.p+16,little);
+    const linktype=w.dv.getUint32(w.p+20,little);
+    w.advance(24);
+    let frameNo=0;
+    for(;;){
+      if(!await w.ensure(16))break;
+      const o=w.p;
+      const tsSec=w.dv.getUint32(o,little), tsFrac=w.dv.getUint32(o+4,little);
+      const caplen=w.dv.getUint32(o+8,little), origlen=w.dv.getUint32(o+12,little);
+      if(!await w.ensure(16+caplen)){
         this.warnings.push("capture file ends mid-record — the final packet "+
           "was discarded (interrupted or copied-while-writing capture)");
         break;
@@ -251,25 +296,26 @@ class CaptureReader{
       const truncated=caplen<origlen;
       if(truncated)this.truncatedFrames++;
       this.packetCount++;this.notePacket(absNs);
-      yield {frameNo,absNs,linktype,off:off+16,caplen,truncated};
-      off+=16+caplen;
+      this.u8=w.buf;this.dv=w.dv;         // window may have re-anchored
+      yield {frameNo,absNs,linktype,off:w.p+16,caplen,truncated};
+      w.advance(16+caplen);
     }
   }
-  *readPcapng(){
-    const dv=this.dv,u8=this.u8;
+  async *readPcapng(w){
     this.fileFormat="pcapng";
-    let off=0,little=true,frameNo=0;
+    let little=true,frameNo=0;
     let interfaces=[];                       // [{linktype, tps}]
-    while(off+8<=u8.length){
-      let btype=dv.getUint32(off,little), blen=dv.getUint32(off+4,little);
-      if(dv.getUint32(off,false)===0x0A0D0D0A){    // SHB (palindromic type)
-        if(off+24>u8.length)break;
-        const bom=dv.getUint32(off+8,true);
+    for(;;){
+      if(!await w.ensure(8))break;
+      let btype=w.dv.getUint32(w.p,little), blen=w.dv.getUint32(w.p+4,little);
+      if(w.dv.getUint32(w.p,false)===0x0A0D0D0A){    // SHB (palindromic type)
+        if(!await w.ensure(24))break;
+        const bom=w.dv.getUint32(w.p+8,true);
         little=(bom===0x1A2B3C4D);
-        blen=dv.getUint32(off+4,little);
+        blen=w.dv.getUint32(w.p+4,little);
         interfaces=[];
-        if(blen<28||off+blen>u8.length)break;
-        off+=blen;continue;
+        if(blen<28||!await w.ensure(blen))break;
+        w.advance(blen);continue;
       }
       if(blen<12||blen%4){
         this.warnings.push(`corrupt pcapng block (type 0x${btype.toString(16)
@@ -277,12 +323,13 @@ class CaptureReader{
           `${this.packetCount} packets — remainder of the file skipped`);
         break;
       }
-      if(off+blen>u8.length){
+      if(!await w.ensure(blen)){
         this.warnings.push("capture file ends mid-block — the final block "+
           "was discarded (interrupted or copied-while-writing capture)");
         break;
       }
-      const body=off+8, bodyLen=blen-12;
+      const body=w.p+8, bodyLen=blen-12;
+      const dv=w.dv,u8=w.buf;
       if(btype===0x00000001){                       // IDB
         const linktype=dv.getUint16(body,little);
         const snap=dv.getUint32(body+4,little);
@@ -312,6 +359,7 @@ class CaptureReader{
             const truncated=caplen<origlen;
             if(truncated)this.truncatedFrames++;
             this.packetCount++;this.notePacket(absNs);
+            this.u8=w.buf;this.dv=w.dv;
             yield {frameNo,absNs,linktype,off:body+20,
                    caplen:Math.min(caplen,bodyLen-20),truncated};
           }
@@ -319,7 +367,7 @@ class CaptureReader{
       } else if(btype===0x00000003){                // SPB — no timestamp
         frameNo++;this.packetCount++;
       }
-      off+=blen;
+      w.advance(blen);
     }
   }
 }
@@ -556,22 +604,30 @@ class WindowTracker{
 class AckCorrelator{
   constructor(direction,rtt){
     this.direction=direction;this.rtt=rtt;
-    this.unacked=[];                 // sorted by end: [end, segId]
+    // parallel arrays sorted by end, with a head pointer instead of shifts —
+    // in-order appends and cumulative pops are O(1) amortized even on
+    // million-segment one-sided captures
+    this.ends=[];this.ids=[];this.head=0;
     this.retransmittedRanges=new IntervalSet();
     this.sndUna=null;this.srtt=null;
   }
   registerSegment(seg){
-    const ends=this.unacked.map(x=>x[0]);
-    const i=bisectRight(ends,seg.end);
-    this.unacked.splice(i,0,[seg.end,seg.segId]);
+    if(!this.ends.length||seg.end>=this.ends[this.ends.length-1]){
+      this.ends.push(seg.end);this.ids.push(seg.segId);   // common fast path
+      return;
+    }
+    let lo=this.head,hi=this.ends.length;
+    while(lo<hi){const m=(lo+hi)>>1;
+      if(seg.end<this.ends[m])hi=m;else lo=m+1;}
+    this.ends.splice(lo,0,seg.end);this.ids.splice(lo,0,seg.segId);
   }
   noteRetransmission(start,end){this.retransmittedRanges.add(start,end);}
   processAck(ack64,ackFrame,ackTs,segments){
     if(this.sndUna!=null&&ack64<=this.sndUna)return [];
     this.sndUna=ack64;
     const newly=[];
-    while(this.unacked.length&&this.unacked[0][0]<=ack64){
-      const [,segId]=this.unacked.shift();
+    while(this.head<this.ends.length&&this.ends[this.head]<=ack64){
+      const segId=this.ids[this.head++];
       const seg=segments[segId];
       if(seg.ackedTs!=null)continue;
       seg.ackedTs=ackTs;seg.ackedBy=ackFrame;
@@ -579,6 +635,11 @@ class AckCorrelator{
       if(seg.retx)seg.state="Recovered";
       else if(seg.state==="Original"||seg.state==="SACKed")seg.state="ACKed";
       newly.push(seg);
+    }
+    if(this.head>8192){                    // reclaim consumed prefix
+      this.ends=this.ends.slice(this.head);
+      this.ids=this.ids.slice(this.head);
+      this.head=0;
     }
     if(!newly.length)return newly;
     newly.sort((a,b)=>a.end-b.end);
@@ -1572,15 +1633,17 @@ function sessionToJson(sess,firstAbsNs){
 }
 
 /* --------------------------------------------------------------- driver */
-async function analyze(buf,fileName,progress){
-  const rd=new CaptureReader(buf);
+const SER_CAPS={segments:20000,rtt_samples:20000,sack_records:10000,
+                sack_snapshots:10000};
+async function analyze(bufOrFile,fileName,progress){
+  const src=new ChunkedSource(bufOrFile);
+  const rd=new CaptureReader();
   const mgr=new SessionManager({...DEFAULT_CFG},20000);
-  let n=0,firstAbs=null;
+  let n=0;
   const CHUNK=20000;let sinceYield=0;
-  for(const f of rd.frames()){
+  for await (const f of rd.frames(src)){
     const pkt=decodeTcp(rd,f);
     if(pkt){
-      if(firstAbs==null)firstAbs=rd.firstAbsNs;
       // capture-relative ns (anchored at the capture's first packet)
       pkt.tsRel=Number(f.absNs-rd.firstAbsNs);
       rd.tcpCount++;
@@ -1589,11 +1652,12 @@ async function analyze(buf,fileName,progress){
     }
     if(progress&&++sinceYield>=CHUNK){
       sinceYield=0;
-      progress(rd.packetCount,n,mgr.sessions.length);
+      progress(rd.packetCount,n,mgr.sessions.length,
+               rd.window?rd.window.consumedBytes:0,src.size);
       await new Promise(res=>setTimeout(res,0));
     }
   }
-  if(progress)progress(rd.packetCount,n,mgr.sessions.length);
+  if(progress)progress(rd.packetCount,n,mgr.sessions.length,src.size,src.size);
 
   const firstAbsNs=rd.firstAbsNs!=null?rd.firstAbsNs:0n;
   const sessions=mgr.sessions.map(s=>sessionToJson(s,firstAbsNs));
@@ -1625,6 +1689,26 @@ async function analyze(buf,fileName,progress){
   }
   totals.retrans_pct=totals.data_segments?
     100.0*totals.retrans_segments/totals.data_segments:0.0;
+  // bound embedded row listings (statistics above cover the full data) —
+  // identical caps and ordering to the Python engine, so parity holds
+  for(const sj of sessions){
+    for(const [key,cnt] of [["segments","segments_truncated"],
+                            ["rtt_samples","rtt_truncated"],
+                            ["sack_records","sack_truncated"]]){
+      const cap=key==="sack_records"?SER_CAPS.sack_records:SER_CAPS[key];
+      if(sj[key].length>cap){
+        sj[cnt]=sj[key].length-cap;sj[key]=sj[key].slice(0,cap);
+      }else sj[cnt]=0;
+    }
+    sj.sack_snap_truncated=0;
+    for(const dname of Object.keys(sj.sack_snapshots)){
+      const snaps=sj.sack_snapshots[dname];
+      if(snaps.length>SER_CAPS.sack_snapshots){
+        sj.sack_snap_truncated+=snaps.length-SER_CAPS.sack_snapshots;
+        sj.sack_snapshots[dname]=snaps.slice(0,SER_CAPS.sack_snapshots);
+      }
+    }
+  }
   const coarsest=rd.resolutions.length?Math.min(...rd.resolutions):null;
   const durationNs=rd.lastAbsNs!=null&&rd.firstAbsNs!=null?
     Number(rd.lastAbsNs-rd.firstAbsNs):0;

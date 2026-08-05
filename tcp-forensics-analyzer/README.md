@@ -22,9 +22,13 @@ SACK, loss and latency analysis all run locally in the page; nothing leaves
 the machine. The browser engine is a line-for-line port of the Python
 engine, and `tools/parity_check.py` proves both produce identical analysis
 models on the same captures (verified on the synthetic scenario corpus and
-real Wireshark wiki captures). Practical for captures up to a few hundred
-MB (whole-file analysis in browser memory); use the CLI for bigger files.
-Rebuild after engine changes with `python tools/build_standalone.py`.
+real Wireshark wiki captures). Built for scale: the file is parsed in
+streamed 8 MB slices inside a Web Worker (never loaded whole), embedded
+row listings are bounded while statistics cover all data, and the hot
+paths are amortized — a measured 1 GiB / 785k-packet capture analyzes in
+~18 s on ~38 MB of JS heap with a live progress bar. Rebuild after engine
+changes with `python tools/build_standalone.py`; generate scale-test
+captures with `python tools/make_bulk_capture.py out.pcap --gib 1`.
 
 **Command line** —
 

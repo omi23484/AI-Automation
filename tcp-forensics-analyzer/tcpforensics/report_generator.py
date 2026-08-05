@@ -782,6 +782,7 @@ function tabSequence(s){
    '<label>state <select id="seqState" onchange="renderSeqRows()"><option value="">all</option>'+
    ['Original','ACKed','SACKed','Retransmitted','Duplicate','Out-of-order','Recovered','Keep-alive','Window-probe'].map(x=>'<option>'+x+'</option>').join('')+'</select></label>'+
    '<button onclick="exportSessionPackets()">Export session events CSV</button></div>'+
+   (s.segments_truncated?'<div class="warnbox">'+fmtInt(s.segments_truncated)+' ledger rows beyond the embedding cap were omitted (large session) — statistics above remain computed from the full data.</div>':'')+
    '<div class="scroll" style="max-height:520px"><table id="seqTable"></table></div>';
   setTimeout(renderSeqRows,0);
   return h;
@@ -862,6 +863,9 @@ function tabSack(s){
      '<span><span class="dot" style="background:'+C.hole+'"></span>hole / missing</span>'+
      '<span><span class="dot" style="background:'+C.out+'"></span>outstanding</span></div>';
   }
+  if(s.sack_truncated||s.sack_snap_truncated)
+    h+='<div class="warnbox">'+fmtInt((s.sack_truncated||0)+(s.sack_snap_truncated||0))+
+     ' SACK records/snapshots beyond the embedding cap were omitted — scoreboard statistics cover all events.</div>';
   h+='<h3>SACK option records</h3><div class="scroll" style="max-height:320px"><table><tr>'+
    '<th>Frame</th><th>Time</th><th>Data dir</th><th>Cum ACK</th><th>#Blocks</th><th>Blocks (left–right)</th><th>DSACK</th></tr>';
   s.sack_records.slice(0,3000).forEach((r,i)=>{
@@ -981,6 +985,7 @@ function tabRtt(s){
   let h='<div>'+statLine(s.stats.rtt)+' <span class="mut">valid samples only (Karn); '+
     s.rtt_ambiguous.length+' ambiguous samples excluded</span></div>'+
    '<canvas id="rttHist" width="700" height="170"></canvas><canvas id="rttCdf" width="700" height="150"></canvas>'+
+   (s.rtt_truncated?'<div class="warnbox">'+fmtInt(s.rtt_truncated)+' RTT sample rows beyond the embedding cap were omitted — the statistics and charts above cover ALL samples.</div>':'')+
    '<h3>Valid RTT samples</h3><div class="scroll" style="max-height:280px"><table><tr>'+
    '<th>Time</th><th>Kind</th><th>Dir</th><th>SEQ range</th><th>Data frame</th><th>ACK frame</th><th>RTT</th></tr>';
   s.rtt_samples.slice(0,3000).forEach((r,i)=>{

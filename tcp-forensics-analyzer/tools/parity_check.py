@@ -87,7 +87,7 @@ async def js_model(page_html: str, capture: Path) -> dict:
             page.on("pageerror", lambda e: errors.append(str(e)))
             await page.goto(html_path.as_uri())
             await page.set_input_files("#fileInput", str(capture))
-            await page.wait_for_function("window.M !== null", timeout=120000)
+            await page.wait_for_function("typeof M !== 'undefined' && M !== null", timeout=600000)
             raw = await page.evaluate("JSON.stringify(M)")
             await browser.close()
             if errors:

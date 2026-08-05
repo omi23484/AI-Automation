@@ -30,8 +30,8 @@ LANDING_HTML = """  <div class="panel" id="landing" style="--i:0">
     analyzer. Drop a <b>.pcap</b> / <b>.pcapng</b> capture below — parsing,
     TCP session reconstruction, sequence-space, SACK, loss and nanosecond
     latency analysis all run locally in this page. Nothing leaves this
-    machine. (Whole-file analysis in browser memory: captures up to a few
-    hundred MB are practical.)</p>
+    machine. (Streamed parsing in a background worker: multi-GB captures
+    are practical — memory is bounded by per-session state, not file size.)</p>
     <div id="dropzone" tabindex="0" role="button"
          aria-label="drop a capture file or press Enter to browse">
       <div style="font-size:30px;opacity:.6">⇣</div>
@@ -42,6 +42,12 @@ LANDING_HTML = """  <div class="panel" id="landing" style="--i:0">
              style="display:none">
     </div>
     <div id="anProgress" class="mut" style="display:none;margin-top:12px"></div>
+    <div id="anBar" style="display:none;height:6px;border-radius:4px;
+         background:rgba(120,140,190,.15);margin-top:8px;overflow:hidden">
+      <div id="anBarFill" style="height:100%;width:0%;border-radius:4px;
+           background:linear-gradient(90deg,var(--accent),var(--accent2));
+           transition:width .2s"></div>
+    </div>
   </div>
 """
 
@@ -57,27 +63,69 @@ body.noModel .nav a{display:none}
 """
 
 LOADER_JS = """
-/* ---- standalone loader ---- */
+/* ---- standalone loader: Web Worker analysis with streamed file reads ---- */
+function tfProgressText(file,pkts,tcp,sess,done,total){
+  const prog=document.getElementById('anProgress');
+  const fill=document.getElementById('anBarFill');
+  const pct=total?Math.min(100,100*done/total):0;
+  if(fill)fill.style.width=pct.toFixed(1)+'%';
+  prog.textContent='Analyzing '+file.name+' ('+(done/1048576).toFixed(0)+' / '+
+    (total/1048576).toFixed(0)+' MB, '+pct.toFixed(0)+'%): '+
+    pkts.toLocaleString()+' packets, '+tcp.toLocaleString()+' TCP, '+
+    sess+' sessions ...';
+}
+function tfShowModel(model){
+  M=model;curSess=null;curTab='overview';TILES_ANIMATED=false;
+  document.body.classList.remove('noModel');
+  for(const el of document.querySelectorAll('.wrap>.panel'))
+    el.style.display=el.id==='landing'?'none':'';
+  renderAll();
+  window.scrollTo({top:0});
+}
+function tfFail(file,msg){
+  const prog=document.getElementById('anProgress');
+  prog.textContent='Could not analyze '+file.name+': '+msg;
+}
+let tfWorker=null;
+function tfGetWorker(){
+  if(tfWorker!==null)return tfWorker;
+  try{
+    const engine=document.getElementById('enginesrc').textContent;
+    const shim=engine+';'+
+      'onmessage=async e=>{'+
+      ' if(e.data&&e.data.cmd==="analyze"){'+
+      '  try{'+
+      '   const model=await TFEngine.analyze(e.data.file,e.data.name,'+
+      '     (p,t,s,d,tot)=>postMessage({type:"progress",p,t,s,d,tot}));'+
+      '   postMessage({type:"done",model});'+
+      '  }catch(err){postMessage({type:"error",message:String(err&&err.message||err)});}'+
+      ' }};';
+    tfWorker=new Worker(URL.createObjectURL(
+      new Blob([shim],{type:'text/javascript'})));
+  }catch(e){tfWorker=false;}          // blob workers unavailable: run inline
+  return tfWorker;
+}
 async function tfAnalyzeFile(file){
   const prog=document.getElementById('anProgress');
   prog.style.display='block';
+  document.getElementById('anBar').style.display='block';
   prog.textContent='Reading '+file.name+' ...';
-  try{
-    const buf=await file.arrayBuffer();
-    const model=await TFEngine.analyze(buf,file.name,(pkts,tcp,sess)=>{
-      prog.textContent='Analyzing '+file.name+': '+pkts.toLocaleString()+
-        ' packets, '+tcp.toLocaleString()+' TCP, '+sess+' sessions ...';
-    });
-    M=model;curSess=null;curTab='overview';TILES_ANIMATED=false;
-    document.body.classList.remove('noModel');
-    for(const el of document.querySelectorAll('.wrap>.panel'))
-      el.style.display=el.id==='landing'?'none':'';
-    renderAll();
-    window.scrollTo({top:0});
-  }catch(e){
-    prog.textContent='Could not analyze '+file.name+': '+e.message;
-    console.error(e);
+  const w=tfGetWorker();
+  if(w){
+    w.onmessage=e=>{
+      const m=e.data;
+      if(m.type==='progress')tfProgressText(file,m.p,m.t,m.s,m.d,m.tot);
+      else if(m.type==='done')tfShowModel(m.model);
+      else if(m.type==='error')tfFail(file,m.message);
+    };
+    w.postMessage({cmd:'analyze',file,name:file.name});
+    return;
   }
+  try{                                 // main-thread fallback (still streamed)
+    const model=await TFEngine.analyze(file,file.name,
+      (p,t,s,d,tot)=>tfProgressText(file,p,t,s,d,tot));
+    tfShowModel(model);
+  }catch(e){tfFail(file,e.message);console.error(e);}
 }
 (function(){
   const dz=document.getElementById('dropzone');
@@ -136,7 +184,8 @@ def build() -> str:
     html = html.replace(marker, "\n" + boot + "</script>")
     # engine + loader
     engine = (ROOT / "tcpforensics" / "webengine.js").read_text(encoding="utf-8")
-    inject = ("<script>\n" + engine + "\n</script>\n"
+    assert "</script" not in engine, "engine source may not contain </script"
+    inject = ("<script id=\"enginesrc\">\n" + engine + "\n</script>\n"
               "<script>\n" + LOADER_JS + "\n</script>\n</body>")
     html = html.replace("</body>", inject, 1)
     return html

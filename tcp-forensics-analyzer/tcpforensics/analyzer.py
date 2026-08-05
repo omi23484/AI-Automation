@@ -32,6 +32,9 @@ def analyze_capture(path: str, *, capture_id: int = 0, capture_point: str = "",
                     retrans_cfg: RetransConfig | None = None,
                     verdict_cfg: VerdictConfig | None = None,
                     max_packet_rows: int = 20_000,
+                    max_segment_rows: int = 20_000,
+                    max_rtt_rows: int = 20_000,
+                    max_sack_rows: int = 10_000,
                     quiet: bool = False) -> dict:
     retrans_cfg = retrans_cfg or RetransConfig()
     verdict_cfg = verdict_cfg or VerdictConfig()
@@ -123,12 +126,27 @@ def analyze_capture(path: str, *, capture_id: int = 0, capture_point: str = "",
         "verdict_config": (verdict_cfg or VerdictConfig()).to_dict(),
         "sessions": sessions_json,
     }
-    # rows are capped at collection time; surface how many were dropped
+    # Bound what is EMBEDDED per session for very large captures.  All
+    # statistics/verdicts/histograms above were computed from the full data
+    # engine-side; only the row listings are capped, with counts surfaced.
     for sj, sess in zip(sessions_json, mgr.sessions):
         sj["packets_truncated"] = sess.rows_dropped
         if len(sj["packets"]) > max_packet_rows:
             sj["packets_truncated"] += len(sj["packets"]) - max_packet_rows
             sj["packets"] = sj["packets"][:max_packet_rows]
+        for key, cap, cnt in (("segments", max_segment_rows, "segments_truncated"),
+                              ("rtt_samples", max_rtt_rows, "rtt_truncated"),
+                              ("sack_records", max_sack_rows, "sack_truncated")):
+            if len(sj[key]) > cap:
+                sj[cnt] = len(sj[key]) - cap
+                sj[key] = sj[key][:cap]
+            else:
+                sj[cnt] = 0
+        sj["sack_snap_truncated"] = 0
+        for dname, snaps in sj["sack_snapshots"].items():
+            if len(snaps) > max_sack_rows:
+                sj["sack_snap_truncated"] += len(snaps) - max_sack_rows
+                sj["sack_snapshots"][dname] = snaps[:max_sack_rows]
     _rebase_timestamps(model)
     _progress("[4/4] Analysis model ready.", quiet)
     return model
