@@ -343,11 +343,205 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 /* Crisper scrollbars */
 ::-webkit-scrollbar-thumb{background:rgba(132,162,214,.24)}
 ::-webkit-scrollbar-thumb:hover{background:rgba(132,162,214,.38)}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   APPLE LIQUID GLASS (v56) — design layer only. No HTML/JS/logic changes.
+   Philosophy: unified surfaces over fragmented cards · glass only where layers
+   overlap (nav/topbar/sticky headers/tooltips) · restraint over decoration ·
+   hierarchy from weight+size+grayscale, colour reserved for state · details
+   (negative tracking, tabular numerals, hairlines, gentle lift).
+   Fully offline: system font stacks only, no web fonts, no network references.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Dark: Apple-dark counterpart (true black ground, elevated grey surfaces) ── */
+:root{
+  --bg:#000000; --bg2:#1c1c1e;
+  --panel:#1c1c1e; --panel2:#2c2c2e;
+  --stroke:rgba(255,255,255,0.10); --stroke2:rgba(255,255,255,0.18);
+  --txt:#f5f5f7; --muted:#98989d; --muted2:#8e8e93;
+  --accent:#0a84ff; --accent2:#5e5ce6; --accent3:#ff9f0a;
+  --normal:#30d158; --warning:#ffd60a; --high:#ff9f0a; --critical:#ff453a;
+  --down:#8e8e93; --nodata:#3a3a3c;
+  --gridline:rgba(255,255,255,0.07); --ai-txt:#d1d1d6;
+  --chrome:rgba(28,28,30,0.72); --thbg:rgba(28,28,30,0.86);
+  --crit-glow:rgba(255,69,58,0.45);
+  --panelfr:#1c1c1e; --port:#2c2c2e;
+  --track:#3a3a3c; --hover:#2c2c2e;
+  --panel-hi:none;
+  --pagebg:#000000;
+  --shadow:0 1px 3px rgba(0,0,0,0.44), 0 14px 40px rgba(0,0,0,0.34);
+  --sh-card:0 1px 2px rgba(0,0,0,0.34), 0 8px 24px rgba(0,0,0,0.30);
+  --sh-lift:0 12px 32px rgba(0,0,0,0.46);
+  --anomtxt:#ff9f0a; --errtxt:#ff453a;
+}
+/* ── Light: the Apple Liquid Glass system ── */
+:root.light{
+  --bg:#f5f5f7; --bg2:#ffffff;
+  --panel:#ffffff; --panel2:#f5f5f7;
+  --stroke:rgba(0,0,0,0.07); --stroke2:rgba(0,0,0,0.13);
+  --txt:#1d1d1f; --muted:#6e6e73; --muted2:#86868b;
+  --accent:#0071e3; --accent2:#5e5ce6; --accent3:#ff6b00;
+  --normal:#248a3d; --warning:#9a6700; --high:#c93400; --critical:#d70015;
+  --down:#86868b; --nodata:#d2d2d7;
+  --gridline:rgba(0,0,0,0.06); --ai-txt:#424245;
+  --chrome:rgba(245,245,247,0.72); --thbg:rgba(255,255,255,0.84);
+  --crit-glow:rgba(215,0,21,0.26);
+  --panelfr:#f5f5f7; --port:#ffffff;
+  --track:#e8e8ed; --hover:#fbfbfd;
+  --panel-hi:none;
+  --pagebg:#f5f5f7;
+  --shadow:0 1px 3px rgba(0,0,0,0.05), 0 14px 40px rgba(0,0,0,0.05);
+  --sh-card:0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.05);
+  --sh-lift:0 12px 32px rgba(0,0,0,0.10);
+  --anomtxt:#c93400; --errtxt:#d70015;
+}
+/* Radius tiers — semantic, no in-between values */
+:root,:root.light{ --r:18px; --r-panel:22px; --r-pill:999px; --r-chip:6px; --r-thumb:12px; }
+
+/* ── Ground & type ─────────────────────────────────────────────────────────── */
+body{
+  background:var(--bg);
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','SF Pro Display','Helvetica Neue','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  font-optical-sizing:auto;
+}
+body::before,body::after{display:none}
+#brand b{font-size:15.5px;font-weight:600;letter-spacing:-0.015em}
+.sec-title h2{font-size:16px;font-weight:600;letter-spacing:-0.015em}
+.verdict h3{font-size:17px;font-weight:600;letter-spacing:-0.02em}
+.kpi .v{font-size:28px;font-weight:600;letter-spacing:-0.025em;font-variant-numeric:tabular-nums}
+.kpi .l{font-size:11px;font-weight:600;letter-spacing:0.055em;text-transform:uppercase;color:var(--muted2)}
+.kpi .t{font-size:11.5px;font-weight:500}
+.mono,.rank,.tip b,td.num,.riskbar b{font-variant-numeric:tabular-nums}
+
+/* ── Surfaces: solid, never glass ──────────────────────────────────────────── */
+.panel,.kpi,.verdict,.tile,.ai,.dz,.sev-block,.frontpanel{backdrop-filter:none;-webkit-backdrop-filter:none}
+.panel{background:var(--panel);border:1px solid var(--stroke);border-radius:var(--r-panel)}
+.kpi,.verdict,.tile{background:var(--panel);border:1px solid var(--stroke);border-radius:var(--r)}
+.panel,.kpi,.verdict,.tile,.frontpanel{box-shadow:var(--sh-card)}
+.kpi .glow{display:none}
+.tile:hover{transform:translateY(-3px);box-shadow:var(--sh-lift);border-color:var(--stroke)}
+.kpi:hover{border-color:var(--stroke)}
+#brand .dot{background:var(--accent);box-shadow:none;width:10px;height:10px}
+
+/* ── Glass: ONLY where layers genuinely overlap ────────────────────────────── */
+#topbar,#brand,#nav{
+  background:var(--chrome);
+  backdrop-filter:saturate(180%) blur(20px);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+}
+th{
+  background:var(--thbg);
+  backdrop-filter:saturate(180%) blur(12px);
+  -webkit-backdrop-filter:saturate(180%) blur(12px);
+  color:var(--muted2);font-weight:600;letter-spacing:0.05em;font-size:10.5px;
+  border-bottom:1px solid var(--stroke);
+}
+.tip{
+  background:var(--chrome);border:1px solid var(--stroke);border-radius:var(--r-thumb);
+  backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);
+  box-shadow:0 2px 8px rgba(0,0,0,0.10), 0 30px 80px rgba(0,0,0,0.24);
+}
+
+/* ── Unified rows: hairline dividers, quiet hover ──────────────────────────── */
+td{border-bottom:1px solid var(--stroke);padding:10px}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--hover)}
+.map-row{border-bottom:1px solid var(--stroke)}
+
+/* ── Controls ──────────────────────────────────────────────────────────────── */
+.btn{background:var(--accent);border:1px solid transparent;border-radius:var(--r-pill);
+     padding:8px 16px;font-weight:600;font-size:13px;color:#fff;box-shadow:none}
+.btn:hover{filter:none;background:var(--accent);opacity:.88;box-shadow:none}
+.btn:active{transform:scale(0.98)}
+.btn.ghost{background:transparent;color:var(--accent);border:1px solid var(--stroke2)}
+.btn.ghost:hover{background:var(--panel2);opacity:1}
+.topbtn{border-radius:var(--r-pill);background:transparent;border:1px solid var(--stroke);font-weight:500}
+.topbtn:hover{background:var(--panel2);color:var(--txt)}
+.role{border-radius:var(--r-pill);background:var(--panel);border:1px solid var(--stroke)}
+.tabs button{border-radius:var(--r-pill);font-weight:500}
+.tabs button.active{background:var(--panel);color:var(--txt);box-shadow:0 1px 2px rgba(0,0,0,0.06);font-weight:600}
+input[type=text],input[type=number],input[type=datetime-local],select,textarea{
+  border-radius:10px;border:1px solid var(--stroke);background:var(--bg2);color:var(--txt)}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+
+/* ── Navigation: Apple sidebar selection ───────────────────────────────────── */
+.navitem{border-radius:8px;font-weight:500;font-size:13px}
+.navitem:hover{background:var(--panel2)}
+.navitem.active{background:rgba(10,132,255,0.18);color:var(--accent);box-shadow:none;font-weight:600}
+:root.light .navitem.active{background:rgba(0,113,227,0.10);color:var(--accent)}
+.navitem .badge{background:var(--critical);font-weight:600}
+
+/* ── State marks ───────────────────────────────────────────────────────────── */
+.pill{border-radius:var(--r-pill);font-weight:600;letter-spacing:0.02em;border-color:transparent}
+.chip{border-radius:var(--r-chip);background:var(--panel2);color:var(--muted);font-weight:600;font-size:10.5px}
+.verdict:before{width:3px}
+.verdict .lvl{border-radius:var(--r-pill);letter-spacing:0.08em;font-weight:700}
+.riskbar .track,.track{background:var(--track)}
+.led{border-radius:4px}
+.sev-block{border-radius:var(--r-thumb);background:var(--panel2)}
+.legend i{border-radius:3px}
+
+/* ── Insight blocks: one quiet surface, not a gradient ─────────────────────── */
+.ai{background:var(--panel2);border:1px solid var(--stroke);border-radius:var(--r-thumb);color:var(--ai-txt)}
+.ai .h{color:var(--txt);font-weight:600;letter-spacing:-0.01em}
+.dz{background:var(--panel2);border:1.5px dashed var(--stroke2);border-radius:var(--r-panel)}
+
+/* ── Motion: small, calm, interruptible; honours reduced-motion ────────────── */
+:root{--ease-out-quart:cubic-bezier(0.25,1,0.5,1)}
+.navitem,.btn,.topbtn,.chip,.pill,.tile,.kpi,tbody tr,.led,.role,.dz,.tabs button{
+  transition:background .2s var(--ease-out-quart),color .2s var(--ease-out-quart),
+             border-color .2s var(--ease-out-quart),box-shadow .2s var(--ease-out-quart),
+             transform .2s var(--ease-out-quart),opacity .2s var(--ease-out-quart)}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;scroll-behavior:auto !important}
+  .tile:hover{transform:none}
+}
+
+/* ── Focus & scrollbars ────────────────────────────────────────────────────── */
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px;border-radius:8px}
+::-webkit-scrollbar-thumb{background:var(--stroke2);border-radius:999px}
+::-webkit-scrollbar-thumb:hover{background:var(--muted2)}
+
+/* ── Unified list: the attention queue is ONE panel with hairline dividers,
+      not a stack of separately-bordered, separately-shadowed cards.
+      The severity pill already carries state, so the per-row colour bar goes. ── */
+.g-main > div > .verdict{
+  margin-bottom:0 !important;
+  background:var(--panel);
+  border:1px solid var(--stroke); border-top:0;
+  border-radius:0; box-shadow:none;
+}
+.g-main > div > .verdict:first-of-type{border-top:1px solid var(--stroke);border-radius:var(--r-panel) var(--r-panel) 0 0}
+.g-main > div > .verdict:last-of-type{border-radius:0 0 var(--r-panel) var(--r-panel)}
+.g-main > div > .verdict:only-of-type{border-radius:var(--r-panel)}
+.g-main > div > .verdict:before{display:none}
+.g-main > div > .verdict:hover{background:var(--hover)}
+
+/* ── Status marks: quiet tints so a repeated column reads as data, not alarm ── */
+.pill.normal  {color:var(--normal);  background:rgba(48,209,88,.14)}
+.pill.warning {color:var(--warning); background:rgba(255,214,10,.16)}
+.pill.high    {color:var(--high);    background:rgba(255,159,10,.16)}
+.pill.critical{color:var(--critical);background:rgba(255,69,58,.15)}
+:root.light .pill.normal  {background:rgba(36,138,61,.10)}
+:root.light .pill.warning {background:rgba(154,103,0,.10)}
+:root.light .pill.high    {background:rgba(201,52,0,.10)}
+:root.light .pill.critical{background:rgba(215,0,21,.08)}
+.chip.impact-Critical{background:rgba(255,69,58,.15);color:var(--critical)}
+.chip.impact-High    {background:rgba(255,159,10,.15);color:var(--high)}
+.chip.impact-Medium  {background:rgba(255,214,10,.15);color:var(--warning)}
+.chip.impact-Low     {background:var(--panel2);color:var(--muted)}
+:root.light .chip.impact-Critical{background:rgba(215,0,21,.08);color:var(--critical)}
+:root.light .chip.impact-High    {background:rgba(201,52,0,.09);color:var(--high)}
+:root.light .chip.impact-Medium  {background:rgba(154,103,0,.09);color:var(--warning)}
+:root.light .chip.impact-Low     {background:var(--panel2);color:var(--muted)}
+
 </style>
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v55</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v56</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
