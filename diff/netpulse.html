@@ -537,11 +537,132 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 :root.light .chip.impact-Medium  {background:rgba(154,103,0,.09);color:var(--warning)}
 :root.light .chip.impact-Low     {background:var(--panel2);color:var(--muted)}
 
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   APPLE LIQUID GLASS — REFINEMENT PASS (v59). App shell only: CSS, no HTML/JS.
+   Generated reports, exports and raw-data handling are untouched.
+   Focus of this pass: breathing room, a real page title, and the small details
+   that separate "clean" from "Apple" — confident type, generous whitespace,
+   proper segmented controls, calibrated depth.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. A real page title. The breadcrumb's current item becomes the large,
+      negative-tracked title on its own line, with the trail above it. ─────── */
+#main{padding:30px 34px 84px}
+.crumb{flex-wrap:wrap;gap:5px 8px;margin-bottom:24px;font-size:12.5px;color:var(--muted2)}
+.crumb .here{
+  flex-basis:100%;
+  font-size:clamp(25px,2.6vw,33px);
+  font-weight:700;
+  letter-spacing:-0.032em;
+  line-height:1.12;
+  color:var(--txt);
+  margin-top:1px;
+}
+.crumb a{color:var(--muted2);text-decoration:none}
+.crumb a:hover{color:var(--accent)}
+.crumb .sep{opacity:.45}
+
+/* ── 2. Sections breathe. Intentional whitespace, not even padding. ───────── */
+.pad{padding:22px 24px}
+.grid{gap:18px}
+.sec-title{margin:0 0 16px;align-items:baseline}
+.sec-title h2{font-size:16.5px;letter-spacing:-0.018em}
+.sec-title .sub{font-size:12px;color:var(--muted2);font-weight:450}
+
+/* ── 3. KPI: give the number room to be the hero. ─────────────────────────── */
+.kpi{padding:20px 22px}
+.kpi .l{font-size:10.5px;letter-spacing:0.07em;color:var(--muted2)}
+.kpi .v{font-size:clamp(28px,2.3vw,34px);margin-top:9px;line-height:1.05;letter-spacing:-0.03em}
+.kpi .t{margin-top:6px;font-size:11.5px;color:var(--muted)}
+
+/* ── 4. Verdict banner: the focal element of a page. ──────────────────────── */
+.verdict{padding:20px 22px}
+.verdict h3{margin:11px 0 7px;font-size:18px;letter-spacing:-0.022em}
+.verdict .reason{font-size:13px;line-height:1.62;color:var(--muted);max-width:78ch}
+.verdict .act{margin-top:12px}
+.verdict .lvl{font-size:10px;padding:4px 10px}
+
+/* ── 5. Segmented control: grey track, white raised thumb (Apple standard). ─ */
+.tabs{background:var(--panel2);padding:3px;border-radius:var(--r-pill);gap:2px;border:1px solid var(--stroke)}
+.tabs button{border-radius:var(--r-pill);padding:6px 15px;font-size:12.5px;font-weight:500;color:var(--muted)}
+.tabs button:hover{color:var(--txt)}
+.tabs button.active{background:var(--bg2);color:var(--txt);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.10),0 0 0 .5px rgba(0,0,0,.04)}
+:root .tabs button.active{box-shadow:0 1px 3px rgba(0,0,0,.4)}
+
+/* ── 6. Sidebar: quieter groups, roomier rows, calm selection. ────────────── */
+#nav{padding:14px 12px}
+.navgrp{font-size:10px;letter-spacing:0.13em;margin:20px 11px 7px;font-weight:600;color:var(--muted2)}
+#nav > .navgrp:first-child{margin-top:4px}
+.navitem{padding:9px 11px;margin-bottom:1px;gap:11px}
+.navitem .ic{opacity:.75;font-size:13px}
+.navitem.active .ic{opacity:1}
+#brand{padding:0 20px;gap:11px}
+
+/* ── 7. Topbar: pill search, calm controls, more presence. ────────────────── */
+#topbar{padding:0 24px;gap:12px}
+#search{border-radius:var(--r-pill);padding:8px 15px;background:var(--panel2);border:1px solid transparent;max-width:520px}
+#search:focus-within{background:var(--bg2);border-color:var(--stroke2)}
+#search kbd{background:transparent;border:1px solid var(--stroke2);border-radius:5px;color:var(--muted2)}
+.topbtn{padding:7px 13px}
+
+/* ── 8. Tables: airier rows, quiet header, aligned to the panel edge. ─────── */
+th{padding:10px 12px}
+td{padding:12px}
+th:first-child,td:first-child{padding-left:4px}
+th:last-child,td:last-child{padding-right:4px}
+
+/* ── 9. Depth: a hair of inner top-light on dark surfaces only. ───────────── */
+:root .panel,:root .kpi,:root .verdict,:root .tile{
+  box-shadow:var(--sh-card),inset 0 1px 0 rgba(255,255,255,0.045);
+}
+.panel:hover{box-shadow:var(--sh-card)}
+
+/* ── 10. Primary action: the one place a gradient is allowed. ─────────────── */
+.btn:not(.ghost){
+  background:linear-gradient(180deg,#0a84ff 0%,#0071e3 100%);
+  box-shadow:0 1px 2px rgba(0,113,227,.24),0 6px 18px rgba(0,113,227,.20);
+}
+.btn:not(.ghost):hover{opacity:1;filter:brightness(1.06);box-shadow:0 2px 4px rgba(0,113,227,.28),0 10px 26px rgba(0,113,227,.26)}
+.btn:not(.ghost):active{filter:brightness(.96);box-shadow:0 1px 2px rgba(0,113,227,.24)}
+
+/* ── 11. Empty state: composed, not apologetic. ───────────────────────────── */
+.empty{padding:88px 24px}
+.empty .big{font-size:52px;opacity:.16;line-height:1;margin-bottom:14px}
+.empty h2{font-size:21px;font-weight:600;letter-spacing:-0.022em;margin-bottom:6px}
+.empty p{max-width:46ch;margin:0 auto;line-height:1.65;color:var(--muted)}
+
+/* ── 12. Charts: recede the scaffolding so the data reads. ────────────────── */
+.chart text.ax{font-size:9.5px;fill:var(--muted2)}
+.chart line.gl{stroke:var(--gridline)}
+.legend{margin-top:12px;font-size:11px;color:var(--muted2);gap:16px}
+
+/* ── 13. Digital-twin tiles + dropzone. ──────────────────────────────────── */
+.tile{padding:18px}
+.tile .nm{font-size:14.5px;font-weight:600;letter-spacing:-0.012em}
+.dz{padding:44px 24px}
+.dz h3{font-size:17px;font-weight:600;letter-spacing:-0.02em}
+
+/* ── 14. Responsive: collapse to one column, keep touch targets ≥44px. ────── */
+@media (max-width:1100px){ .g-main{grid-template-columns:1fr} .g4{grid-template-columns:repeat(2,1fr)} }
+@media (max-width:760px){
+  #main{padding:22px 18px 64px}
+  .g2,.g3,.g4{grid-template-columns:1fr}
+  .pad{padding:18px}
+  .navitem,.btn,.topbtn{min-height:44px}
+}
+
+/* ── 15. Chart area fill recedes so the line carries the data (both render
+      paths: the animated first draw and the inline-opacity redraw). ──────── */
+@keyframes fadeArea{from{opacity:0}to{opacity:.085}}
+.chart path.areafill{animation:fadeArea .8s .28s ease forwards}
+.chart path[opacity="0.13"],.chart path[opacity=".13"]{opacity:.085 !important}
+
 </style>
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v58</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v59</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
