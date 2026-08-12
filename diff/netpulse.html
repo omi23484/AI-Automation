@@ -541,7 +541,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v56</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v57</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -2050,9 +2050,9 @@ function view_intf(){
     <div class="reason">${r.verdict.reason}</div>
     <div class="act">▸ ${r.verdict.action} <span class="conf">· confidence ${(r.verdict.confidence*100).toFixed(0)}% · ${r.verdict.comparison}</span></div>
     <div style="margin-top:10px" class="flex"><button class="btn sm ghost" onclick="askRCA('${r.ifid}')">🔍 Explain (RCA)</button><button class="btn sm ghost" onclick="genReport('intf','${r.ifid}')">▦ Add to report</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','html')">⤓ Export HTML</button><button class="btn sm ghost" onclick="exportLink('${r.ifid}','pdf')">🖨 Export PDF</button><button class="btn sm ghost" onclick="genUpgradePolicyXlsx('${r.ifid}')">📊 Policy hits .xlsx</button></div>
-    <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--stroke)" class="flex" title="Submission-ready PDF: last 6 months, Warning &amp; Critical exceedance counts + full timestamped detail">
-      <span class="small" style="font-weight:700;align-self:center">📄 Threshold PDF (last 6 mo)</span>
-      <label class="fld" style="margin:0"><span>Hours</span><select id="brHours"><option value="all">All hours</option><option value="bh">Market hours only</option><option value="off">Non-market hours only</option></select></label>
+    <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--stroke)" class="flex" title="Submission-ready PDF: exceedance counts + full timestamped detail. Uses the From/To filter above when one is set.">
+      <span class="small" style="font-weight:700;align-self:center">📄 Threshold PDF ${hasFlt&&(flt.from||flt.to)?'<span class="chip" style="margin-left:4px">filtered range</span>':'(last 6 mo)'}</span>
+      <label class="fld" style="margin:0"><span>Hours</span><select id="brHours"><option value="all" ${(!flt.hours||flt.hours==='all')?'selected':''}>All hours</option><option value="bh" ${flt.hours==='bh'?'selected':''}>Market hours only</option><option value="off" ${flt.hours==='off'?'selected':''}>Non-market hours only</option></select></label>
       <label class="fld" style="margin:0"><span>Severity</span><select id="brBands"><option value="warn">Warning and above (${Math.round(r.th.warn*100)}%+)</option><option value="high">High and above (${Math.round(r.th.high*100)}%+)</option><option value="crit">Critical only (${Math.round(r.th.crit*100)}%+)</option></select></label>
       <button class="btn sm" style="align-self:center" onclick="genBreachReport('${r.ifid}',($('#brHours')||{}).value||'all',($('#brBands')||{}).value||'warn')">Export PDF report →</button>
     </div>
@@ -2766,7 +2766,12 @@ function genUpgradePolicyXlsx(scope){
   const p2=n=>String(n).padStart(2,'0');
   const CFS=cfList();
   const fmtTs=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())} ${tzLabel()}`;};
-  const cStart=amin(list.map(r=>r.start)),cEnd=amax(list.map(r=>r.end));
+  // A From/To filter set on the link's page also bounds this export, so the workbook and
+  // the on-screen window always describe the same period. Pure scoping — unchanged maths.
+  const tfP=(scope!=='all')?activeTF(scope):null;
+  const inTF=x=>!tfP||(x.ts>=tfP.from&&x.ts<=tfP.to);
+  const cStart=tfP?Math.max(amin(list.map(r=>r.start)),tfP.from):amin(list.map(r=>r.start));
+  const cEnd=tfP?Math.min(amax(list.map(r=>r.end)),tfP.to):amax(list.map(r=>r.end));
   const covDays=Math.max(1,Math.round(days(cStart,cEnd)));
   // The report is the complete evidence log over ALL loaded history, so the summary
   // counts (days hit, total hits, trigger met) are computed over exactly the same set of
@@ -2775,7 +2780,7 @@ function genUpgradePolicyXlsx(scope){
   const summary=[
     ['NetPulse — Link Upgrade Policy Report'],
     [`Generated: ${fmtIST(Date.now())}`,'',`Scope: ${scope==='all'?'all links':list[0].dev+' '+list[0].intf}`],
-    [`Coverage: ${fmtIST(cStart)}  to  ${fmtIST(cEnd)}  (${covDays} days, entire loaded history)`],
+    [`Coverage: ${fmtIST(cStart)}  to  ${fmtIST(cEnd)}  (${covDays} days, ${tfP?'filtered range — matches the From/To filter set on screen':'entire loaded history'})`],
     ['Counts below cover the full loaded history; the live "Upgrade Recommended" verdict uses the rolling '+(S.cfg.upgradeRule.lookbackDays?S.cfg.upgradeRule.lookbackDays+'-day':'full-history')+' look-back window.'],
     ['NOTE: Every threshold crossing is listed and tagged Market hours vs Non-market hours. '+(list.some(r=>r.upgradeRule.businessHoursOnly)?'Policy = "Market hours only": only Market-hr hits count toward the upgrade trigger (Days threshold hit / Upgrade trigger met); Non-market-hr hits (e.g. overnight/backup peaks) are shown for visibility but do NOT trigger. Change it in Admin → Link upgrade policy.':'Policy = "All hours": both Market-hr and Non-market-hr hits count toward the trigger.')],
     ...(list.some(r=>r.capChange)?[['NOTE: '+list.filter(r=>r.capChange).map(r=>`${r.dev} ${r.intf} capacity changed ${r.capChange.distinct.map(v=>(v/1e6).toFixed(0)+' Mbps').join('→')}`).join('; ')+'. Utilization is measured per-sample against the capacity in force at that time; the "Capacity (Mbps)" column shows the latest.']]:[]),
@@ -2793,7 +2798,7 @@ function genUpgradePolicyXlsx(scope){
   // appear at the top — otherwise a quiet link can sit in row 1 and the report looks
   // empty even when busy links further down have hundreds of crossings.
   const recs=list.map(r=>{const ur=r.upgradeRule;const thr=ur.utilPct/100;
-    const allCross=r.samples.filter(x=>x.util!=null&&x.util>=thr);
+    const allCross=r.samples.filter(x=>x.util!=null&&x.util>=thr&&inTF(x));
     const mkt=allCross.filter(x=>isBH(x.ts)),nonMkt=allCross.filter(x=>!isBH(x.ts));
     const policyHits=ur.businessHoursOnly?mkt:allCross;      // what actually drives the trigger
     const daysHit=new Set(policyHits.map(x=>new Date(x.ts).toDateString())).size;
@@ -2806,7 +2811,7 @@ function genUpgradePolicyXlsx(scope){
     // months ago is obviously NOT a link whose data stops there — coverage still runs
     // to the latest sample. Prevents reading a quiet recent stretch as missing data.
     const lastHitTs=policyHits.length?policyHits.reduce((m,x)=>x.ts>m?x.ts:m,0):null;
-    summary.push([r.dev,r.intf,r.linkname||'',r.site,...CFS.map(c=>cfVal(r,c.key)),r.cls,r.impact,r.speed?+(r.speed/1e6).toFixed(0):'',ur.utilPct,ur.days,ur.businessHoursOnly?'Market hours only':'All hours',daysHit,mkt.length,nonMkt.length,allCross.length,lastHitTs?fmtTs(lastHitTs):'—',fmtTs(r.end),met?'YES':'no',+(r.p95*100).toFixed(1),r.verdict.title]);
+    summary.push([r.dev,r.intf,r.linkname||'',r.site,...CFS.map(c=>cfVal(r,c.key)),r.cls,r.impact,r.speed?+(r.speed/1e6).toFixed(0):'',ur.utilPct,ur.days,ur.businessHoursOnly?'Market hours only':'All hours',daysHit,mkt.length,nonMkt.length,allCross.length,lastHitTs?fmtTs(lastHitTs):'—',fmtTs(tfP?Math.min(r.end,tfP.to):r.end),met?'YES':'no',+(r.p95*100).toFixed(1),r.verdict.title]);
     for(const x of allCross){
       if(hits.length>MAXH){truncated=true;break;}
       const bh=isBH(x.ts);
@@ -3060,7 +3065,7 @@ function linkReportHTML(r){
   <div class="box" style="margin-top:8px"><b>Likely cause:</b> ${esc(cause)}<br><b>Recommended next steps:</b> ${esc(steps)}</div>
   <h2>Risk factors — ${r.risk.score}/100</h2>${Object.entries(r.risk.factors).map(([k,v])=>bar(k,v)).join('')}
   <div class="muted" style="font-size:10px;margin-top:8px">× ${r.risk.impactMul} business-impact multiplier (${r.impact})</div>
-  <div class="muted" style="font-size:10px;margin-top:24px;border-top:1px solid #e5eaf1;padding-top:8px">Generated by NetPulse · ${r.count.toLocaleString()} samples over ${Math.round(days(r.start,r.end))||1} days · maintenance windows excluded</div>
+  <div class="muted" style="font-size:10px;margin-top:24px;border-top:1px solid #e5eaf1;padding-top:8px">Generated by NetPulse · ${r.count.toLocaleString()} samples over ${Math.round(days(r.start,r.end))||1} days (${fmtDay(r.start)} – ${fmtDay(r.end)}) · maintenance windows excluded${activeTF(r.ifid)?' · NOTE: this is a whole-link analytical summary (p95, forecast and risk are computed over the full history) and is not narrowed by the on-screen From/To filter — use the Threshold PDF or Policy hits .xlsx for filtered, window-bound evidence.':''}</div>
   </body></html>`;
 }
 function exportLink(id,fmt){
@@ -3085,9 +3090,23 @@ function genBreachReport(id,hours,bands){
   logAudit('link.breachreport',id,'hours='+(hours||'all')+' bands='+(bands||'warn'));
   toast('Opening print dialog — choose “Save as PDF”');
 }
+// The From/To filter shown on a link's page also bounds the reports exported from it,
+// so an on-screen window and its evidence document always agree. Returns null when no
+// range is set (reports then use their own default window). Pure scoping — the
+// calculations applied inside the window are unchanged.
+function activeTF(ifid){
+  if(!S.scope||S.scope.view!=='intf'||S.scope.id!==ifid)return null;
+  const f=S.scope.tf||{};
+  if(!f.from&&!f.to)return null;
+  return {from:f.from?new Date(f.from).getTime():-Infinity,
+          to:f.to?new Date(f.to).getTime():Infinity,
+          label:(f.from?fmtDate(new Date(f.from).getTime()):'start of data')+' – '+(f.to?fmtDate(new Date(f.to).getTime()):'end of data')};
+}
 function breachReportHTML(r,hours,bands){
-  const DAY=86400000, winDays=183;                       // last 6 months
-  const winEnd=r.end, winStart=Math.max(r.start, winEnd-winDays*DAY);
+  const DAY=86400000, winDays=183;                       // default window: last 6 months
+  const tf=activeTF(r.ifid);                             // on-screen filter wins when set
+  const winEnd=tf?Math.min(r.end,tf.to):r.end;
+  const winStart=tf?Math.max(r.start,tf.from):Math.max(r.start, winEnd-winDays*DAY);
   const covDays=Math.max(1,Math.round((winEnd-winStart)/DAY));
   const hoursLbl={all:'All hours (market + non-market)',bh:'Market hours only',off:'Non-market hours only'}[hours]||'All hours';
   // Which severity bands to include. "Warning and above" can run to thousands of rows on a
@@ -3202,7 +3221,7 @@ function breachReportHTML(r,hours,bands){
 
   <h2>Reporting parameters</h2>
   <table class="kv">
-  ${kv('Reporting window','Last 6 months — '+fmtD(winStart)+' to '+fmtD(winEnd)+' ('+covDays+' days)')}
+  ${kv('Reporting window',(tf?'Filtered range':'Last 6 months')+' — '+fmtD(winStart)+' to '+fmtD(winEnd)+' ('+covDays+' days)'+(tf?' <span class="sub">(matches the From/To filter set on screen)</span>':''))}
   ${kv('Hours basis','<b>'+hoursLbl+'</b>')}
   ${kv('Severity bands included','<b>'+[...sel].map(s=>({warning:'Warning',high:'High',critical:'Critical'})[s]).join(' · ')+'</b>'+(bands!=='warn'?` <span class="sub">(bands below ${lowLbl} are excluded from this report)</span>`:''))}
   ${kv('Market-hours window',`${p2(S.cfg.businessHours.startHr)}:${p2(S.cfg.businessHours.startMin||0)}–${p2(S.cfg.businessHours.endHr)}:${p2(S.cfg.businessHours.endMin||0)}, ${S.cfg.businessHours.days.map(d=>DOW[d]).join(' ')}`)}
@@ -3234,7 +3253,7 @@ function breachReportHTML(r,hours,bands){
   </tbody></table></div>${detail.length<breaches.length?`<div class="sub" style="font-size:10.5px;margin-top:5px">Log truncated for print. The complete row-level evidence is available via the “Policy hits .xlsx” / “Download processed data” export.</div>`:''}`:'<div class="card">No exceedances to list for the selected hours basis.</div>'}
 
   <div class="sign"><div>Prepared by<br><b style="color:#152238">${esc(S.cfg.reportPreparedBy||'')}</b></div><div>Reviewed by<br><b style="color:#152238">${esc(S.cfg.reportReviewedBy||'')}</b></div><div>Approved by<br><b style="color:#152238">${esc(S.cfg.reportApprovedBy||'')}</b></div></div>
-  <div class="foot">Generated by NetPulse · Utilization is measured per sample against the capacity in force at that time (busier of Transmit/Receive). Timestamps shown in ${tzLabel()}. This report covers the trailing 6-month window; the underlying dataset spans ${fmtD(r.start)} to ${fmtD(r.end)}. Maintenance windows are excluded from analytics.</div>
+  <div class="foot">Generated by NetPulse · Utilization is measured per sample against the capacity in force at that time (busier of Transmit/Receive). Timestamps shown in ${tzLabel()}. This report covers ${tf?'the filtered range set on screen':'the trailing 6-month window'} (${fmtD(winStart)} to ${fmtD(winEnd)}); the underlying dataset spans ${fmtD(r.start)} to ${fmtD(r.end)}. Maintenance windows are excluded from analytics.</div>
   </div></body></html>`;
 }
 function rcaCause(r){const f=r.forecast;if(f.growthMoM>0.1&&r.bhDays>=3)return'Organic business-hour demand growth';if(r.anomalies.some(a=>a.type.includes('Weekend')))return'Newly scheduled off-hours job (backup/replication) or misclassification';if(r.anomalies.some(a=>a.type.includes('imbalance')))return'Asymmetric routing / unidirectional flow';if(r.mx>0.9)return'Localized burst / elephant flow';return'Elevated utilization consistent with steady load';}
