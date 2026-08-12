@@ -347,7 +347,7 @@ a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,te
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v54</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v55</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1859,7 +1859,8 @@ function view_intf(){
     <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--stroke)" class="flex" title="Submission-ready PDF: last 6 months, Warning &amp; Critical exceedance counts + full timestamped detail">
       <span class="small" style="font-weight:700;align-self:center">📄 Threshold PDF (last 6 mo)</span>
       <label class="fld" style="margin:0"><span>Hours</span><select id="brHours"><option value="all">All hours</option><option value="bh">Market hours only</option><option value="off">Non-market hours only</option></select></label>
-      <button class="btn sm" style="align-self:center" onclick="genBreachReport('${r.ifid}',($('#brHours')||{}).value||'all')">Export PDF report →</button>
+      <label class="fld" style="margin:0"><span>Severity</span><select id="brBands"><option value="warn">Warning and above (${Math.round(r.th.warn*100)}%+)</option><option value="high">High and above (${Math.round(r.th.high*100)}%+)</option><option value="crit">Critical only (${Math.round(r.th.crit*100)}%+)</option></select></label>
+      <button class="btn sm" style="align-self:center" onclick="genBreachReport('${r.ifid}',($('#brHours')||{}).value||'all',($('#brBands')||{}).value||'warn')">Export PDF report →</button>
     </div>
   </div>
   <div class="panel pad" style="margin-bottom:16px"><div class="flex" style="gap:14px;align-items:flex-end">
@@ -2881,20 +2882,27 @@ function exportLink(id,fmt){
    above the Warning and Critical thresholds, filterable to market / non-market / all
    hours. Professional light-theme layout with cover, parameters, summary, per-day
    table, detailed breach log and sign-off block. ------------------------------- */
-function genBreachReport(id,hours){
+function genBreachReport(id,hours,bands){
   const r=A().ifs.find(x=>x.ifid===id);if(!r){toast('Link not found');return;}
-  const html=breachReportHTML(r,hours||'all');
+  const html=breachReportHTML(r,hours||'all',bands||'warn');
   const w=window.open('','_blank');if(!w){toast('Allow pop-ups to export the PDF');return;}
   w.document.write(html);w.document.close();
   w.onload=()=>{setTimeout(()=>{w.focus();w.print();},350);};
-  logAudit('link.breachreport',id,'hours='+(hours||'all'));
+  logAudit('link.breachreport',id,'hours='+(hours||'all')+' bands='+(bands||'warn'));
   toast('Opening print dialog — choose “Save as PDF”');
 }
-function breachReportHTML(r,hours){
+function breachReportHTML(r,hours,bands){
   const DAY=86400000, winDays=183;                       // last 6 months
   const winEnd=r.end, winStart=Math.max(r.start, winEnd-winDays*DAY);
   const covDays=Math.max(1,Math.round((winEnd-winStart)/DAY));
   const hoursLbl={all:'All hours (market + non-market)',bh:'Market hours only',off:'Non-market hours only'}[hours]||'All hours';
+  // Which severity bands to include. "Warning and above" can run to thousands of rows on a
+  // busy link, so the report can be narrowed to the bands that actually need reporting.
+  const BANDSETS={warn:['warning','high','critical'],high:['high','critical'],crit:['critical']};
+  const sel=new Set(BANDSETS[bands]||BANDSETS.warn);
+  const lowLbl={warn:'Warning',high:'High',crit:'Critical'}[bands]||'Warning';
+  const lowCol={warn:'#b45309',high:'#c2410c',crit:'#e11d48'}[bands]||'#b45309';
+  const lowThr={warn:r.th.warn,high:r.th.high,crit:r.th.crit}[bands];
   const hourOk=x=>hours==='bh'?isBH(x.ts):hours==='off'?!isBH(x.ts):true;
   const thFor=x=>isBH(x.ts)?r.th:(r.thOff||r.th);
   const p2=n=>String(n).padStart(2,'0');
@@ -2907,6 +2915,7 @@ function breachReportHTML(r,hours){
   for(const x of samples){const t=thFor(x);const st=stateOfT(x.util,t);const bh=isBH(x.ts);
     if(x.util>peak){peak=x.util;peakTs=x.ts;}
     if(st==='normal')continue;
+    if(!sel.has(st))continue;                       // band excluded from this report
     const dk=fmtD(x.ts);const o=byDay[dk]=byDay[dk]||{w:0,h:0,c:0,peak:0,peakTs:null,first:x.ts,last:x.ts};
     if(st==='warning')cW++; else if(st==='high')cH++; else if(st==='critical'){cC++;dC.add(dk);}
     dW.add(dk);
@@ -2960,7 +2969,7 @@ function breachReportHTML(r,hours){
   const kv=(k,v)=>`<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`;
   const MAXDET=3000; const detail=breaches.slice(0,MAXDET);
   const dayRows=Object.keys(byDay).sort().map(dk=>{const o=byDay[dk];
-    return `<tr><td>${dk}</td><td class="num">${o.w||''}</td><td class="num">${o.h||''}</td><td class="num" style="color:#e11d48;font-weight:700">${o.c||''}</td><td class="num">${(o.peak*100).toFixed(1)}%</td><td>${hm(o.peakTs)}</td><td>${hm(o.first)}–${hm(o.last)}</td></tr>`;}).join('');
+    return `<tr><td>${dk}</td>${sel.has('warning')?`<td class="num">${o.w||''}</td>`:''}${sel.has('high')?`<td class="num">${o.h||''}</td>`:''}${sel.has('critical')?`<td class="num" style="color:#e11d48;font-weight:700">${o.c||''}</td>`:''}<td class="num">${(o.peak*100).toFixed(1)}%</td><td>${hm(o.peakTs)}</td><td>${hm(o.first)}–${hm(o.last)}</td></tr>`;}).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><title>Threshold Report — ${esc(r.dev)} ${esc(r.intf)}</title>
   <style>
   @page{margin:15mm;@bottom-center{content:"${esc(inst)} · Confidential · Link Utilization Threshold Report · Page " counter(page) " of " counter(pages)}}
@@ -3001,6 +3010,7 @@ function breachReportHTML(r,hours){
   <table class="kv">
   ${kv('Reporting window','Last 6 months — '+fmtD(winStart)+' to '+fmtD(winEnd)+' ('+covDays+' days)')}
   ${kv('Hours basis','<b>'+hoursLbl+'</b>')}
+  ${kv('Severity bands included','<b>'+[...sel].map(s=>({warning:'Warning',high:'High',critical:'Critical'})[s]).join(' · ')+'</b>'+(bands!=='warn'?` <span class="sub">(bands below ${lowLbl} are excluded from this report)</span>`:''))}
   ${kv('Market-hours window',`${p2(S.cfg.businessHours.startHr)}:${p2(S.cfg.businessHours.startMin||0)}–${p2(S.cfg.businessHours.endHr)}:${p2(S.cfg.businessHours.endMin||0)}, ${S.cfg.businessHours.days.map(d=>DOW[d]).join(' ')}`)}
   ${kv('Thresholds (market hrs)',`Warning ≥ <b style="color:#b45309">${(th.warn*100).toFixed(0)}%</b> · High ≥ <b style="color:#c2410c">${(th.high*100).toFixed(0)}%</b> · Critical ≥ <b style="color:#e11d48">${(th.crit*100).toFixed(0)}%</b>`)}
   ${tho?kv('Thresholds (non-market hrs)',`Warning ≥ ${(tho.warn*100).toFixed(0)}% · High ≥ ${(tho.high*100).toFixed(0)}% · Critical ≥ ${(tho.crit*100).toFixed(0)}%`):''}
@@ -3009,12 +3019,12 @@ function breachReportHTML(r,hours){
 
   <h2>Summary — threshold exceedances (last 6 months)</h2>
   <div class="cards">
-    <div class="card"><div class="n" style="color:#b45309">${warnPlus.toLocaleString()}</div><div class="t">At/above Warning (≥${(th.warn*100).toFixed(0)}%)</div><div class="sub" style="font-size:10.5px;margin-top:3px">on ${dW.size} distinct day(s)</div></div>
+    <div class="card"><div class="n" style="color:${lowCol}">${warnPlus.toLocaleString()}</div><div class="t">At/above ${lowLbl} (≥${((lowThr!=null?lowThr:th.warn)*100).toFixed(0)}%)</div><div class="sub" style="font-size:10.5px;margin-top:3px">on ${dW.size} distinct day(s)</div></div>
     <div class="card"><div class="n" style="color:#e11d48">${cC.toLocaleString()}</div><div class="t">At/above Critical (≥${(th.crit*100).toFixed(0)}%)</div><div class="sub" style="font-size:10.5px;margin-top:3px">on ${dC.size} distinct day(s)</div></div>
     <div class="card"><div class="n" style="color:#0f2740">${(peak*100).toFixed(1)}%</div><div class="t">Peak utilization</div><div class="sub" style="font-size:10.5px;margin-top:3px">${peakTs?fmtT(peakTs):'—'}</div></div>
   </div>
-  <div class="legend" style="margin:6px 0 4px"><span><i style="background:#b45309"></i>Warning band (${(th.warn*100).toFixed(0)}–${(th.high*100).toFixed(0)}%): <b>${cW.toLocaleString()}</b></span><span><i style="background:#c2410c"></i>High band (${(th.high*100).toFixed(0)}–${(th.crit*100).toFixed(0)}%): <b>${cH.toLocaleString()}</b></span><span><i style="background:#e11d48"></i>Critical band (≥${(th.crit*100).toFixed(0)}%): <b>${cC.toLocaleString()}</b></span></div>
-  ${hours==='all'?`<div class="grid" style="margin-top:8px;max-width:460px"><table><thead><tr><th>Hours basis</th><th class="num">At/above Warning</th><th class="num">At/above Critical</th></tr></thead><tbody>
+  <div class="legend" style="margin:6px 0 4px">${sel.has('warning')?`<span><i style="background:#b45309"></i>Warning band (${(th.warn*100).toFixed(0)}–${(th.high*100).toFixed(0)}%): <b>${cW.toLocaleString()}</b></span>`:''}${sel.has('high')?`<span><i style="background:#c2410c"></i>High band (${(th.high*100).toFixed(0)}–${(th.crit*100).toFixed(0)}%): <b>${cH.toLocaleString()}</b></span>`:''}${sel.has('critical')?`<span><i style="background:#e11d48"></i>Critical band (≥${(th.crit*100).toFixed(0)}%): <b>${cC.toLocaleString()}</b></span>`:''}</div>
+  ${hours==='all'?`<div class="grid" style="margin-top:8px;max-width:460px"><table><thead><tr><th>Hours basis</th><th class="num">At/above ${lowLbl}</th><th class="num">At/above Critical</th></tr></thead><tbody>
     <tr><td>Market hours</td><td class="num">${mWarn.toLocaleString()}</td><td class="num" style="color:#e11d48">${mCrit.toLocaleString()}</td></tr>
     <tr><td>Non-market hours</td><td class="num">${nWarn.toLocaleString()}</td><td class="num" style="color:#e11d48">${nCrit.toLocaleString()}</td></tr>
     <tr style="font-weight:800"><td>Total</td><td class="num">${warnPlus.toLocaleString()}</td><td class="num" style="color:#e11d48">${cC.toLocaleString()}</td></tr>
@@ -3022,7 +3032,7 @@ function breachReportHTML(r,hours){
   ${chart}
 
   <h2>Per-day exceedance summary</h2>
-  ${dayRows?`<div class="grid"><table><thead><tr><th>Date</th><th class="num">Warning</th><th class="num">High</th><th class="num">Critical</th><th class="num">Peak</th><th>Peak time</th><th>First–Last</th></tr></thead><tbody>${dayRows}</tbody></table></div>`:'<div class="card">No samples reached the Warning threshold in this window.</div>'}
+  ${dayRows?`<div class="grid"><table><thead><tr><th>Date</th>${sel.has('warning')?'<th class="num">Warning</th>':''}${sel.has('high')?'<th class="num">High</th>':''}${sel.has('critical')?'<th class="num">Critical</th>':''}<th class="num">Peak</th><th>Peak time</th><th>First–Last</th></tr></thead><tbody>${dayRows}</tbody></table></div>`:`<div class="card">No samples reached the ${lowLbl} threshold in this window.</div>`}
 
   <h2>Detailed exceedance log${detail.length<breaches.length?` (first ${MAXDET.toLocaleString()} of ${breaches.length.toLocaleString()})`:` (${breaches.length.toLocaleString()} entries)`}</h2>
   ${detail.length?`<div class="grid"><table><thead><tr><th>#</th><th>Timestamp</th><th>Band</th><th class="num">Utilization</th><th class="num">Transmit</th><th class="num">Receive</th><th>Period</th></tr></thead><tbody>
