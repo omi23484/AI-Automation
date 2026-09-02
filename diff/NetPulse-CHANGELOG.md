@@ -59,6 +59,14 @@ reports generated in-browser. Enforced offline by a Content-Security-Policy.
 
 **This session (data-correctness + reporting hardening):**
 
+- **v62** — **Workspaces** — keep two estates analysed separately (e.g. *RO Internet* vs
+  *Corp Core*). Each workspace is its own browser database: separate uploads, links,
+  thresholds, market hours, upgrade policy, maintenance windows, custom fields,
+  organisation name, audit log and reports. Nothing crosses between them; switching from
+  the header picker is instant with no re-upload, and the choice survives a reload.
+  Downloads from a non-default workspace are prefixed with its name so files never
+  collide. Managed in Admin → *Workspaces* (create, rename, delete; the default one
+  cannot be deleted). "Reset all data" now applies to the current workspace only.
 - **v61** — **Merge links on hostname + interface**, not just hostname. A hardware/model
   swap renames the host *and* re-numbers the port (`core-1 Gi0/1` → `core-1a Te0/0/0/1`),
   so the link id changes on both halves and a device merge alone leaves two half-length

@@ -662,7 +662,7 @@ th:last-child,td:last-child{padding-right:4px}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v61</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v62</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -670,6 +670,7 @@ th:last-child,td:last-child{padding-right:4px}
       <kbd>Enter</kbd>
     </div>
     <div class="spacer"></div>
+    <div class="role" id="wsPick" title="Workspace — each keeps its own data, thresholds and reports">🗂 <select id="wsSel"></select></div>
     <button class="topbtn" id="demoBtn" title="Generate realistic sample data">✨ Demo data</button>
     <button class="topbtn" id="themeBtn" title="Toggle light / dark">◐</button>
     <button class="topbtn" id="wallBtn" title="NOC wall mode">⛶</button>
@@ -723,11 +724,30 @@ const _intern=new Map();
 function intern(s){let v=_intern.get(s);if(v===undefined){_intern.set(s,s);v=s;}return v;}
 
 /* --------------------------- IndexedDB (kv store) ------------------------- */
-const IDB={db:null,
-  open(){return new Promise((res,rej)=>{const r=indexedDB.open('netpulse',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>{IDB.db=r.result;res();};r.onerror=()=>rej(r.error);});},
-  get(k){return new Promise(res=>{const t=IDB.db.transaction('kv').objectStore('kv').get(k);t.onsuccess=()=>res(t.result);t.onerror=()=>res(undefined);});},
-  put(k,v){return new Promise((res,rej)=>{const t=IDB.db.transaction('kv','readwrite').objectStore('kv').put(v,k);t.onsuccess=()=>res();t.onerror=()=>rej(t.error);});},
-  del(k){return new Promise(res=>{const t=IDB.db.transaction('kv','readwrite').objectStore('kv').delete(k);t.onsuccess=()=>res();t.onerror=()=>res();});}
+/* Workspaces: each one is its OWN IndexedDB database, so two estates (e.g. "RO
+   Internet" and "Corp Core") keep entirely separate uploads, links, thresholds,
+   market hours, maintenance windows, custom fields, audit log and reports —
+   nothing from one can leak into the other's analysis. The workspace registry
+   and the active selection live in the default database, which always exists. */
+const IDB={db:null,root:null,ws:'default',
+  dbName:id=>(id&&id!=='default')?'netpulse::'+id:'netpulse',
+  _open(name){return new Promise((res,rej)=>{const r=indexedDB.open(name,1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});},
+  async open(id){
+    if(!IDB.root)IDB.root=await IDB._open('netpulse');
+    const next=id||'default';
+    if(IDB.db&&IDB.db!==IDB.root)try{IDB.db.close();}catch(e){}
+    IDB.db=next==='default'?IDB.root:await IDB._open(IDB.dbName(next));
+    IDB.ws=next;
+  },
+  _get(db,k){return new Promise(res=>{const t=db.transaction('kv').objectStore('kv').get(k);t.onsuccess=()=>res(t.result);t.onerror=()=>res(undefined);});},
+  _put(db,k,v){return new Promise((res,rej)=>{const t=db.transaction('kv','readwrite').objectStore('kv').put(v,k);t.onsuccess=()=>res();t.onerror=()=>rej(t.error);});},
+  _del(db,k){return new Promise(res=>{const t=db.transaction('kv','readwrite').objectStore('kv').delete(k);t.onsuccess=()=>res();t.onerror=()=>res();});},
+  get(k){return IDB._get(IDB.db,k);},
+  put(k,v){return IDB._put(IDB.db,k,v);},
+  del(k){return IDB._del(IDB.db,k);},
+  rget(k){return IDB._get(IDB.root,k);},                 // registry — always the default db
+  rput(k,v){return IDB._put(IDB.root,k,v);},
+  drop(id){return new Promise(res=>{const r=indexedDB.deleteDatabase(IDB.dbName(id));r.onsuccess=r.onerror=r.onblocked=()=>res();});}
 };
 
 /* --------------------------------- state ---------------------------------- */
@@ -782,8 +802,17 @@ function cfVal(r,key){
 const S={cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],comments:{},ifmeta:{},ifinfo:{},rca:{},watch:[],watchWin:'all',
   role:'Admin', view:'exec', scope:{}, analytics:null, staged:null, aiMode:'tech'};
 
-async function loadAll(){
-  await IDB.open();
+// Everything a workspace owns is cleared before the next one loads, so a value the
+// new workspace has not set (a threshold, an org name) can never be inherited.
+function resetState(){
+  Object.assign(S,{cfg:structuredClone(DEFAULT_CFG),samples:[],batches:[],audit:[],maintenance:[],
+    comments:{},ifmeta:{},ifinfo:{},rca:{},watch:[],analytics:null,staged:null,scope:{},uploadQueue:null});
+}
+async function loadAll(wsId){
+  resetState();
+  await IDB.open(wsId);
+  S.workspaces=(await IDB.rget('workspaces'))||[{id:'default',name:'Default'}];
+  S.ws=IDB.ws;
   S.batches=(await IDB.get('batches'))||[];
   // Samples are stored per-batch (key spl:<batchId>) so a commit or a delete only
   // writes/removes its own slice — never re-serializing the whole 6-month dataset.
@@ -810,6 +839,50 @@ async function loadAll(){
   const cfg=await IDB.get('cfg'); if(cfg)S.cfg=Object.assign(structuredClone(DEFAULT_CFG),cfg);
 }
 const save=(k)=>IDB.put(k,S[k==='cfg'?'cfg':k]);
+/* ---- Workspaces ---------------------------------------------------------- */
+const wsList=()=>(S.workspaces&&S.workspaces.length)?S.workspaces:[{id:'default',name:'Default'}];
+const wsName=id=>{const w=wsList().find(w=>w.id===id);return w?w.name:'Default';};
+const wsCur=()=>wsName(S.ws||'default');
+// Filename-safe workspace tag, prefixed onto every download so files from two
+// workspaces never collide in the Downloads folder.
+const wsTag=()=>{const id=S.ws||'default';return id==='default'?'':wsName(id).replace(/[^\w-]+/g,'_').replace(/^_|_$/g,'')+'_';};
+async function wsSave(list){S.workspaces=list;await IDB.rput('workspaces',list);}
+async function wsSwitch(id){
+  if(!id||id===S.ws)return;
+  await IDB.rput('activeWs',id);
+  await loadAll(id);
+  S.view=S.samples.length?'exec':'uploads';
+  render();toast(`Workspace: ${wsName(id)}`);
+}
+async function wsCreate(){
+  const name=(prompt('Name the new workspace — it starts empty and keeps its own data, thresholds and reports.\n\ne.g. “RO Internet” or “Corp Core”')||'').trim();
+  if(!name)return;
+  const id='ws'+Date.now().toString(36);
+  await wsSave([...wsList(),{id,name,created:Date.now()}]);
+  await wsSwitch(id);
+  logAudit('workspace.create',name,'');
+}
+async function wsRename(){
+  const id=S.ws||'default',cur=wsName(id);
+  const name=(prompt('Rename this workspace',cur)||'').trim();
+  if(!name||name===cur)return;
+  const list=wsList().map(w=>w.id===id?{...w,name}:w);
+  if(id==='default'&&!list.some(w=>w.id==='default'))list.unshift({id:'default',name});
+  await wsSave(list);logAudit('workspace.rename',name,'was '+cur);render();toast('Renamed');
+}
+async function wsDelete(){
+  const id=S.ws||'default';
+  if(id==='default')return toast('The default workspace cannot be deleted — use Reset all data instead');
+  const nm=wsName(id);
+  if(!confirm(`Delete the workspace “${nm}” and everything in it — uploads, links, thresholds, maintenance windows, custom fields and audit log?\n\nThis cannot be undone. Other workspaces are untouched.`))return;
+  await wsSave(wsList().filter(w=>w.id!==id));
+  await IDB.rput('activeWs','default');
+  if(IDB.db&&IDB.db!==IDB.root)try{IDB.db.close();}catch(e){}
+  await IDB.drop(id);
+  await loadAll('default');
+  S.view=S.samples.length?'exec':'uploads';
+  render();toast(`Deleted “${nm}”`);
+}
 function logAudit(action,target,detail){S.audit.unshift({ts:Date.now(),who:S.role,action,target:target||'',detail:detail||''});S.audit=S.audit.slice(0,500);save('audit');}
 
 /* ============================ INGESTION LAYER ============================== */
@@ -2912,7 +2985,22 @@ function view_admin(){
       </div>
       <div class="mini" style="margin-top:6px;color:var(--muted)">Use this when a device swap changed <b>both</b> the hostname and the interface name (e.g. <span class="mono">core-1 Gi0/1</span> → <span class="mono">core-1a Te0/0/0/1</span>) — a device merge alone leaves them as two separate links, so the history and the forecast are split. The two histories are joined into one link under the kept identity; a sample whose timestamp already exists there is skipped as a duplicate and the count is reported. Rewrites stored data (re-upload to undo).</div>`;})()}
   </div>
-  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Data management</h2></div><div class="flex"><button class="btn ghost" onclick="exportAll()">⤓ Export all data (JSON)</button><button class="btn ghost" onclick="resetAll()" style="color:var(--errtxt)">Reset all data</button></div></div>`;
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Workspaces</h2><span class="sub">keep two estates analysed separately — e.g. RO Internet vs Corp core</span></div>
+    <div class="small" style="margin-bottom:10px">Each workspace is a completely separate dataset: its own uploads, links, thresholds, market hours, upgrade policy, maintenance windows, custom fields, organisation name, audit log and reports. Nothing crosses between them, and switching is instant — no re-upload. Downloads from a non-default workspace are prefixed with its name so files never collide.</div>
+    <div style="overflow-x:auto"><table style="min-width:520px"><thead><tr><th>Workspace</th><th>Links</th><th>Samples</th><th>Coverage</th></tr></thead><tbody>
+    ${wsList().map(w=>{const me=w.id===(S.ws||'default');
+      const cov=me?(S.samples.length?fmtDate(amin(S.samples.map(x=>x.ts)))+' → '+fmtDate(amax(S.samples.map(x=>x.ts))):'—'):'<span style="color:var(--muted)">switch to view</span>';
+      return `<tr style="cursor:${me?'default':'pointer'}" ${me?'':`onclick="wsSwitch('${esc(w.id)}')"`}><td><b>${esc(w.name)}</b>${me?' <span class="chip">current</span>':''}</td>
+      <td class="mono">${me?A().ifs.length.toLocaleString():'–'}</td><td class="mono">${me?S.samples.length.toLocaleString():'–'}</td><td class="small">${cov}</td></tr>`;}).join('')}
+    </tbody></table></div>
+    <div class="flex" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+      <button class="btn" onclick="wsCreate()">＋ New workspace</button>
+      <button class="btn ghost sm" onclick="wsRename()">Rename “${esc(wsCur())}”</button>
+      ${(S.ws&&S.ws!=='default')?`<button class="btn ghost sm" onclick="wsDelete()" style="color:var(--errtxt)">Delete “${esc(wsCur())}”</button>`:''}
+    </div>
+    <div class="mini" style="margin-top:6px;color:var(--muted)">Stored as separate browser databases on this machine. Deleting a workspace removes only that one; the default workspace cannot be deleted.</div>
+  </div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Data management</h2><span class="sub">applies to the current workspace — ${esc(wsCur())}</span></div><div class="flex"><button class="btn ghost" onclick="exportAll()">⤓ Export all data (JSON)</button><button class="btn ghost" onclick="resetAll()" style="color:var(--errtxt)">Reset all data</button></div></div>`;
 }
 
 /* ------------------------------ report gen -------------------------------- */
@@ -3233,7 +3321,9 @@ function exportTableCSV(sel,name){
   logAudit('table.csv',name||'');toast('CSV downloaded');
 }
 function csvBtn(sel,name){return `<button class="btn sm ghost" onclick="exportTableCSV('${sel}','${name}')">⤓ CSV</button>`;}
-function dl(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;a.click();URL.revokeObjectURL(u);}
+// Every download is prefixed with the workspace name (except the default one), so
+// files from two workspaces are distinguishable and never overwrite each other.
+function dl(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=wsTag()+name;a.click();URL.revokeObjectURL(u);}
 function exportAll(){dl(new Blob([JSON.stringify({batches:S.batches,samples:S.samples,cfg:S.cfg,audit:S.audit},null,0)],{type:'application/json'}),'netpulse_export.json');logAudit('data.export','all');}
 
 function rcaAnswers(r){
@@ -3759,7 +3849,16 @@ document.addEventListener('mouseover',e=>{
   GTIP.style.left=left+'px';GTIP.style.top=Math.max(8,top)+'px';
 });
 document.addEventListener('mouseout',e=>{if(GTIP&&e.target.closest&&e.target.closest('[data-tip]'))GTIP.style.display='none';});
+// Keep the header workspace picker in sync; "＋ New workspace…" is the last option.
+function renderWsPick(){
+  const sel=$('#wsSel');if(!sel)return;
+  const cur=S.ws||'default';
+  sel.innerHTML=wsList().map(w=>`<option value="${esc(w.id)}" ${w.id===cur?'selected':''}>${esc(w.name)}</option>`).join('')
+    +`<option value="__new">＋ New workspace…</option>`;
+  sel.onchange=e=>{const v=e.target.value;e.target.value=cur;if(v==='__new')wsCreate();else wsSwitch(v);};
+}
 function render(){
+  renderWsPick();
   renderNav();
   for(const k in CHARTS)delete CHARTS[k];
   const main=$('#main');const fn=VIEWS[S.view]||view_exec;
@@ -3814,8 +3913,14 @@ function handleQuery(q){
 }
 
 /* -------------------------------- boot ------------------------------------ */
-(async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.genRegReport=genRegReport;window.saveCompliance=saveCompliance;window.setMarketHours=setMarketHours;window.saveForecastCfg=saveForecastCfg;window.setForecastHours=setForecastHours;window.saveClassThresholds=saveClassThresholds;window.exportTableCSV=exportTableCSV;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.doMergeVariants=doMergeVariants;window.setMergeAuto=setMergeAuto;window.mergeDevicesManual=mergeDevicesManual;window.mergeLinksManual=mergeLinksManual;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+(async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}
+  await IDB.open('default');                       // registry lives in the default db
+  let act='default';try{act=(await IDB.rget('activeWs'))||'default';}catch(e){}
+  const reg=(await IDB.rget('workspaces'))||[];
+  if(act!=='default'&&!reg.some(w=>w.id===act))act='default';   // registry and selection disagree
+  await loadAll(act);
+  if(!S.samples.length)S.view='exec';render();})();
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.genRegReport=genRegReport;window.saveCompliance=saveCompliance;window.setMarketHours=setMarketHours;window.saveForecastCfg=saveForecastCfg;window.setForecastHours=setForecastHours;window.saveClassThresholds=saveClassThresholds;window.exportTableCSV=exportTableCSV;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.doMergeVariants=doMergeVariants;window.setMergeAuto=setMergeAuto;window.mergeDevicesManual=mergeDevicesManual;window.mergeLinksManual=mergeLinksManual;window.wsCreate=wsCreate;window.wsSwitch=wsSwitch;window.wsRename=wsRename;window.wsDelete=wsDelete;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
