@@ -59,6 +59,15 @@ reports generated in-browser. Enforced offline by a Content-Security-Policy.
 
 **This session (data-correctness + reporting hardening):**
 
+- **v60** — **Fixed: the chart stopping before the data does.** Maintenance exclusion was
+  stamped onto each sample at *upload* time and never re-evaluated, so a window covering a
+  date range permanently hid those samples from the chart, `Data through`, p95/peak and every
+  report — while the processed-data export still listed them. Maintenance is now evaluated
+  **live** against the current windows (add or delete a window and the data updates
+  immediately, in both directions). Every exclusion is now **stated, not silent**: a notice
+  above the link chart names the count, the reason, the affected dates and the fix; the
+  processed-data export gains an **"Excluded from analytics"** column; the Threshold Breach
+  PDF declares exclusions in its Reporting parameters.
 - **v52** — New per-link **Threshold Breach PDF** (6-month Warning/Critical counts +
   full timestamped detail, market/non-market option, professional sign-off layout).
   **White-labelled** the whole app (removed all BSE/SEBI/NSE/RBI/CERT-In names; org name

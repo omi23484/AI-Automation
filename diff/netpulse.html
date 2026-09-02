@@ -662,7 +662,7 @@ th:last-child,td:last-child{padding-right:4px}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v59</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v60</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1256,8 +1256,10 @@ function coverageOf(samples){
 async function commitOneFile(pf,map,existKeys){
   const batchId='b'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
   const batchSamples=[];
+  // NOTE: maintenance is NOT stamped onto the sample here. It is evaluated live in
+  // computeAnalytics against the current windows, so a window added or deleted after
+  // upload takes effect immediately instead of the sample staying hidden forever.
   for(const x of pf.built.samples){const k=x.ifid+'@'+x.ts;if(existKeys.has(k))continue;x.batch=batchId;
-    if(S.maintenance.length&&S.maintenance.some(m=>m.start<=x.ts&&m.end>=x.ts&&(m.scope==='all'||m.target===x.ifid||m.target===x.dev)))x.maint=1;
     existKeys.add(k);batchSamples.push(x);}
   for(const x of batchSamples)S.samples.push(x);
   await IDB.put('spl:'+batchId,batchSamples);
@@ -1401,6 +1403,13 @@ function mergeDevicesManual(){
   logAudit('data.mergedevices',dst,'from '+src);
   toast(n?`✅ Merged “${src}” into “${dst}” — analytics recomputed`:'Nothing to merge');render();}
 
+// Does this sample fall inside a declared maintenance window right now? Evaluated live
+// so edits to the Maintenance tab apply to already-uploaded data in both directions.
+function inMaintWin(x){
+  const M=S.maintenance;if(!M||!M.length)return false;
+  for(const m of M)if(m.start<=x.ts&&m.end>=x.ts&&(m.scope==='all'||m.target===x.ifid||m.target===x.dev))return true;
+  return false;
+}
 // `win` (optional {from,to}) restricts the input samples to a time window. It runs the
 // exact same pipeline on a narrower input — no separate maths — and the windowed result
 // is returned WITHOUT touching the cached full-history analytics.
@@ -1411,7 +1420,16 @@ function computeAnalytics(win){
     (groups[x.ifid]=groups[x.ifid]||[]).push(x);}
   const ifs=[];
   for(const ifid in groups){
-    let s=groups[ifid].filter(x=>!x.maint).sort((a,b)=>a.ts-b.ts);
+    // Ingested span BEFORE any analytics exclusion — used to reconcile "the export has
+    // rows the chart doesn't". Anything removed below is counted and surfaced, never
+    // silently dropped.
+    const gAll=groups[ifid].sort((a,b)=>a.ts-b.ts);
+    const rawCount=gAll.length,rawStart=gAll[0].ts,rawEnd=gAll.at(-1).ts;
+    // Maintenance is evaluated LIVE against the current windows (it used to be stamped
+    // onto the sample at upload time, so a window added later did nothing and a window
+    // deleted later left those samples excluded from the chart permanently).
+    const maintS=S.maintenance.length?gAll.filter(inMaintWin):[];
+    let s=maintS.length?gAll.filter(x=>!inMaintWin(x)):gAll;
     if(!s.length)continue;
     const dev=s[0].dev,intf=s[0].intf;
     let {cls,impact}=classify(ifid,intf);
@@ -1438,9 +1456,15 @@ function computeAnalytics(win){
       if(distinct.length>1){const first=seq[0],last=seq.at(-1);
         let atTs=null,fromSp=first;for(const x of s){if(x.speed&&x.speed!==fromSp){atTs=x.ts;break;}}
         capChange={distinct:distinct.sort((a,b)=>a-b),first,last,at:atTs,up:last>first};}}
-    const badCount=s.filter(x=>x.bad).length;
+    const badS=s.filter(x=>x.bad),badCount=badS.length;
     s=s.filter(x=>!x.bad);
     if(!s.length)continue;
+    // Coverage reconciliation: what was ingested vs what the charts/analytics show.
+    // If the raw data runs past the analyzed end (a maintenance window covering the
+    // tail, or invalid rows), the link page states it rather than the chart just stopping.
+    const exSpan=a=>a.length?{n:a.length,first:a[0].ts,last:a.at(-1).ts}:null;
+    const excluded={rawCount,rawStart,rawEnd,maint:exSpan(maintS),bad:exSpan(badS),
+      n:maintS.length+badCount,tailGap:rawEnd>s.at(-1).ts?rawEnd:null,headGap:rawStart<s[0].ts?rawStart:null};
     // Over-capacity flag: samples whose utilization exceeds 100% (or the Admin flag level)
     // — kept in all analytics, but the link is flagged so the user can verify/override the
     // capacity in the Upgrade tab (a >100% reading usually means the source capacity is stale).
@@ -1543,7 +1567,7 @@ function computeAnalytics(win){
     // risk
     const growth=forecast.growthMoM;
     const risk=riskScore({p95,avg,pk:pkP95,slope:forecast.slopePerDay,growth,breachesBH:bhDays,anomalies:anomalies.length,impact,speed,cls});
-    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,capChange,overCap,th:tRes,thOff:hasOffBands?tOffRes:null,ip:info.ip,linkname:info.linkname,cf:info.cf||{},badCount,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
+    const rec={ifid,dev,intf,site,cls,impact,tags,speed,speedTx,speedRx,capChange,overCap,th:tRes,thOff:hasOffBands?tOffRes:null,ip:info.ip,linkname:info.linkname,cf:info.cf||{},badCount,excluded,upgradeDays,upgradeNeeded,upgradeRule:ur,samples:s,count:s.length,
       start:s[0].ts,end:s.at(-1).ts,avg,p95,p99,mx,pkP95,pkMax,provisionPeak,dist,breachesBH,bhDays,baseStat,heat,anomalies,daily,forecast,risk};
     rec.verdict=verdictFor(rec);
     rec.ai=aiSummary(rec);
@@ -2129,6 +2153,20 @@ function focusAnomalyIntf(idx){
   else if(an.util!=null)extra=`~${pct1(an.util)}`;
   if(detail)detail.innerHTML=`<div class="ai" style="margin-top:0"><div class="h"><span style="color:${ANOM_COLOR[an.type]||'#fb923c'}">▲</span> ${esc(an.type)}</div><p class="mini" style="font-size:12px">${fmtDate(an.ts)}${extra?'<br>'+extra:''}<br>⬆ marked on the Traffic &amp; Utilization chart with a guide line.</p></div>`;
 }
+/* Why the chart can end before the data does.
+   Samples are excluded from analytics in exactly two cases — a declared maintenance
+   window, and an invalid (negative) reading. Both used to be silent, so the chart
+   simply stopped while the processed-data export still listed the rows. This states
+   it in plain words, with the dates and the fix, right above the chart. */
+function exclNote(r){
+  const e=r.excluded;if(!e||!e.n)return '';
+  const bits=[];
+  if(e.maint)bits.push(`<b>${e.maint.n.toLocaleString()}</b> inside a declared <b>maintenance window</b> (${fmtDate(e.maint.first)} – ${fmtDate(e.maint.last)})`);
+  if(e.bad)bits.push(`<b>${e.bad.n.toLocaleString()}</b> with an <b>invalid (negative)</b> reading (${fmtDate(e.bad.first)} – ${fmtDate(e.bad.last)})`);
+  const tail=e.tailGap?` The uploaded data runs to <b>${fmtDate(e.tailGap)}</b>, but the chart and every figure on this page end at <b>${fmtDate(r.end)}</b> for this reason.`:'';
+  const fix=e.maint?` Remove or shorten the window in <b>Maintenance</b> and this data returns immediately — nothing was deleted.`:'';
+  return `<div class="ai" style="margin:0 0 10px;padding:8px 10px;border-color:var(--warning)"><p class="mini" style="margin:0;font-size:12px;line-height:1.5">⊘ <b>${e.n.toLocaleString()} of ${e.rawCount.toLocaleString()} uploaded samples are excluded from analytics</b> — ${bits.join(' · ')}.${tail}${fix} All of them are still in <b>Download processed data</b>, tagged with the reason.</p></div>`;
+}
 function view_intf(){
   const a=A();const r=a.ifs.find(x=>x.ifid===S.scope.id);
   if(!r)return needData();
@@ -2197,6 +2235,7 @@ function view_intf(){
     <div>
       <div class="panel pad" style="margin-bottom:16px">
         <div class="sec-title"><h2>Traffic &amp; Utilization</h2><span class="sub">${bwSub}${S.maintenance.length?' · maintenance shaded':''}</span></div>
+        ${exclNote(r)}
         ${r.capChange?`<div class="ai" style="margin:0 0 10px;padding:8px 10px"><p class="mini" style="margin:0;font-size:12px;line-height:1.5">↕ <b>Capacity changed</b> in the data: ${r.capChange.distinct.map(v=>fmtBps(v)).join(' → ')}${r.capChange.at?` (around ${fmtDate(r.capChange.at)})`:''}. Each sample's utilization is measured against the capacity in force at that time, so hits, verdicts and the % line are all correct across the change. The link’s stated capacity shows the latest, <b>${fmtBps(r.capChange.last)}</b>.</p></div>`:''}
         ${r.overCap?`<div class="ai" style="margin:0 0 10px;padding:8px 10px;border-color:var(--critical)"><p class="mini" style="margin:0;font-size:12px;line-height:1.5">⚑ <b>Utilization above 100%</b> on <b>${r.overCap.count.toLocaleString()}</b> sample(s) (max <b>${pct1(r.overCap.max)}</b>). Samples are kept and counted — but a &gt;100% reading means the capacity in your file (<b>${r.speed?fmtBps(r.speed):'?'}</b>) is likely stale or this link was upgraded. If so, set the correct <b>Speed override</b> in Link settings below and the % will recompute against the right capacity.</p></div>`:''}
         ${utilChart}
@@ -2490,10 +2529,10 @@ function exportProcessed(fmt){
   const CFS=cfList();
   // per-link custom-field values, resolved once (override wins over file value)
   const cfByIf={};for(const rr of A().ifs){const o={};for(const c of CFS)o[c.key]=cfVal(rr,c.key);cfByIf[rr.ifid]=o;}
-  const hdr=['Device','Interface',...CFS.map(c=>c.label),'Timestamp (local)','Epoch ms','Transmit (Mbps)','Received (Mbps)','Peak Tx (Mbps)','Peak Rx (Mbps)','Capacity Tx (Mbps)','Capacity Rx (Mbps)','Transmit %','Receive %','Utilization % (max)','Peak %','Period','Policy threshold %','Counts as policy hit','Capacity review'];
+  const hdr=['Device','Interface',...CFS.map(c=>c.label),'Timestamp (local)','Epoch ms','Transmit (Mbps)','Received (Mbps)','Peak Tx (Mbps)','Peak Rx (Mbps)','Capacity Tx (Mbps)','Capacity Rx (Mbps)','Transmit %','Receive %','Utilization % (max)','Peak %','Period','Policy threshold %','Counts as policy hit','Capacity review','Excluded from analytics'];
   const rows=[hdr];
   for(const x of use){
-    const bad=!!x.bad,bh=isBH(x.ts);
+    const bad=!!x.bad,bh=isBH(x.ts),mnt=inMaintWin(x);
     const txp=(x.tx!=null&&x.speedTx)?x.tx/x.speedTx:null;
     const rxp=(x.rx!=null&&x.speedRx)?x.rx/x.speedRx:null;
     const hit=!bad&&x.util!=null&&x.util>=thr&&(!ur.businessHoursOnly||bh);
@@ -2504,7 +2543,8 @@ function exportProcessed(fmt){
       txp!=null?+(txp*100).toFixed(2):'',rxp!=null?+(rxp*100).toFixed(2):'',
       x.util!=null?+(x.util*100).toFixed(2):'',x.pu!=null?+(x.pu*100).toFixed(2):'',
       bh?'Market hours':'Non-market hours',ur.utilPct,bad?'invalid (negative)':(hit?'Yes':'No'),
-      (x.util!=null&&x.util>flag)?`⚠ over ${Math.round(flag*100)}% — verify capacity (kept, not dropped)`:'']);
+      (x.util!=null&&x.util>flag)?`⚠ over ${Math.round(flag*100)}% — verify capacity (kept, not dropped)`:'',
+      mnt?'Yes — maintenance window':(bad?'Yes — invalid (negative) reading':'No — included')]);
   }
   if(trunc)rows.push([`NOTE: truncated at ${MAX.toLocaleString()} rows — narrow the date range or pick a single link for the full slice.`]);
   const stamp=new Date().toISOString().slice(0,10),scopeLbl=scope==='all'?'AllLinks':scope.replace(/\W+/g,'_');
@@ -3236,6 +3276,15 @@ function activeTF(ifid){
           to:f.to?new Date(f.to).getTime():Infinity,
           label:(f.from?fmtDate(new Date(f.from).getTime()):'start of data')+' – '+(f.to?fmtDate(new Date(f.to).getTime()):'end of data')};
 }
+// Declared exclusions, stated in the submitted document rather than left implicit —
+// a maintenance period omitted without a note is a reconciliation problem later.
+function exclKv(r,kv){
+  const e=r.excluded;if(!e||!e.n)return '';
+  const parts=[];
+  if(e.maint)parts.push(`${e.maint.n.toLocaleString()} sample(s) inside declared maintenance window(s) (${fmtDate(e.maint.first)} – ${fmtDate(e.maint.last)})`);
+  if(e.bad)parts.push(`${e.bad.n.toLocaleString()} sample(s) with an invalid (negative) reading`);
+  return kv('Excluded from this analysis',parts.join(' · ')+'. Retained in the source data and listed in the processed-data audit export.');
+}
 function breachReportHTML(r,hours,bands){
   const DAY=86400000, winDays=183;                       // default window: last 6 months
   const tf=activeTF(r.ifid);                             // on-screen filter wins when set
@@ -3362,6 +3411,7 @@ function breachReportHTML(r,hours,bands){
   ${kv('Thresholds (market hrs)',`Warning ≥ <b style="color:#b45309">${(th.warn*100).toFixed(0)}%</b> · High ≥ <b style="color:#c2410c">${(th.high*100).toFixed(0)}%</b> · Critical ≥ <b style="color:#e11d48">${(th.crit*100).toFixed(0)}%</b>`)}
   ${tho?kv('Thresholds (non-market hrs)',`Warning ≥ ${(tho.warn*100).toFixed(0)}% · High ≥ ${(tho.high*100).toFixed(0)}% · Critical ≥ ${(tho.crit*100).toFixed(0)}%`):''}
   ${kv('Samples evaluated',samples.length.toLocaleString()+' (utilization = busier direction, max of Transmit/Receive)')}
+  ${exclKv(r,kv)}
   </table>
 
   <h2>Summary — threshold exceedances (last 6 months)</h2>
