@@ -59,6 +59,22 @@ reports generated in-browser. Enforced offline by a Content-Security-Policy.
 
 **This session (data-correctness + reporting hardening):**
 
+- **v63** — **Storage safety + design/accessibility pass.**
+  *Storage:* a refused write (browser quota) used to be a silent unhandled rejection —
+  the screen showed the upload as committed and it was gone on reload. Writes now roll
+  back and say what to free; config saves warn instead of failing quietly; the browser
+  is asked to keep the data rather than evict it; a new **Admin → Storage** panel shows
+  used/quota, per-workspace sizes and a warning band (~18 MB per million samples).
+  Strings are re-interned after loading from IndexedDB (structured-clone had been
+  giving every row its own copy of the device/interface names).
+  *Design:* colour emoji replaced with an inline single-stroke SVG icon set (still
+  fully offline); sibling metric tiles unified onto one panel with hairline dividers;
+  chart Y-axis rounded to readable steps (0/30/60/90/120, not 0/28/57/85/114); KPI
+  footnotes carry a state dot instead of a delta arrow that implied movement.
+  *Bugs found in the pass:* every **risk bar in the app rendered empty** (the fill was
+  an inline `<span>` in a non-flex track, so its width/height were ignored); light-mode
+  secondary text sat at 3.3–3.6:1 against a 4.5:1 requirement; the infrastructure-risk
+  footnote used a different band from its own state colour.
 - **v62** — **Workspaces** — keep two estates analysed separately (e.g. *RO Internet* vs
   *Corp Core*). Each workspace is its own browser database: separate uploads, links,
   thresholds, market hours, upgrade policy, maintenance windows, custom fields,
