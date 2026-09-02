@@ -59,6 +59,15 @@ reports generated in-browser. Enforced offline by a Content-Security-Policy.
 
 **This session (data-correctness + reporting hardening):**
 
+- **v61** — **Merge links on hostname + interface**, not just hostname. A hardware/model
+  swap renames the host *and* re-numbers the port (`core-1 Gi0/1` → `core-1a Te0/0/0/1`),
+  so the link id changes on both halves and a device merge alone leaves two half-length
+  links with a split history and forecast. New picker in Admin → *Device & link identity*
+  merges one whole link identity into another; sample counts and date spans are shown in
+  the picker, overlapping histories are warned about, and per-link overrides, RCA notes,
+  comments and the watchlist follow the merge. A sample whose timestamp already exists on
+  the kept link is skipped as a duplicate (same rule as ingest) and the count is reported.
+  The capacity change across the swap is handled by the existing per-sample capacity logic.
 - **v60** — **Fixed: the chart stopping before the data does.** Maintenance exclusion was
   stamped onto each sample at *upload* time and never re-evaluated, so a window covering a
   date range permanently hid those samples from the chart, `Data through`, p95/peak and every

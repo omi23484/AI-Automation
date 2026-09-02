@@ -662,7 +662,7 @@ th:last-child,td:last-child{padding-right:4px}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v60</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v61</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1381,6 +1381,70 @@ function applyDeviceMerge(map){
   S.analytics=null;
   return keys.length;
 }
+/* ---- Link merge (hostname + interface) -------------------------------------
+   A hardware/model swap renames the HOST *and* re-numbers the port
+   (e.g. "core-sw-1 GigabitEthernet0/1" → "core-sw-1a TenGigE0/0/0/1"), so the
+   link id changes on BOTH halves and a device-level merge cannot stitch the
+   history back together. This merges one whole link identity into another.
+   `map` is { oldIfid -> keptIfid }. Samples, per-link overrides, RCA notes,
+   comments and the watchlist are all re-keyed to the kept link. A sample whose
+   timestamp already exists on the kept link is dropped as a duplicate (same
+   rule as ingest — originals are never overwritten) and the count is reported. */
+function applyLinkMerge(map){
+  const keys=Object.keys(map).filter(k=>map[k]&&map[k]!==k);if(!keys.length)return {links:0,moved:0,dupes:0};
+  // timestamps already present on links that are NOT being moved — the duplicate guard
+  const seen=new Set();
+  for(const x of S.samples)if(!map[x.ifid]||map[x.ifid]===x.ifid)seen.add(x.ifid+'@'+x.ts);
+  const touched=new Set();let moved=0,dupes=0;const keep=[];
+  for(const x of S.samples){
+    const nk=map[x.ifid];
+    if(!nk||nk===x.ifid){keep.push(x);continue;}
+    const k=nk+'@'+x.ts;
+    touched.add(x.batch);
+    if(seen.has(k)){dupes++;continue;}               // kept link already has this timestamp
+    seen.add(k);
+    const [d,i]=splitIfid(nk);
+    x.dev=intern(d);x.intf=intern(i);x.ifid=intern(nk);moved++;keep.push(x);
+  }
+  if(dupes)S.samples=keep;
+  const remap=(obj,merge)=>{for(const k of Object.keys(obj)){const nk=map[k];if(!nk||nk===k)continue;
+    obj[nk]=(nk in obj)?merge(obj[nk],obj[k]):obj[k];delete obj[k];}};
+  remap(S.ifmeta ,(keep,drop)=>({...drop,...keep}));  // kept link's overrides win
+  remap(S.ifinfo ,(keep,drop)=>({...drop,...keep}));
+  remap(S.rca    ,(keep)=>keep);
+  remap(S.comments,(keep,drop)=>[...(drop||[]),...(keep||[])]);
+  S.watch=[...new Set(S.watch.map(id=>map[id]||id))];
+  for(const b of touched)IDB.put('spl:'+b,S.samples.filter(x=>x.batch===b));
+  for(const bt of S.batches){const ss=S.samples.filter(x=>x.batch===bt.id);if(ss.length)bt.entities=new Set(ss.map(x=>x.ifid)).size;}
+  save('ifmeta');save('ifinfo');save('rca');save('comments');IDB.put('watch',S.watch);save('batches');
+  S.analytics=null;
+  return {links:keys.length,moved,dupes};
+}
+// Every link identity in the data, with its sample count and span — the merge pickers
+// show all three so the right side of a rename is unambiguous.
+function allLinkIds(){
+  const m={};
+  for(const x of S.samples){const o=m[x.ifid]=m[x.ifid]||{ifid:x.ifid,dev:x.dev,intf:x.intf,n:0,first:x.ts,last:x.ts};
+    o.n++;if(x.ts<o.first)o.first=x.ts;if(x.ts>o.last)o.last=x.ts;}
+  return Object.values(m).sort((a,b)=>a.dev<b.dev?-1:a.dev>b.dev?1:(a.intf<b.intf?-1:a.intf>b.intf?1:0));
+}
+function mergeLinksManual(){
+  const src=$('#mlSrc').value,dst=$('#mlDst').value;
+  if(!src||!dst)return toast('Pick both links');
+  if(src===dst)return toast('Pick two different links');
+  const all=allLinkIds(),A1=all.find(l=>l.ifid===src),B1=all.find(l=>l.ifid===dst);
+  if(!A1||!B1)return toast('Link not found');
+  // Overlapping history is the one thing worth stopping on: a rename should hand over,
+  // not run in parallel, and overlapping rows would be dropped as duplicates.
+  const overlap=A1.first<=B1.last&&B1.first<=A1.last;
+  const span=l=>fmtDate(l.first)+' → '+fmtDate(l.last);
+  if(!confirm(`Merge link\n\n  ${A1.dev} · ${A1.intf}   (${A1.n.toLocaleString()} samples, ${span(A1)})\n\ninto\n\n  ${B1.dev} · ${B1.intf}   (${B1.n.toLocaleString()} samples, ${span(B1)})\n\n`
+    +(overlap?'⚠ Their histories OVERLAP in time. Samples whose timestamp already exists on the kept link will be dropped as duplicates.\n\n':'')
+    +`The kept identity is “${B1.dev} · ${B1.intf}”. This rewrites stored data (re-upload to undo). Watchlist, per-link overrides and RCA notes are carried over.`))return;
+  const res=applyLinkMerge({[src]:dst});
+  logAudit('data.mergelinks',dst,`from ${src} · ${res.moved} sample(s) moved${res.dupes?`, ${res.dupes} duplicate(s) skipped`:''}`);
+  toast(res.links?`✅ Merged into “${B1.dev} · ${B1.intf}” — ${res.moved.toLocaleString()} sample(s) moved${res.dupes?`, ${res.dupes.toLocaleString()} duplicate timestamp(s) skipped`:''}`:'Nothing to merge');
+  render();}
 function mergeDeviceVariants(){return applyDeviceMerge(deviceAliasMap([...new Set(S.samples.map(x=>x.dev))]));}
 function allDeviceNames(){const c={};for(const x of S.samples)c[x.dev]=(c[x.dev]||0)+1;return Object.keys(c).sort().map(d=>({dev:d,n:c[d]}));}
 function doMergeVariants(){
@@ -2816,7 +2880,7 @@ function view_admin(){
     <div class="mini" style="margin-bottom:10px">The threshold and format must be validated by your compliance team against the current applicable circulars — NetPulse provides the data and structure.</div>
     <button class="btn" onclick="saveCompliance()">Save compliance settings</button>
   </div>
-  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Device-name variants</h2><span class="sub">data hygiene — merge one interface split across a short hostname and its FQDN</span></div>
+  <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Device &amp; link identity</h2><span class="sub">data hygiene — rejoin one link split across renamed hostnames or re-numbered ports</span></div>
   ${(()=>{const fams=S.samples.length?deviceVariantFamilies():[];
     if(!fams.length)return `<div class="small" style="color:var(--muted)">No device-name variants detected — every host uses one consistent name. 👍</div>`;
     return `<div class="small" style="margin-bottom:10px">${fams.length} host(s) appear under more than one device name, so their interfaces are split into separate links. Merging keys all data — plus watchlist, overrides and RCA notes — to the shortest name:</div>
@@ -2836,6 +2900,17 @@ function view_admin(){
         <button class="btn sm" onclick="mergeDevicesManual()" style="margin-bottom:1px">Merge devices</button>
       </div>
       <div class="mini" style="margin-top:6px;color:var(--muted)">No name-similarity guard — merges exactly the two you pick. Interfaces with the same name combine; the rest move under the kept device. Rewrites stored data (re-upload to undo).</div>`;})()}
+    ${(()=>{const ls=S.samples.length?allLinkIds():[];if(ls.length<2)return '';
+      const p2=n=>String(n).padStart(2,'0');
+      const dt=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`;};
+      const opts=sel=>ls.map((l,i)=>`<option value="${esc(l.ifid)}" ${sel===i?'selected':''}>${esc(l.dev)} · ${esc(l.intf)} — ${l.n.toLocaleString()} · ${dt(l.first)}→${dt(l.last)}</option>`).join('');
+      return `<div class="sec-title" style="margin-top:18px"><h2 style="font-size:13px">Manual merge — any two links (hostname + interface)</h2><span class="sub">for a hardware/model swap where the port was re-numbered too</span></div>
+      <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <label class="fld" style="margin:0;min-width:330px"><span>Merge this link…</span><select id="mlSrc">${opts(0)}</select></label>
+        <label class="fld" style="margin:0;min-width:330px"><span>…into (the identity kept)</span><select id="mlDst">${opts(1)}</select></label>
+        <button class="btn sm" onclick="mergeLinksManual()" style="margin-bottom:1px">Merge links</button>
+      </div>
+      <div class="mini" style="margin-top:6px;color:var(--muted)">Use this when a device swap changed <b>both</b> the hostname and the interface name (e.g. <span class="mono">core-1 Gi0/1</span> → <span class="mono">core-1a Te0/0/0/1</span>) — a device merge alone leaves them as two separate links, so the history and the forecast are split. The two histories are joined into one link under the kept identity; a sample whose timestamp already exists there is skipped as a duplicate and the count is reported. Rewrites stored data (re-upload to undo).</div>`;})()}
   </div>
   <div class="panel pad" style="margin-top:16px"><div class="sec-title"><h2>Data management</h2></div><div class="flex"><button class="btn ghost" onclick="exportAll()">⤓ Export all data (JSON)</button><button class="btn ghost" onclick="resetAll()" style="color:var(--errtxt)">Reset all data</button></div></div>`;
 }
@@ -3740,7 +3815,7 @@ function handleQuery(q){
 
 /* -------------------------------- boot ------------------------------------ */
 (async function(){try{applyTheme(localStorage.getItem('np-theme')||'dark')}catch(e){}await loadAll();if(!S.samples.length)S.view='exec';render();})();
-window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.genRegReport=genRegReport;window.saveCompliance=saveCompliance;window.setMarketHours=setMarketHours;window.saveForecastCfg=saveForecastCfg;window.setForecastHours=setForecastHours;window.saveClassThresholds=saveClassThresholds;window.exportTableCSV=exportTableCSV;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.doMergeVariants=doMergeVariants;window.setMergeAuto=setMergeAuto;window.mergeDevicesManual=mergeDevicesManual;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
+window.genDemo=genDemo;window.go=go;window.commitStaged=commitStaged;window.genReport=genReport;window.exportReport=exportReport;window.exportAll=exportAll;window.askRCA=askRCA;window.addComment=addComment;window.addMaint=addMaint;window.delMaint=delMaint;window.saveThresholds=saveThresholds;window.saveIfMeta=saveIfMeta;window.resetIfMeta=resetIfMeta;window.saveRCA=saveRCA;window.resetRCA=resetRCA;window.setAiMode=setAiMode;window.exportLink=exportLink;window.genUpgradePolicyXlsx=genUpgradePolicyXlsx;window.genRegReport=genRegReport;window.saveCompliance=saveCompliance;window.setMarketHours=setMarketHours;window.saveForecastCfg=saveForecastCfg;window.setForecastHours=setForecastHours;window.saveClassThresholds=saveClassThresholds;window.exportTableCSV=exportTableCSV;window.setWatchWin=setWatchWin;window.watchAdd=watchAdd;window.watchAddAll=watchAddAll;window.watchRemove=watchRemove;window.watchClear=watchClear;window.focusAnomaly=focusAnomaly;window.focusAnomalyIntf=focusAnomalyIntf;window.applyTimeFilter=applyTimeFilter;window.clearTimeFilter=clearTimeFilter;window.lmSet=lmSet;window.lmSetTh=lmSetTh;window.lmSetThOff=lmSetThOff;window.removeBatch=removeBatch;window.savePlanning=savePlanning;window.saveUpgrade=saveUpgrade;window.doMergeVariants=doMergeVariants;window.setMergeAuto=setMergeAuto;window.mergeDevicesManual=mergeDevicesManual;window.mergeLinksManual=mergeLinksManual;window.cancelStaged=cancelStaged;window.remap=remap;window.resetAll=resetAll;window.S=S;
 </script>
 </body>
 </html>
