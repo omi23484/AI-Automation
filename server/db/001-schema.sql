@@ -2,29 +2,17 @@
    NetPulse — SQL Server schema (001)
 
    Target from the sizing decision: thousands of interfaces, 100M+ samples,
-   growing. So the fact table is partitioned by month from the start and the
-   interactive path reads rollups, never raw (spec doc 19 §1).
+   growing. One clustered fact table plus a daily rollup for fleet-wide views.
+
+   Deliberately NOT here: month partitioning (a retention feature, and retention
+   is undecided), an hourly rollup tier, and a dirty-set table. A clustered index
+   on (InterfaceId, TsUtc) already answers single-link range queries without them,
+   and each can be added later without reshaping anything.
 
    NOT YET EXECUTED. No SQL Server instance was available where this was written,
    so this script has been reviewed but never run. Run it against an empty
    database and expect to correct small things before trusting it.
    ============================================================================= */
-
-/* ---------------------------------------------------------------- partitioning
-   One partition per month. RIGHT range: a boundary value belongs to the
-   partition to its right, so '2026-02-01' starts February rather than closing
-   January — the arrangement that makes SPLIT/MERGE cheap at the tail. */
-CREATE PARTITION FUNCTION pfSampleMonth (datetime2(0))
-AS RANGE RIGHT FOR VALUES (
-  '2025-01-01','2025-02-01','2025-03-01','2025-04-01','2025-05-01','2025-06-01',
-  '2025-07-01','2025-08-01','2025-09-01','2025-10-01','2025-11-01','2025-12-01',
-  '2026-01-01','2026-02-01','2026-03-01','2026-04-01','2026-05-01','2026-06-01',
-  '2026-07-01','2026-08-01','2026-09-01','2026-10-01','2026-11-01','2026-12-01',
-  '2027-01-01'
-);
-GO
-CREATE PARTITION SCHEME psSampleMonth AS PARTITION pfSampleMonth ALL TO ([PRIMARY]);
-GO
 
 /* -------------------------------------------------------------------- entities */
 CREATE TABLE dbo.Site (
@@ -125,12 +113,10 @@ CREATE TABLE dbo.Sample (
   BatchId      uniqueidentifier NOT NULL,
   QualityFlags tinyint      NOT NULL CONSTRAINT DF_Sample_Flags DEFAULT 0,
                                     -- bit0 invalid(negative)  bit1 over-capacity
-  CONSTRAINT PK_Sample PRIMARY KEY CLUSTERED (InterfaceId, TsUtc) ON psSampleMonth(TsUtc),
+  CONSTRAINT PK_Sample PRIMARY KEY CLUSTERED (InterfaceId, TsUtc),
   CONSTRAINT FK_Sample_Interface FOREIGN KEY (InterfaceId) REFERENCES dbo.Interface(InterfaceId),
   CONSTRAINT FK_Sample_Batch FOREIGN KEY (BatchId) REFERENCES dbo.UploadBatch(BatchId)
-) ON psSampleMonth(TsUtc);
-GO
-ALTER TABLE dbo.Sample REBUILD PARTITION = ALL WITH (DATA_COMPRESSION = PAGE);
+) WITH (DATA_COMPRESSION = PAGE);
 GO
 
 /* Maintenance windows are NOT stamped onto samples. That mistake was made in the
@@ -155,32 +141,15 @@ GO
 CREATE INDEX IX_Maint_Range ON dbo.MaintenanceWindow(StartUtc, EndUtc) INCLUDE (Scope, DeviceId, InterfaceId);
 GO
 
-/* --------------------------------------------------------------------- rollups
-   The interactive path reads only these. StateSeconds* carry the time-in-band
-   breakdown so "how long was it above warning" needs no raw scan (spec 08 §2). */
-CREATE TABLE dbo.RollupHour (
-  InterfaceId     bigint       NOT NULL,
-  BucketUtc       datetime2(0) NOT NULL,
-  SampleCount     int          NOT NULL,
-  AvgUtil         float        NULL,
-  MaxUtil         float        NULL,
-  MinUtil         float        NULL,
-  P95Util         float        NULL,
-  P99Util         float        NULL,
-  AvgTxBps        float        NULL,
-  AvgRxBps        float        NULL,
-  MaxTxBps        float        NULL,
-  MaxRxBps        float        NULL,
-  StateSecondsNormal   int NOT NULL CONSTRAINT DF_RH_Normal   DEFAULT 0,
-  StateSecondsWarning  int NOT NULL CONSTRAINT DF_RH_Warning  DEFAULT 0,
-  StateSecondsHigh     int NOT NULL CONSTRAINT DF_RH_High     DEFAULT 0,
-  StateSecondsCritical int NOT NULL CONSTRAINT DF_RH_Critical DEFAULT 0,
-  ExcludedCount   int NOT NULL CONSTRAINT DF_RH_Excluded DEFAULT 0,
-  ComputedUtc     datetime2(0) NOT NULL CONSTRAINT DF_RH_Computed DEFAULT SYSUTCDATETIME(),
-  CONSTRAINT PK_RollupHour PRIMARY KEY CLUSTERED (InterfaceId, BucketUtc)
-);
-GO
+/* ---------------------------------------------------------------- daily rollup
+   Earns its place for fleet-wide views only: those scan every link over the whole
+   window, which is the one query the clustered index cannot serve cheaply. A
+   single link's chart reads raw and is fast.
 
+   ponytail: rebuilt by one nightly full MERGE, not incrementally. At ~100M
+   samples that is a few minutes of a maintenance window. Move to an incremental
+   dirty-set rebuild when that stops being true, or when rollups must be fresh
+   within the day. */
 CREATE TABLE dbo.RollupDay (
   InterfaceId     bigint NOT NULL,
   BucketDate      date   NOT NULL,
@@ -198,16 +167,6 @@ CREATE TABLE dbo.RollupDay (
   ExcludedCount   int NOT NULL CONSTRAINT DF_RD_Excluded DEFAULT 0,
   ComputedUtc     datetime2(0) NOT NULL CONSTRAINT DF_RD_Computed DEFAULT SYSUTCDATETIME(),
   CONSTRAINT PK_RollupDay PRIMARY KEY CLUSTERED (InterfaceId, BucketDate)
-);
-GO
-
-/* Dirty set: a commit records which (interface, day) pairs changed so only those
-   rollups recompute. Cost tracks new data, not total data. */
-CREATE TABLE dbo.RollupDirty (
-  InterfaceId bigint NOT NULL,
-  BucketDate  date   NOT NULL,
-  QueuedUtc   datetime2(0) NOT NULL CONSTRAINT DF_Dirty_Queued DEFAULT SYSUTCDATETIME(),
-  CONSTRAINT PK_RollupDirty PRIMARY KEY CLUSTERED (InterfaceId, BucketDate)
 );
 GO
 

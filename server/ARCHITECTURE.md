@@ -9,7 +9,7 @@ This supersedes the browser build's per-user storage; the browser app in
 | # | Decision | Chosen | Consequence |
 |---|---|---|---|
 | 1 | Runtime | **ASP.NET Core 8 + SQL Server** | Native to IIS; one runtime to patch. The analytics engine is ported from JavaScript to C#, so every number must be proven identical — see *Numeric parity*. |
-| 2 | Scale | **Thousands of links, 100M+ samples, growing** | Fact table partitioned by month from day one; the interactive path reads rollups, never raw; rollups recompute incrementally from a dirty set. |
+| 2 | Scale | **Thousands of links, 100M+ samples, growing** | One clustered fact table plus a daily rollup for fleet-wide views. Month partitioning, an hourly tier and incremental dirty-set recompute were cut — see *What was deliberately left out*. |
 | 3 | Visibility | **Everyone sees everything** | No scope filter on queries yet. `Interface.ScopeKey` exists and is indexed so per-team or per-customer scoping can be added later without reshaping the schema or rewriting history. |
 | 4 | Authentication | **Local accounts in the app** | Built on ASP.NET Core Identity, so password hashing (PBKDF2), lockout, and reset flows are the framework's audited implementation rather than hand-rolled. See *Security notes*. |
 
@@ -119,14 +119,24 @@ DELETE on it, so an administrator cannot rewrite history either.
 |---|---|
 | `NetPulse.Analytics` — statistics, forecast, risk, states | **Built and parity-tested** (36 tests green, mutation-checked) |
 | `db/001-schema.sql` | **Written, never executed** — no SQL Server was available. Review before trusting. |
-| Ingestion (server-side XLSX parse → staging → MERGE → dirty set) | Not started |
-| Rollup builder | Not started |
+| Ingestion (server-side XLSX parse → staging → MERGE) | Not started |
+| Nightly rollup MERGE | Not started |
 | Verdict engine, anomaly detection | Not started (ports of `verdictFor`, the day×hour z-score baseline) |
 | ASP.NET Core API + Identity | Not started |
 | Frontend against the API | Not started |
 
 Everything marked *not started* is ordinary web work. The risky part — proving the
 numbers survive the move off JavaScript — is done and defended by tests.
+
+## What was deliberately left out
+
+| Cut | Why | Add when |
+|---|---|---|
+| Month partitioning of `Sample` | It buys cheap archival, which is a retention feature, and retention is undecided. A clustered index on `(InterfaceId, TsUtc)` answers the queries without it. | Retention is agreed and old months need switching out. |
+| Hourly rollup tier | The forecast reads daily p95; a single link's chart reads raw off the clustered index and is fast. Nothing asked for an hourly tier. | A view appears that scans many links at hourly resolution. |
+| Dirty-set incremental rollup | One nightly full MERGE is a few minutes at 100M samples. The dirty set is an optimisation for a job nobody is waiting on. | The nightly rebuild stops fitting its window, or rollups must be fresh within the day. |
+
+Each is additive — none requires reshaping the schema or rewriting history.
 
 ## Open questions
 
