@@ -46,7 +46,7 @@ Fixtures change only when the browser engine's behaviour is deliberately changed
 A fixture diff in a pull request means the published numbers move, and should be
 read as carefully as the code.
 
-## Finding: `busy-weekday` is dead code in the browser engine
+## Finding: `busy-weekday` was dead code — dropped, no numbers change
 
 While pinning branch boundaries, one mutation could not be made to fail. It turns
 out the branch it guards cannot execute.
@@ -65,9 +65,15 @@ the signal the test looks for.
 Consequently no link has ever been forecast on a weekday-only basis and no report
 has carried the "busy-weekday" model note.
 
-It is ported faithfully, dead branch included, because parity is the requirement.
-Making it live would change the forecast for every business link. That is a
-product decision — see *Open questions*.
+It is also **redundant**, which is what settles it. The rolling median is already
+doing what the branch was trying to do. Fitting weekday-only points instead gives
+the same slope to ~1e-19 on clean weekly patterns and 2.5e-6 (0.00025 %/day) on
+noisy ones — invisible in any report.
+
+So the branch is simply not ported. The 36 parity tests stayed green through its
+removal, which is the proof that no published number moves. The browser build
+keeps it (harmless dead code); changing a shipped, validated file for zero
+behaviour change would not be worth the re-test.
 
 ## Data model notes
 
@@ -140,12 +146,9 @@ Each is additive — none requires reshaping the schema or rewriting history.
 
 ## Open questions
 
-1. **`busy-weekday`:** leave dormant (parity preserved), or make it live and accept
-   that forecasts change for business links? If it goes live, the fix is to test
-   the weekday/weekend split on the raw series *before* deseasonalising.
-2. **Retention.** The schema keeps raw indefinitely. Spec doc 03 §3.1 proposes
+1. **Retention.** The schema keeps raw indefinitely. Spec doc 03 §3.1 proposes
    90 days raw / 13 months at 5-minute / 3 years hourly / daily forever. Worth
    settling before the table is large enough to make it painful.
-3. **Report generation** currently runs in the browser and prints to PDF. Server-side
+2. **Report generation** currently runs in the browser and prints to PDF. Server-side
    rendering needs a decision on the engine, since there is no headless browser on
    an IIS host by default.

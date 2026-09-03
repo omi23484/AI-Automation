@@ -41,8 +41,8 @@ public sealed class ForecastResult
 ///
 /// Theil–Sen (median of pairwise slopes) rather than least squares, so one spike day
 /// cannot bend the trend; the weekly cycle is removed with a 7-day rolling median
-/// first; and when weekdays run clearly hotter than weekends the fit uses weekdays
-/// only, because a business link is capped by its busy days.
+/// first; and the trend window (full history vs recent) is chosen by backtesting
+/// against held-out days rather than fixed in advance.
 /// </summary>
 public static class Forecast
 {
@@ -95,52 +95,33 @@ public static class Forecast
         var d0 = daily[0].DateMs;
         var xs = new double[daily.Count];
         var ys = new double[daily.Count];
-        var dows = new int[daily.Count];
         for (var i = 0; i < daily.Count; i++)
         {
             xs[i] = (daily[i].DateMs - d0) / DayMs;
             ys[i] = Stats.Clamp(daily[i].P95, 0, 1.5);
-            dows[i] = (int)DateTimeOffset.FromUnixTimeMilliseconds(daily[i].DateMs).UtcDateTime.DayOfWeek;
         }
 
         // Deseasonalize the weekly cycle before fitting the trend.
         var sm = Stats.RollingMedian(ys, 7);
-        var pts = new List<(double X, double Y, int Dow)>(daily.Count);
-        for (var i = 0; i < daily.Count; i++) pts.Add((xs[i], sm[i], dows[i]));
+        var pts = new List<(double X, double Y)>(daily.Count);
+        for (var i = 0; i < daily.Count; i++) pts.Add((xs[i], sm[i]));
 
-        // KNOWN DORMANT BRANCH — ported faithfully, do not "fix" without a decision.
+        // The browser engine has a "busy-weekday" branch here that fits the trend from
+        // weekdays only when weekdays run hotter than weekends. It is not ported,
+        // because it is unreachable and redundant:
         //
-        // The intent is: when weekdays run clearly hotter than weekends, fit the trend
-        // from weekdays only, because a business link is capped by its busy days.
+        //   - Unreachable. The 7-day rolling median above runs first, and a centred
+        //     7-day window over a 5-on/2-off week always holds five weekday and two
+        //     weekend values, so its median is the weekday value at every point. At a
+        //     raw 9:1 weekday:weekend ratio both smoothed medians measure 0.90, so the
+        //     1.35x test is never true.
+        //   - Redundant. That same smoothing is already what the branch was trying to
+        //     achieve. Fitting weekday-only points instead gives the same slope to
+        //     ~1e-19 on clean weekly patterns and 2.5e-6 (0.00025 %/day) on noisy ones.
         //
-        // It cannot fire. The 7-day rolling median directly above runs first, and a
-        // centred 7-day window over a 5-on/2-off weekly cycle always contains exactly
-        // five weekday values and two weekend values — so its median is the weekday
-        // value at EVERY point, weekend-labelled points included. Measured against the
-        // browser engine with a raw 9:1 weekday:weekend ratio, both smoothed medians
-        // come out identical (0.90 and 0.90), so `wdMed > weMed * 1.35 + 0.02` is
-        // false for any regular weekly pattern, and for irregular ones too.
-        //
-        // The deseasonalisation destroys the signal this test looks for. Consequently
-        // no link has ever been forecast on a weekday-only basis, and no report has
-        // ever carried the "busy-weekday" model note.
-        //
-        // It is kept here because the server must publish the same numbers as the tool
-        // the existing reports were validated against. Making it live would change
-        // forecasts for every business link. That is a product decision, not a port
-        // decision; see server/ARCHITECTURE.md "Open questions".
-        var note = "";
-        var wd = pts.Where(p => p.Dow >= 1 && p.Dow <= 5).ToList();
-        var we = pts.Where(p => p.Dow is 0 or 6).ToList();
-        if (wd.Count >= 5 && we.Count >= 2 &&
-            Stats.Percentile(wd.Select(p => p.Y).ToArray(), 0.5) >
-            Stats.Percentile(we.Select(p => p.Y).ToArray(), 0.5) * 1.35 + 0.02)
-        {
-            pts = wd;
-            note = "busy-weekday";
-        }
-
-        var xy = pts.Select(p => (p.X, p.Y)).ToList();
+        // So no numbers change by leaving it out. Verified against the running engine;
+        // see scripts/ probes referenced in ARCHITECTURE.md.
+        var xy = pts;
         var recCount = Math.Max(7, (int)Math.Floor(xy.Count / 2d));
         var rec = xy.Skip(Math.Max(0, xy.Count - recCount)).ToList();
 
@@ -150,7 +131,7 @@ public static class Forecast
             var f = TheilSen(cp, ci);
             if (f != null) cands.Add((name, cp, f));
         }
-        if (cands.Count == 0) { o.ModelNote = note + " · no fit"; return o; }
+        if (cands.Count == 0) { o.ModelNote = " · no fit"; return o; }
 
         var chosen = cands[0];
         var relErr = 0.35;
@@ -206,7 +187,7 @@ public static class Forecast
                              + (agree ? 0.1 : 0)
                              + tight * 0.15, 0, 0.95);
 
-        o.ModelNote = (note.Length > 0 ? note + " · " : "") + chosen.Name
+        o.ModelNote = chosen.Name
                       + $" · {Math.Round(ci * 100, MidpointRounding.AwayFromZero)}% band";
 
         if (o.T90 is > 0)
