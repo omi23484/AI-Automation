@@ -1,0 +1,328 @@
+{
+ "cfg": {
+  "forecastCI": 0.8,
+  "upgradeLeadDays": 42,
+  "riskWeights": {
+   "peak": 0.3,
+   "avg": 0.15,
+   "trend": 0.2,
+   "growth": 0.15,
+   "violations": 0.12,
+   "anomaly": 0.08
+  }
+ },
+ "cases": [
+  {
+   "name": "idle-low",
+   "cfg": {
+    "forecastCI": 0.8,
+    "upgradeLeadDays": 42,
+    "riskWeights": {
+     "peak": 0.3,
+     "avg": 0.15,
+     "trend": 0.2,
+     "growth": 0.15,
+     "violations": 0.12,
+     "anomaly": 0.08
+    }
+   },
+   "input": {
+    "p95": 0.05,
+    "avg": 0.03,
+    "pk": 0.09,
+    "slope": 0,
+    "growth": 0,
+    "breachesBH": 0,
+    "anomalies": 0,
+    "impact": "Low",
+    "speed": 1000000000,
+    "cls": "Backup"
+   },
+   "result": {
+    "score": 1,
+    "factors": {
+     "Peak util": 0.010305303055969077,
+     "Avg util": 0.0011067792686322137,
+     "Trend": 0,
+     "Growth": 0,
+     "Violations": 0,
+     "Anomalies": 0
+    },
+    "impactMul": 0.65
+   }
+  },
+  {
+   "name": "busy-critical",
+   "cfg": {
+    "forecastCI": 0.8,
+    "upgradeLeadDays": 42,
+    "riskWeights": {
+     "peak": 0.3,
+     "avg": 0.15,
+     "trend": 0.2,
+     "growth": 0.15,
+     "violations": 0.12,
+     "anomaly": 0.08
+    }
+   },
+   "input": {
+    "p95": 0.88,
+    "avg": 0.71,
+    "pk": 0.97,
+    "slope": 0.002,
+    "growth": 0.22,
+    "breachesBH": 9,
+    "anomalies": 3,
+    "impact": "Critical",
+    "speed": 10000000000,
+    "cls": "Trading"
+   },
+   "result": {
+    "score": 84,
+    "factors": {
+     "Peak util": 0.2874760591296731,
+     "Avg util": 0.09286518906696789,
+     "Trend": 0.048,
+     "Growth": 0.11,
+     "Violations": 0.07714285714285715,
+     "Anomalies": 0.06
+    },
+    "impactMul": 1.25
+   }
+  },
+  {
+   "name": "growing-medium",
+   "cfg": {
+    "forecastCI": 0.8,
+    "upgradeLeadDays": 42,
+    "riskWeights": {
+     "peak": 0.3,
+     "avg": 0.15,
+     "trend": 0.2,
+     "growth": 0.15,
+     "violations": 0.12,
+     "anomaly": 0.08
+    }
+   },
+   "input": {
+    "p95": 0.55,
+    "avg": 0.4,
+    "pk": 0.68,
+    "slope": 0.0012,
+    "growth": 0.31,
+    "breachesBH": 2,
+    "anomalies": 1,
+    "impact": "Medium",
+    "speed": 1000000000,
+    "cls": "WAN"
+   },
+   "result": {
+    "score": 37,
+    "factors": {
+     "Peak util": 0.1748371556428469,
+     "Avg util": 0.04158869058930879,
+     "Trend": 0.0288,
+     "Growth": 0.15,
+     "Violations": 0.01714285714285714,
+     "Anomalies": 0.02
+    },
+    "impactMul": 0.85
+   }
+  },
+  {
+   "name": "negative-trend",
+   "cfg": {
+    "forecastCI": 0.8,
+    "upgradeLeadDays": 42,
+    "riskWeights": {
+     "peak": 0.3,
+     "avg": 0.15,
+     "trend": 0.2,
+     "growth": 0.15,
+     "violations": 0.12,
+     "anomaly": 0.08
+    }
+   },
+   "input": {
+    "p95": 0.62,
+    "avg": 0.48,
+    "pk": 0.75,
+    "slope": -0.003,
+    "growth": -0.4,
+    "breachesBH": 0,
+    "anomalies": 0,
+    "impact": "High",
+    "speed": 1000000000,
+    "cls": "Core"
+   },
+   "result": {
+    "score": 27,
+    "factors": {
+     "Peak util": 0.20054277652117536,
+     "Avg util": 0.05368203753395546,
+     "Trend": 0,
+     "Growth": 0,
+     "Violations": 0,
+     "Anomalies": 0
+    },
+    "impactMul": 1.05
+   }
+  },
+  {
+   "name": "no-peak",
+   "cfg": {
+    "forecastCI": 0.8,
+    "upgradeLeadDays": 42,
+    "riskWeights": {
+     "peak": 0.3,
+     "avg": 0.15,
+     "trend": 0.2,
+     "growth": 0.15,
+     "violations": 0.12,
+     "anomaly": 0.08
+    }
+   },
+   "input": {
+    "p95": 0.44,
+    "avg": 0.3,
+    "pk": null,
+    "slope": 0.0008,
+    "growth": 0.1,
+    "breachesBH": 1,
+    "anomalies": 0,
+    "impact": "High",
+    "speed": 1000000000,
+    "cls": "Core"
+   },
+   "result": {
+    "score": 21,
+    "factors": {
+     "Peak util": 0.0950506304520121,
+     "Avg util": 0.027801038275533537,
+     "Trend": 0.019200000000000002,
+     "Growth": 0.05,
+     "Violations": 0.00857142857142857,
+     "Anomalies": 0
+    },
+    "impactMul": 1.05
+   }
+  },
+  {
+   "name": "all-zero",
+   "cfg": {
+    "forecastCI": 0.8,
+    "upgradeLeadDays": 42,
+    "riskWeights": {
+     "peak": 0.3,
+     "avg": 0.15,
+     "trend": 0.2,
+     "growth": 0.15,
+     "violations": 0.12,
+     "anomaly": 0.08
+    }
+   },
+   "input": {
+    "p95": 0,
+    "avg": 0,
+    "pk": 0,
+    "slope": 0,
+    "growth": 0,
+    "breachesBH": 0,
+    "anomalies": 0,
+    "impact": "Low",
+    "speed": 1000000000,
+    "cls": "Backup"
+   },
+   "result": {
+    "score": 0,
+    "factors": {
+     "Peak util": 0,
+     "Avg util": 0,
+     "Trend": 0,
+     "Growth": 0,
+     "Violations": 0,
+     "Anomalies": 0
+    },
+    "impactMul": 0.65
+   }
+  },
+  {
+   "name": "all-saturated",
+   "cfg": {
+    "forecastCI": 0.8,
+    "upgradeLeadDays": 42,
+    "riskWeights": {
+     "peak": 0.3,
+     "avg": 0.15,
+     "trend": 0.2,
+     "growth": 0.15,
+     "violations": 0.12,
+     "anomaly": 0.08
+    }
+   },
+   "input": {
+    "p95": 1.4,
+    "avg": 1.3,
+    "pk": 1.6,
+    "slope": 0.05,
+    "growth": 2,
+    "breachesBH": 60,
+    "anomalies": 40,
+    "impact": "Critical",
+    "speed": 1000000000,
+    "cls": "Trading"
+   },
+   "result": {
+    "score": 100,
+    "factors": {
+     "Peak util": 0.3,
+     "Avg util": 0.15,
+     "Trend": 0.2,
+     "Growth": 0.15,
+     "Violations": 0.12,
+     "Anomalies": 0.08
+    },
+    "impactMul": 1.25
+   }
+  },
+  {
+   "name": "negative-growth",
+   "cfg": {
+    "forecastCI": 0.8,
+    "upgradeLeadDays": 42,
+    "riskWeights": {
+     "peak": 0.3,
+     "avg": 0.15,
+     "trend": 0.2,
+     "growth": 0.15,
+     "violations": 0.12,
+     "anomaly": 0.08
+    }
+   },
+   "input": {
+    "p95": 0.5,
+    "avg": 0.4,
+    "pk": 0.6,
+    "slope": -0.01,
+    "growth": -1.5,
+    "breachesBH": 0,
+    "anomalies": 0,
+    "impact": "Medium",
+    "speed": 1000000000,
+    "cls": "WAN"
+   },
+   "result": {
+    "score": 16,
+    "factors": {
+     "Peak util": 0.14673475972906608,
+     "Avg util": 0.04158869058930879,
+     "Trend": 0,
+     "Growth": 0,
+     "Violations": 0,
+     "Anomalies": 0
+    },
+    "impactMul": 0.85
+   }
+  }
+ ]
+}
