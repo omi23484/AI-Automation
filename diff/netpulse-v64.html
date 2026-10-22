@@ -711,11 +711,23 @@ input[type="date"]:hover::-webkit-calendar-picker-indicator{opacity:.8}
 .navitem .badge{background:#c9261c;color:#fff;font-weight:700;animation:none}
 /* WCAG 2.2 target size (AA) is 24×24; the small buttons sat at 23px */
 .btn.sm,.topbtn,select,input,.tabs button{min-height:24px}
+/* multi-link report picker */
+.mllist{max-height:340px;overflow:auto;border:1px solid var(--stroke);border-radius:12px;background:var(--panel)}
+.mlrow{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--stroke);cursor:pointer;transition:background .15s ease}
+.mlrow:first-child{border-top:0}
+.mlrow:hover{background:var(--panel2)}
+.mlrow input{width:auto;margin:0;flex:none}
+.mlrow .nm{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mlrow .mini{margin-left:auto;white-space:nowrap}
+.mlck{display:flex;align-items:flex-start;gap:9px;margin:6px 0;font-weight:500;cursor:pointer;line-height:1.35}
+.mlck input{width:auto;margin:3px 0 0;flex:none}
+.mlck>span{min-width:0}
+.mlck .mini{font-weight:400}
 </style>
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v63</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v64</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -2983,6 +2995,7 @@ function view_reports(){
   const scopeLabel=r=>`${esc(r.dev)} ${esc(r.intf)}${r.linkname?' · '+esc(r.linkname):''} · ${r.count.toLocaleString()} samples · p95 ${(r.p95*100).toFixed(0)}%${r.upgradeNeeded?' · ⚠ upgrade':''}`;
   const ur=S.cfg.upgradeRule;
   return crumb([['Reports']])+`<div class="sec-title"><h2>Business Reports</h2><span class="sub">generated · grounded · exportable</span></div>
+  ${bulkPanel(links)}
   <div class="panel pad" style="margin-bottom:16px;border:1px solid var(--stroke2)">
     <div class="sec-title"><h2>${ic('clipboard',17)} Regulatory Capacity Report</h2><span class="sub">formal, sign-off-ready capacity utilization &amp; augmentation report vs your regulatory threshold${S.cfg.institution?' · '+esc(S.cfg.institution):''}</span></div>
     <div class="flex" style="gap:12px">
@@ -3200,55 +3213,140 @@ function exportReport(title){const el=$('#rpt');if(!el)return;const blob=new Blo
    No libraries — CRC32 + OOXML worksheet XML with inline strings. ---- */
 const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0;}return t;})();
 function crc32(u8){let c=0xFFFFFFFF;for(let i=0;i<u8.length;i++)c=CRC_T[(c^u8[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
-function zipStore(files){ // [{name,text}] → Blob (ZIP, method 0)
+/*XLSX-WRITER*/
+/* Entries are {name, text|data} and optionally z (the deflate-raw bytes of the same content),
+   in which case the entry is written as method 8. Without z it is stored uncompressed. */
+function zipStore(files,mime){
   const enc=new TextEncoder();const parts=[];const central=[];let off=0;
   const d=new Date();const dosTime=(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1);
   const dosDate=((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate();
   for(const f of files){
-    const name=enc.encode(f.name),data=enc.encode(f.text),crc=crc32(data);
+    const name=enc.encode(f.name),raw=f.data||enc.encode(f.text),crc=crc32(raw),body=f.z||raw,method=f.z?8:0;
     const lh=new DataView(new ArrayBuffer(30));
-    lh.setUint32(0,0x04034b50,true);lh.setUint16(4,20,true);
+    lh.setUint32(0,0x04034b50,true);lh.setUint16(4,20,true);lh.setUint16(8,method,true);
     lh.setUint16(10,dosTime,true);lh.setUint16(12,dosDate,true);lh.setUint32(14,crc,true);
-    lh.setUint32(18,data.length,true);lh.setUint32(22,data.length,true);lh.setUint16(26,name.length,true);
-    parts.push(lh.buffer,name,data);
-    central.push({name,crc,size:data.length,off});
-    off+=30+name.length+data.length;
+    lh.setUint32(18,body.length,true);lh.setUint32(22,raw.length,true);lh.setUint16(26,name.length,true);
+    parts.push(lh.buffer,name,body);
+    central.push({name,crc,csize:body.length,size:raw.length,method,off});
+    off+=30+name.length+body.length;
   }
   const cdParts=[];let cdSize=0;
   for(const c of central){
     const ch=new DataView(new ArrayBuffer(46));
-    ch.setUint32(0,0x02014b50,true);ch.setUint16(4,20,true);ch.setUint16(6,20,true);
+    ch.setUint32(0,0x02014b50,true);ch.setUint16(4,20,true);ch.setUint16(6,20,true);ch.setUint16(10,c.method,true);
     ch.setUint16(12,dosTime,true);ch.setUint16(14,dosDate,true);ch.setUint32(16,c.crc,true);
-    ch.setUint32(20,c.size,true);ch.setUint32(24,c.size,true);ch.setUint16(28,c.name.length,true);
+    ch.setUint32(20,c.csize,true);ch.setUint32(24,c.size,true);ch.setUint16(28,c.name.length,true);
     ch.setUint32(42,c.off,true);
     cdParts.push(ch.buffer,c.name);cdSize+=46+c.name.length;
   }
   const eocd=new DataView(new ArrayBuffer(22));
   eocd.setUint32(0,0x06054b50,true);eocd.setUint16(8,central.length,true);eocd.setUint16(10,central.length,true);
   eocd.setUint32(12,cdSize,true);eocd.setUint32(16,off,true);
-  return new Blob([...parts,...cdParts,eocd.buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  return new Blob([...parts,...cdParts,eocd.buffer],{type:mime||'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
 }
-const xmlEsc=v=>String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+// Same zip, but each entry is deflated first (native CompressionStream). Falls back to stored.
+async function zipDeflate(files,mime){
+  const enc=new TextEncoder(),out=[];
+  for(const f of files){
+    const raw=f.data||enc.encode(f.text);let z=null;
+    try{const cs=new CompressionStream('deflate-raw'),w=cs.writable.getWriter();w.write(raw);w.close();z=new Uint8Array(await new Response(cs.readable).arrayBuffer());}catch(e){z=null;}
+    out.push({name:f.name,data:raw,z:z&&z.length<raw.length?z:null});
+  }
+  return zipStore(out,mime);
+}
+const xmlEsc=v=>String(v).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 function colL(i){let t='';i++;while(i>0){t=String.fromCharCode(64+((i-1)%26+1))+t;i=Math.floor((i-1)/26);}return t;}
-function sheetXML(rows){
-  let out='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>';
+/* Cell styles are opt-in: a cell is a plain value, or {v, s:'pct'} for a styled one. Sheets without
+   any styled cell are written exactly as before. */
+const XL_NS='http://schemas.openxmlformats.org/spreadsheetml/2006/main',XL_R='http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+const XL_STY={hdr:1,pct:2,dt:3,title:4,bold:5,date:6,int:7,note:8,num1:9,wrap:10,pct2:11};
+const XL_STYLES=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${XL_NS}"><numFmts count="5"><numFmt numFmtId="164" formatCode="0.0%"/><numFmt numFmtId="165" formatCode="yyyy-mm-dd hh:mm:ss"/><numFmt numFmtId="166" formatCode="yyyy-mm-dd"/><numFmt numFmtId="167" formatCode="0.0"/><numFmt numFmtId="168" formatCode="0.00%"/></numFmts>`
+ +`<fonts count="5"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="14"/><color rgb="FF0F2740"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><i/><sz val="10"/><color rgb="FF64748B"/><name val="Calibri"/><family val="2"/></font></fonts>`
+ +`<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0F2740"/><bgColor indexed="64"/></patternFill></fill></fills>`
+ +`<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>`
+ +`<cellXfs count="12"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>`
+ +`<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>`
+ +`<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>`
+ +`<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>`
+ +`<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>`
+ +`<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="167" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>`
+ +`<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="168" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>`
+ +`<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium9" defaultPivotStyle="PivotStyleLight16"/></styleSheet>`;
+// sh: {freeze:n header rows, cols:[widths], filter:'A5:F45', drawing:bool}
+function sheetXML(rows,sh){
+  sh=sh||{};
+  let out=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${XL_NS}" xmlns:r="${XL_R}">`;
+  if(sh.freeze)out+=`<sheetViews><sheetView workbookViewId="0"><pane ySplit="${sh.freeze}" topLeftCell="A${sh.freeze+1}" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft"/></sheetView></sheetViews>`;
+  if(sh.cols)out+='<cols>'+sh.cols.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${w}" customWidth="1"/>`).join('')+'</cols>';
+  out+='<sheetData>';
   rows.forEach((row,ri)=>{out+=`<row r="${ri+1}">`;
-    row.forEach((v,ci)=>{if(v==null||v==='')return;const ref=colL(ci)+(ri+1);
-      if(typeof v==='number'&&isFinite(v))out+=`<c r="${ref}"><v>${v}</v></c>`;
-      else out+=`<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;});
+    row.forEach((c,ci)=>{const obj=c!=null&&typeof c==='object',v=obj?c.v:c;if(v==null||v==='')return;
+      const ref=colL(ci)+(ri+1),sa=obj&&c.s?` s="${XL_STY[c.s]}"`:'';
+      if(typeof v==='number'&&isFinite(v))out+=`<c r="${ref}"${sa}><v>${v}</v></c>`;
+      else out+=`<c r="${ref}"${sa} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;});
     out+='</row>';});
-  return out+'</sheetData></worksheet>';
+  out+='</sheetData>';
+  if(sh.filter)out+=`<autoFilter ref="${sh.filter}"/>`;
+  if(sh.drawing)out+='<drawing r:id="rId1"/>';
+  return out+'</worksheet>';
 }
-function xlsxBlob(sheets){ // [{name,rows:[[...]]}] → .xlsx Blob
-  const files=[
-    {name:'[Content_Types].xml',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')+'</Types>'},
-    {name:'_rels/.rels',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'},
-    {name:'xl/workbook.xml',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'+sheets.map((sh,i)=>`<sheet name="${xmlEsc(sh.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')+'</sheets></workbook>'},
-    {name:'xl/_rels/workbook.xml.rels',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')+'</Relationships>'}
-  ];
-  sheets.forEach((sh,i)=>files.push({name:`xl/worksheets/sheet${i+1}.xml`,text:sheetXML(sh.rows)}));
-  return zipStore(files);
+const xlQ=n=>"'"+String(n).replace(/'/g,"''")+"'";
+const xlRels=list=>'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+list.map(([id,t,tg])=>`<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/${t}" Target="${tg}"/>`).join('')+'</Relationships>';
+/* Native chart. c = {type:'line'|'col', title, cats:"'Sheet'!$A$6:$A$99", series:[{name:ref,val:ref,color,dash,marker}],
+   stacked, yFmt, skip, anchor:{c0,r0,c1,r1}}. Element order follows the schema (mirrors XlsxWriter output). */
+function chartXML(c,n){
+  const hex=h=>String(h).replace('#','').toUpperCase(),ax1=50010000+n*10+1,ax2=ax1+1;
+  const ser=(s,i)=>`<c:ser><c:idx val="${i}"/><c:order val="${i}"/><c:tx><c:strRef><c:f>${xmlEsc(s.name)}</c:f></c:strRef></c:tx>`
+    +(c.type==='line'
+      ?(s.marker
+        ?`<c:spPr><a:ln w="19050"><a:noFill/></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="5"/><c:spPr><a:solidFill><a:srgbClr val="${hex(s.color)}"/></a:solidFill><a:ln><a:noFill/></a:ln></c:spPr></c:marker>`
+        :`<c:spPr><a:ln w="${s.w||19050}"><a:solidFill><a:srgbClr val="${hex(s.color)}"/></a:solidFill>${s.dash?'<a:prstDash val="dash"/>':''}</a:ln></c:spPr><c:marker><c:symbol val="none"/></c:marker>`)
+      :`<c:spPr><a:solidFill><a:srgbClr val="${hex(s.color)}"/></a:solidFill></c:spPr>`)
+    +`<c:cat><c:strRef><c:f>${xmlEsc(c.cats)}</c:f></c:strRef></c:cat><c:val><c:numRef><c:f>${xmlEsc(s.val)}</c:f></c:numRef></c:val></c:ser>`;
+  const sers=c.series.map(ser).join('');
+  const plot=c.type==='line'
+    ?`<c:lineChart><c:grouping val="standard"/>${sers}<c:marker val="1"/><c:axId val="${ax1}"/><c:axId val="${ax2}"/></c:lineChart>`
+    :`<c:barChart><c:barDir val="col"/><c:grouping val="${c.stacked?'stacked':'clustered'}"/>${sers}${c.stacked?'<c:overlap val="100"/>':''}<c:axId val="${ax1}"/><c:axId val="${ax2}"/></c:barChart>`;
+  const rot=`<c:txPr><a:bodyPr rot="-2700000" vert="horz"/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="800" baseline="0"/></a:pPr><a:endParaRPr lang="en-US"/></a:p></c:txPr>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${XL_R}"><c:lang val="en-US"/><c:chart>`
+    +`<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1100" baseline="0"/></a:pPr><a:r><a:rPr lang="en-US" sz="1100" baseline="0"/><a:t>${xmlEsc(c.title)}</a:t></a:r></a:p></c:rich></c:tx><c:layout/></c:title>`
+    +`<c:plotArea><c:layout/>${plot}`
+    +`<c:catAx><c:axId val="${ax1}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/><c:tickLblPos val="nextTo"/>${rot}<c:crossAx val="${ax2}"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/>${c.skip>1?`<c:tickLblSkip val="${c.skip}"/><c:tickMarkSkip val="${c.skip}"/>`:''}</c:catAx>`
+    +`<c:valAx><c:axId val="${ax2}"/><c:scaling><c:orientation val="minMax"/><c:min val="0"/></c:scaling><c:axPos val="l"/><c:majorGridlines><c:spPr><a:ln><a:solidFill><a:srgbClr val="E5EAF1"/></a:solidFill></a:ln></c:spPr></c:majorGridlines><c:numFmt formatCode="${c.yFmt||'General'}" sourceLinked="0"/><c:tickLblPos val="nextTo"/><c:crossAx val="${ax1}"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>`
+    +`</c:plotArea><c:legend><c:legendPos val="b"/><c:layout/></c:legend><c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart>`
+    +`<c:printSettings><c:headerFooter/><c:pageMargins b="0.75" l="0.7" r="0.7" t="0.75" header="0.3" footer="0.3"/><c:pageSetup/></c:printSettings></c:chartSpace>`;
 }
+function drawingXML(charts){
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+    +charts.map((c,k)=>{const a=c.anchor;return `<xdr:twoCellAnchor><xdr:from><xdr:col>${a.c0}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${a.r0}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>${a.c1}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>${a.r1}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>`
+      +`<xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="${k+2}" name="Chart ${k+1}"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="${XL_R}" r:id="rId${k+1}"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>`;}).join('')
+    +'</xdr:wsDr>';
+}
+// The workbook's parts. sheets: [{name, rows, cols?, freeze?, filter?, charts?}]
+function xlsxParts(sheets){
+  const files=[],ct=[];let nChart=0,nDraw=0;
+  sheets.forEach((sh,i)=>{
+    const charts=sh.charts||[];
+    files.push({name:`xl/worksheets/sheet${i+1}.xml`,text:sheetXML(sh.rows,{...sh,drawing:charts.length>0})});
+    if(!charts.length)return;
+    const d=++nDraw,dr=[];
+    files.push({name:`xl/worksheets/_rels/sheet${i+1}.xml.rels`,text:xlRels([['rId1','drawing',`../drawings/drawing${d}.xml`]])});
+    charts.forEach((c,k)=>{const n=++nChart;files.push({name:`xl/charts/chart${n}.xml`,text:chartXML(c,n)});dr.push([`rId${k+1}`,'chart',`../charts/chart${n}.xml`]);
+      ct.push(`<Override PartName="/xl/charts/chart${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`);});
+    files.push({name:`xl/drawings/drawing${d}.xml`,text:drawingXML(charts)},{name:`xl/drawings/_rels/drawing${d}.xml.rels`,text:xlRels(dr)});
+    ct.push(`<Override PartName="/xl/drawings/drawing${d}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`);
+  });
+  const dn=sheets.map((sh,i)=>sh.filter?`<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">${xmlEsc(xlQ(sh.name))}!${sh.filter.replace(/([A-Z]+)(\d+)/g,'$$$1$$$2')}</definedName>`:'').join('');
+  return [
+    {name:'[Content_Types].xml',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'+sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')+ct.join('')+'</Types>'},
+    {name:'_rels/.rels',text:xlRels([['rId1','officeDocument','xl/workbook.xml']])},
+    {name:'xl/workbook.xml',text:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${XL_NS}" xmlns:r="${XL_R}"><sheets>`+sheets.map((sh,i)=>`<sheet name="${xmlEsc(sh.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')+'</sheets>'+(dn?`<definedNames>${dn}</definedNames>`:'')+'</workbook>'},
+    {name:'xl/_rels/workbook.xml.rels',text:xlRels([...sheets.map((_,i)=>[`rId${i+1}`,'worksheet',`worksheets/sheet${i+1}.xml`]),[`rId${sheets.length+1}`,'styles','styles.xml']])},
+    {name:'xl/styles.xml',text:XL_STYLES},
+    ...files];
+}
+function xlsxBlob(sheets){return zipStore(xlsxParts(sheets));}            // [{name,rows}] → .xlsx Blob
+const xlsxBlobZ=sheets=>zipDeflate(xlsxParts(sheets));                       // same, deflated (large sheets)
 /* ---- Upgrade Policy Hits report (.xlsx): per link or all links, every timestamp
    the upgrade threshold was crossed and the utilization at that moment. ---- */
 function genUpgradePolicyXlsx(scope){
@@ -3620,6 +3718,37 @@ function exclKv(r,kv){
   if(e.bad)parts.push(`${e.bad.n.toLocaleString()} sample(s) with an invalid (negative) reading`);
   return kv('Excluded from this analysis',parts.join(' · ')+'. Retained in the source data and listed in the processed-data audit export.');
 }
+/* ---- Threshold hit calculation — the ONE definition of "a hit" -------------------
+   Used by the Threshold Report below and by the multi-link PDF / Excel pack, so they can
+   never disagree. `bands` is 'warn' | 'high' | 'crit' (severity bands, per-link thresholds,
+   market / off-hours bands honoured) or 'policy' (util at or above the link's Upgrade
+   Policy percentage, whatever band that lands in). Window and hours are applied here;
+   the caller decides what the window is. Pure: reads r, returns numbers. */
+function hitCalc(r,{winStart,winEnd,hours,bands}){
+  const BANDSETS={warn:['warning','high','critical'],high:['high','critical'],crit:['critical'],policy:['normal','warning','high','critical']};
+  const policy=bands==='policy',pol=policy?r.upgradeRule.utilPct/100:null;
+  const sel=new Set(BANDSETS[bands]||BANDSETS.warn);
+  const hourOk=x=>hours==='bh'?isBH(x.ts):hours==='off'?!isBH(x.ts):true;
+  const thFor=x=>isBH(x.ts)?r.th:(r.thOff||r.th);
+  const p2=n=>String(n).padStart(2,'0');
+  const fmtD=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`;};
+  const samples=r.samples.filter(x=>x.util!=null&&x.ts>=winStart&&x.ts<=winEnd&&hourOk(x));
+  const breaches=[]; let cW=0,cH=0,cC=0,cN=0; const dW=new Set(),dC=new Set(); let peak=0,peakTs=null; const byDay={};
+  let mWarn=0,mCrit=0,nWarn=0,nCrit=0;   // market vs non-market splits (all hits / critical)
+  for(const x of samples){const t=thFor(x);const st=stateOfT(x.util,t);const bh=isBH(x.ts);
+    if(x.util>peak){peak=x.util;peakTs=x.ts;}
+    if(policy?x.util<pol:(st==='normal'||!sel.has(st)))continue;   // not a hit under this definition
+    const dk=fmtD(x.ts);const o=byDay[dk]=byDay[dk]||{w:0,h:0,c:0,n:0,m:0,peak:0,peakTs:null,first:x.ts,last:x.ts};
+    if(st==='warning')cW++; else if(st==='high')cH++; else if(st==='critical'){cC++;dC.add(dk);} else cN++;
+    dW.add(dk);
+    if(bh){mWarn++; if(st==='critical')mCrit++; o.m++;} else {nWarn++; if(st==='critical')nCrit++;}
+    if(st==='warning')o.w++; else if(st==='high')o.h++; else if(st==='critical')o.c++;
+    o.n++;
+    if(x.util>o.peak){o.peak=x.util;o.peakTs=x.ts;} if(x.ts<o.first)o.first=x.ts; if(x.ts>o.last)o.last=x.ts;
+    breaches.push({ts:x.ts,util:x.util,tx:x.tx,rx:x.rx,st,bh});
+  }
+  return {sel,samples,breaches,cW,cH,cC,cN,dW,dC,peak,peakTs,byDay,mWarn,mCrit,nWarn,nCrit,pol};
+}
 function breachReportHTML(r,hours,bands){
   const DAY=86400000, winDays=183;                       // default window: last 6 months
   const tf=activeTF(r.ifid);                             // on-screen filter wins when set
@@ -3629,32 +3758,14 @@ function breachReportHTML(r,hours,bands){
   const hoursLbl={all:'All hours (market + non-market)',bh:'Market hours only',off:'Non-market hours only'}[hours]||'All hours';
   // Which severity bands to include. "Warning and above" can run to thousands of rows on a
   // busy link, so the report can be narrowed to the bands that actually need reporting.
-  const BANDSETS={warn:['warning','high','critical'],high:['high','critical'],crit:['critical']};
-  const sel=new Set(BANDSETS[bands]||BANDSETS.warn);
   const lowLbl={warn:'Warning',high:'High',crit:'Critical'}[bands]||'Warning';
   const lowCol={warn:'#b45309',high:'#c2410c',crit:'#e11d48'}[bands]||'#b45309';
   const lowThr={warn:r.th.warn,high:r.th.high,crit:r.th.crit}[bands];
-  const hourOk=x=>hours==='bh'?isBH(x.ts):hours==='off'?!isBH(x.ts):true;
-  const thFor=x=>isBH(x.ts)?r.th:(r.thOff||r.th);
   const p2=n=>String(n).padStart(2,'0');
   const fmtT=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;};
   const fmtD=ts=>{const d=new Date(ts);return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`;};
   const hm=ts=>{const d=new Date(ts);return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;};
-  const samples=r.samples.filter(x=>x.util!=null&&x.ts>=winStart&&x.ts<=winEnd&&hourOk(x));
-  const breaches=[]; let cW=0,cH=0,cC=0; const dW=new Set(),dC=new Set(); let peak=0,peakTs=null; const byDay={};
-  let mWarn=0,mCrit=0,nWarn=0,nCrit=0;   // market vs non-market splits (warning-plus / critical)
-  for(const x of samples){const t=thFor(x);const st=stateOfT(x.util,t);const bh=isBH(x.ts);
-    if(x.util>peak){peak=x.util;peakTs=x.ts;}
-    if(st==='normal')continue;
-    if(!sel.has(st))continue;                       // band excluded from this report
-    const dk=fmtD(x.ts);const o=byDay[dk]=byDay[dk]||{w:0,h:0,c:0,peak:0,peakTs:null,first:x.ts,last:x.ts};
-    if(st==='warning')cW++; else if(st==='high')cH++; else if(st==='critical'){cC++;dC.add(dk);}
-    dW.add(dk);
-    if(bh){mWarn++; if(st==='critical')mCrit++;} else {nWarn++; if(st==='critical')nCrit++;}
-    if(st==='warning')o.w++; else if(st==='high')o.h++; else o.c++;
-    if(x.util>o.peak){o.peak=x.util;o.peakTs=x.ts;} if(x.ts<o.first)o.first=x.ts; if(x.ts>o.last)o.last=x.ts;
-    breaches.push({ts:x.ts,util:x.util,tx:x.tx,rx:x.rx,st,bh});
-  }
+  const {sel,samples,breaches,cW,cH,cC,dW,dC,peak,peakTs,byDay,mWarn,mCrit,nWarn,nCrit}=hitCalc(r,{winStart,winEnd,hours,bands});
   const warnPlus=cW+cH+cC;
   const th=r.th, tho=r.thOff;
   const BAND={warning:{c:'#b45309',l:'Warning'},high:{c:'#c2410c',l:'High'},critical:{c:'#e11d48',l:'Critical'}};
@@ -3775,6 +3886,547 @@ function breachReportHTML(r,hours,bands){
   <div class="foot">Generated by NetPulse · Utilization is measured per sample against the capacity in force at that time (busier of Transmit/Receive). Timestamps shown in ${tzLabel()}. This report covers ${tf?'the filtered range set on screen':'the trailing 6-month window'} (${fmtD(winStart)} to ${fmtD(winEnd)}); the underlying dataset spans ${fmtD(r.start)} to ${fmtD(r.end)}. Maintenance windows are excluded from analytics.</div>
   </div></body></html>`;
 }
+/*BULK-START*/
+/* ===================== Multi-link threshold hit reports ===============================
+   Pick any number of links, a period and what to include; get real .pdf files (one per
+   link in a .zip, or one combined document) and an .xlsx with native charts.
+
+   The PDFs are written directly — no print dialog, no library — because a print dialog can
+   only ever produce one file at a time and "one PDF per link" for 40 links means 40 dialogs.
+   Text uses the built-in Helvetica faces (no embedding), so non-Latin-1 characters in device
+   names degrade to "?". Every number comes from hitCalc(), the same function the on-screen
+   Threshold Report uses. ===================================================================== */
+
+/* ---- PDF writer: pages are lists of drawing ops; build() serialises a valid PDF 1.4 ----
+   Helvetica advance widths per 1000 units for ASCII 32..126 (verified against Liberation
+   Sans, which is metric-compatible). Layout uses a top-left origin, y grows downward. */
+const PDF_W=[278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
+const PDF_WB=[278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,584];
+const CP1252={'€':128,'‚':130,'ƒ':131,'„':132,'…':133,'†':134,'‡':135,'ˆ':136,'‰':137,'Š':138,'‹':139,'Œ':140,'Ž':142,'‘':145,'’':146,'“':147,'”':148,'•':149,'–':150,'—':151,'˜':152,'™':153,'š':154,'›':155,'œ':156,'ž':158,'Ÿ':159};
+const PDF_ASCII={'≥':'>=','≤':'<=','→':'->','←':'<-','−':'-','✓':'v','⚠':'!','▲':'^','▼':'v'};
+// Map a JS string onto WinAnsi bytes (as a latin1 string). Anything the face cannot draw → "?".
+function pdfBytes(s){
+  let o='';
+  for(const ch of String(s==null?'':s)){
+    if(PDF_ASCII[ch]){o+=PDF_ASCII[ch];continue;}
+    const c=ch.codePointAt(0);
+    if((c>=32&&c<127)||(c>=160&&c<=255))o+=ch; else if(CP1252[ch])o+=String.fromCharCode(CP1252[ch]); else o+=(c===9||c===10?' ':'?');
+  }
+  return o;
+}
+const pdfEsc=b=>b.replace(/[\\()]/g,m=>'\\'+m);
+// Info-dictionary and bookmark strings are PDFDocEncoding, not WinAnsi (an em dash would read as "Š"), so keep them plain ASCII.
+const pdfInfoStr=t=>pdfEsc(String(t==null?'':t).replace(/[—–]/g,'-').replace(/[^\x20-\x7E]/g,'?'));
+function pdfWidth(s,size,bold){
+  const T=bold?PDF_WB:PDF_W;let w=0;const b=pdfBytes(s);
+  for(let i=0;i<b.length;i++){const c=b.charCodeAt(i);w+=(c>=32&&c<=126)?T[c-32]:(c===149?350:c===151?1000:556);}
+  return w*size/1000;
+}
+async function pdfDeflate(u8){                       // zlib stream, as PDF FlateDecode expects
+  if(typeof CompressionStream==='undefined')return null;
+  const cs=new CompressionStream('deflate'),w=cs.writable.getWriter();w.write(u8);w.close();
+  return new Uint8Array(await new Response(cs.readable).arrayBuffer());
+}
+class PdfDoc{
+  constructor(info){this.W=595.28;this.H=841.89;this.pages=[];this.cur=null;this.info=info||{};this.marks=[];this.footer=null;this._c={};}
+  addPage(){this.cur={ops:[]};this.pages.push(this.cur);return this.pages.length;}
+  mark(title){this.marks.push({title,page:this.pages.length-1});}            // bookmark → current page
+  _col(h){let c=this._c[h];if(!c){const n=parseInt(h.slice(1),16);c=this._c[h]=[(n>>16&255)/255,(n>>8&255)/255,(n&255)/255].map(v=>+v.toFixed(3)).join(' ');}return c;}
+  _n(v){return +(+v).toFixed(2);}
+  rect(x,y,w,h,{f,s,lw=.6}={}){const o=this.cur.ops;o.push('q');if(f)o.push(this._col(f)+' rg');if(s)o.push(this._col(s)+' RG '+lw+' w');
+    o.push(`${this._n(x)} ${this._n(this.H-y-h)} ${this._n(w)} ${this._n(h)} re ${f&&s?'B':f?'f':'S'}`,'Q');}
+  line(x1,y1,x2,y2,{c='#94a3b8',lw=.6,dash}={}){const H=this.H;this.cur.ops.push(`q ${this._col(c)} RG ${lw} w${dash?` [${dash.join(' ')}] 0 d`:''} ${this._n(x1)} ${this._n(H-y1)} m ${this._n(x2)} ${this._n(H-y2)} l S Q`);}
+  // pts: [[x,y],...] drawn as one stroked path; pass several calls to break a line at a data gap
+  poly(pts,{c='#0369a1',lw=1,dash}={}){if(pts.length<2)return;const H=this.H;
+    this.cur.ops.push(`q ${this._col(c)} RG ${lw} w 1 j 1 J${dash?` [${dash.join(' ')}] 0 d`:''} `+pts.map((p,i)=>`${this._n(p[0])} ${this._n(H-p[1])} ${i?'l':'m'}`).join(' ')+' S Q');}
+  circle(x,y,r,{f='#e11d48'}={}){const H=this.H,k=.5523*r,yy=H-y,n=v=>this._n(v);
+    this.cur.ops.push(`q ${this._col(f)} rg ${n(x+r)} ${n(yy)} m ${n(x+r)} ${n(yy+k)} ${n(x+k)} ${n(yy+r)} ${n(x)} ${n(yy+r)} c ${n(x-k)} ${n(yy+r)} ${n(x-r)} ${n(yy+k)} ${n(x-r)} ${n(yy)} c ${n(x-r)} ${n(yy-k)} ${n(x-k)} ${n(yy-r)} ${n(x)} ${n(yy-r)} c ${n(x+k)} ${n(yy-r)} ${n(x+r)} ${n(yy-k)} ${n(x+r)} ${n(yy)} c f Q`);}
+  tw(s,size=9,bold=false){return pdfWidth(s,size,bold);}
+  // y is the text BASELINE. align l|r|c about x. maxW truncates with an ellipsis.
+  text(x,y,s,{size=9,bold=false,color='#152238',align='l',maxW}={}){
+    let t=String(s==null?'':s);if(maxW&&pdfWidth(t,size,bold)>maxW){while(t.length>1&&pdfWidth(t+'..',size,bold)>maxW)t=t.slice(0,-1);t+='..';}
+    const w=pdfWidth(t,size,bold),xx=align==='r'?x-w:align==='c'?x-w/2:x;
+    this.cur.ops.push(`BT ${this._col(color)} rg /F${bold?2:1} ${size} Tf ${this._n(xx)} ${this._n(this.H-y)} Td (${pdfEsc(pdfBytes(t))}) Tj ET`);return w;}
+  wrap(s,w,size=8,bold=false){const out=[];let line='';
+    for(const wd of String(s==null?'':s).split(/\s+/)){const t=line?line+' '+wd:wd;if(line&&pdfWidth(t,size,bold)>w){out.push(line);line=wd;}else line=t;}
+    if(line)out.push(line);return out;}
+  // word-wrapped paragraph; returns the y just below it
+  para(x,y,w,s,{size=8,bold=false,color='#64748b',lead}={}){
+    lead=lead||size*1.35;for(const l of this.wrap(s,w,size,bold)){this.text(x,y,l,{size,bold,color});y+=lead;}return y;}
+  async build(){
+    const P=this.pages,nP=P.length,N=this.marks.length;
+    if(this.footer)P.forEach((pg,i)=>{this.cur=pg;this.footer(this,i+1,nP);});
+    const outBase=6,pageBase=outBase+(N?1+N:0);
+    const pid=i=>pageBase+2*i+1,cid=i=>pageBase+2*i;
+    const chunks=[],off=[];let pos=0;
+    const bin=s=>{const u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i)&255;return u;};
+    const push=u=>{chunks.push(u);pos+=u.length;};
+    const obj=(n,body)=>{off[n]=pos;push(bin(`${n} 0 obj\n`));for(const b of [].concat(body))push(typeof b==='string'?bin(b):b);push(bin('\nendobj\n'));};
+    push(bin('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n'));
+    obj(1,`<< /Type /Catalog /Pages 2 0 R${N?` /Outlines ${outBase} 0 R /PageMode /UseOutlines`:''} >>`);
+    obj(2,`<< /Type /Pages /Count ${nP} /Kids [${P.map((_,i)=>pid(i)+' 0 R').join(' ')}] >>`);
+    obj(3,'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+    obj(4,'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+    const d=new Date(),p2=n=>String(n).padStart(2,'0');
+    const cd=`D:${d.getUTCFullYear()}${p2(d.getUTCMonth()+1)}${p2(d.getUTCDate())}${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}${p2(d.getUTCSeconds())}Z`;
+    obj(5,`<< /Title (${pdfInfoStr(this.info.title||'NetPulse report')}) /Author (${pdfInfoStr(this.info.author)}) /Creator (NetPulse) /Producer (NetPulse) /CreationDate (${cd}) >>`);
+    if(N){
+      obj(outBase,`<< /Type /Outlines /First ${outBase+1} 0 R /Last ${outBase+N} 0 R /Count ${N} >>`);
+      this.marks.forEach((m,i)=>obj(outBase+1+i,`<< /Title (${pdfInfoStr(m.title)}) /Parent ${outBase} 0 R${i?` /Prev ${outBase+i} 0 R`:''}${i<N-1?` /Next ${outBase+2+i} 0 R`:''} /Dest [${pid(m.page)} 0 R /Fit] >>`));
+    }
+    for(let i=0;i<nP;i++){
+      const raw=bin(P[i].ops.join('\n')),z=await pdfDeflate(raw);
+      obj(cid(i),[`<< /Length ${(z||raw).length}${z?' /Filter /FlateDecode':''} >>\nstream\n`,z||raw,'\nendstream']);
+      obj(pid(i),`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${this.W} ${this.H}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${cid(i)} 0 R >>`);
+    }
+    const total=pageBase+2*nP,xr=pos;
+    let x=`xref\n0 ${total}\n0000000000 65535 f \n`;
+    for(let n=1;n<total;n++)x+=String(off[n]).padStart(10,'0')+' 00000 n \n';
+    push(bin(x+`trailer\n<< /Size ${total} /Root 1 0 R /Info 5 0 R >>\nstartxref\n${xr}\n%%EOF\n`));
+    return new Blob(chunks,{type:'application/pdf'});
+  }
+}
+
+/* ---- Window, series and per-link preparation ------------------------------------------ */
+const PB={navy:'#0f2740',muted:'#64748b',ink:'#152238',blue:'#0369a1',rule:'#dfe6ee',
+  band:{warning:{c:'#b45309',l:'Warning'},high:{c:'#c2410c',l:'High'},critical:{c:'#e11d48',l:'Critical'},normal:{c:'#64748b',l:'Below warn'}}};
+const bT=ts=>{const d=new Date(ts),p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;};
+const bD=ts=>bT(ts).slice(0,10), bHM=ts=>bT(ts).slice(11);
+const bPc=v=>`${+(v*100).toFixed(1)}%`;           // thresholds: 60%, 62.5%
+const bPk=v=>`${(v*100).toFixed(1)}%`;            // measured peaks: always one decimal so columns line up
+const HOURS_LBL={all:'All hours (market + non-market)',bh:'Market hours only',off:'Non-market hours only'};
+
+// One window for every selected link, anchored on the newest sample among them, so a pack
+// compares like with like. Each link's own coverage inside it is reported separately.
+function bulkWindow(list,period,cFrom,cTo){
+  const end=amax(list.map(r=>r.end)),start0=amin(list.map(r=>r.start)),DAY=86400000;
+  if(period==='custom')return {from:cFrom?new Date(cFrom).getTime():start0,to:cTo?new Date(cTo).getTime():end};
+  if(period==='all')return {from:start0,to:end};
+  return {from:Math.max(start0,end-(+period)*DAY),to:end};
+}
+// Chart resolution follows the window length so the plot is readable without hiding hits:
+// hourly up to ~2 weeks, 6-hourly up to ~100 days, daily beyond. Each point keeps the PEAK, so a
+// single hit is never averaged away, plus the average for context.
+function hitSeries(r,{winStart,winEnd,hours}){
+  const span=(winEnd-winStart)/86400000,step=span<=16?'h':span<=100?'6h':'d';
+  const ms={h:3600000,'6h':21600000,d:86400000}[step];
+  const key=ts=>{const d=new Date(ts);if(step==='h')d.setMinutes(0,0,0);else if(step==='6h')d.setHours(Math.floor(d.getHours()/6)*6,0,0,0);else d.setHours(0,0,0,0);return +d;};
+  const bk=new Map();
+  for(const x of r.samples){
+    if(x.util==null||x.ts<winStart||x.ts>winEnd)continue;
+    if(hours==='bh'?!isBH(x.ts):hours==='off'?isBH(x.ts):false)continue;
+    const k=key(x.ts);let o=bk.get(k);
+    if(!o){o={t:k,peak:x.util,sum:x.util,n:1};bk.set(k,o);}else{if(x.util>o.peak)o.peak=x.util;o.sum+=x.util;o.n++;}
+  }
+  return {step,ms,pts:[...bk.values()].sort((a,b)=>a.t-b.t).map(o=>({t:o.t,peak:o.peak,avg:o.sum/o.n,n:o.n}))};
+}
+function bulkHit(r,o){
+  if(o.bands==='policy'){const t=r.upgradeRule.utilPct/100;return {name:'Policy',thr:t,text:`Upgrade policy threshold — utilisation at or above ${bPc(t)}`};}
+  const k=o.bands,nm={warn:'Warning',high:'High',crit:'Critical'}[k],t=r.th[k];
+  return {name:nm,thr:t,text:`${nm}${k==='crit'?' only':' and above'} — utilisation at or above ${bPc(t)} (per-link thresholds)`};
+}
+function bulkPrep(r,o){
+  const H=hitCalc(r,{winStart:o.from,winEnd:o.to,hours:o.hours,bands:o.bands});
+  let covN=0,covFirst=null,covLast=null;
+  for(const x of r.samples){if(x.ts<o.from||x.ts>o.to)continue;covN++;if(covFirst==null||x.ts<covFirst)covFirst=x.ts;if(covLast==null||x.ts>covLast)covLast=x.ts;}
+  return {r,o,H,hit:bulkHit(r,o),total:H.breaches.length,covN,covFirst,covLast,
+    ser:o.graph?hitSeries(r,{winStart:o.from,winEnd:o.to,hours:o.hours}):null};
+}
+
+/* ---- PDF drawing ---------------------------------------------------------------------- */
+function pdfChart(doc,x,y,w,h,P){
+  const {r,o,ser,hit}=P,th=r.th,pts=ser.pts;
+  doc.rect(x,y,w,h,{f:'#ffffff',s:'#e5eaf1'});
+  doc.text(x+8,y+12,`Utilisation over the period — ${{h:'hourly','6h':'6-hourly',d:'daily'}[ser.step]} peak and average (busier of Transmit / Receive)`,{size:7.6,bold:true,color:PB.navy});
+  const L=36,R=66,T=20,B=34,px=x+L,pw=w-L-R,py=y+T,ph=h-T-B;
+  if(pts.length<2){doc.text(x+w/2,y+h/2+3,'Not enough data in the period to draw a trend',{size:8,color:PB.muted,align:'c'});return;}
+  const t0=pts[0].t,t1=Math.max(pts.at(-1).t,t0+1);
+  const yMax=niceTop(Math.max(amax(pts.map(p=>p.peak))*1.06,th.crit*1.08,hit.thr*1.06,.05));
+  const X=t=>px+(t-t0)/(t1-t0)*pw,Y=v=>py+ph-(v/yMax)*ph;
+  for(let k=0;k<=4;k++){const v=yMax*k/4,yy=Y(v);doc.line(px,yy,px+pw,yy,{c:k?'#e8eef5':'#94a3b8',lw:.5});doc.text(px-5,yy+2.3,Math.round(v*100)+'%',{size:6.4,color:PB.muted,align:'r'});}
+  doc.line(px,py,px,py+ph,{c:'#94a3b8',lw:.6});
+  const span=(t1-t0)/86400000,MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const ax=t=>{const d=new Date(t);return span>400?`${MON[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`:span>3?`${d.getDate()} ${MON[d.getMonth()]}`:`${d.getDate()} ${MON[d.getMonth()]} ${bT(t).slice(11,16)}`;};
+  for(let k=0;k<=5;k++){const t=t0+(t1-t0)*k/5,xx=X(t);doc.line(xx,py+ph,xx,py+ph+3,{c:'#94a3b8',lw:.6});doc.text(xx,py+ph+11,ax(t),{size:6.4,color:PB.muted,align:k===0?'l':k===5?'r':'c'});}
+  // thresholds: dashed, labelled in the right margin, nudged apart when they sit close together
+  const th4=[[th.warn,'#b45309','Warning'],[th.high,'#c2410c','High'],[th.crit,'#e11d48','Critical']];
+  if(o.bands==='policy')th4.push([hit.thr,'#475569','Policy']);
+  const lab=[];
+  for(const [v,c,n] of th4){if(v>yMax)continue;doc.line(px,Y(v),px+pw,Y(v),{c,lw:.8,dash:[4,2.5]});lab.push({y:Y(v)+2.4,c,t:`${n} ${bPc(v)}`});}
+  lab.sort((a,b)=>a.y-b.y);lab.forEach((l,i)=>{if(i&&l.y<lab[i-1].y+8)l.y=lab[i-1].y+8;doc.text(px+pw+5,l.y,l.t,{size:6.4,bold:true,color:l.c});});
+  // series, broken wherever the data has a gap so a polling outage never looks like a flat line
+  const draw=(k,c,lw)=>{let seg=[];const flush=()=>{doc.poly(seg,{c,lw});seg=[];};let prev=null;
+    for(const p of pts){if(prev!=null&&p.t-prev>2.5*ser.ms)flush();seg.push([X(p.t),Y(p[k])]);prev=p.t;}flush();};
+  draw('avg','#93c5e8',.8);draw('peak',PB.blue,1);
+  for(const p of pts)if(p.peak>=hit.thr)doc.circle(X(p.t),Y(p.peak),1.7,{f:'#e11d48'});
+  let lx=px;const ly=y+h-8;
+  const item=(fn,label)=>{fn(lx);lx+=15;lx+=doc.text(lx,ly+2.4,label,{size:6.6,color:PB.muted})+11;};
+  item(a=>doc.line(a,ly,a+12,ly,{c:PB.blue,lw:1.2}),'Peak');
+  item(a=>doc.line(a,ly,a+12,ly,{c:'#93c5e8',lw:1}),'Average');
+  item(a=>doc.circle(a+6,ly,1.8,{f:'#e11d48'}),`Peak at/above ${hit.name} threshold (${bPc(hit.thr)})`);
+  item(a=>doc.line(a,ly,a+12,ly,{c:'#94a3b8',lw:.8,dash:[3,2]}),r.thOff?'Thresholds (market hours)':'Thresholds');
+}
+
+function pdfLinkReport(doc,P,{bookmark}={}){
+  const {r,o,H,hit}=P,W=doc.W,M=36,CW=W-2*M,BOT=doc.H-50;
+  const inst=S.cfg.institution||'Network Operations',cap=r.speed?fmtBps(r.speed):'—';
+  const covDays=Math.max(1,Math.round((o.to-o.from)/86400000));
+  let y=0;
+  const page=first=>{doc.addPage();
+    if(first){
+      doc.text(M,40,inst.toUpperCase(),{size:7.5,bold:true,color:PB.navy});
+      doc.text(M,62,'Threshold Hit Report',{size:20,bold:true,color:PB.navy});
+      doc.text(M,78,`${r.dev} · ${r.intf}${r.linkname?' · '+r.linkname:''}`,{size:10.5,color:PB.muted,maxW:CW-120});
+      doc.text(W-M,40,'Generated',{size:6.8,color:PB.muted,align:'r'});
+      doc.text(W-M,52,`${bT(Date.now())} ${tzLabel()}`,{size:8.5,bold:true,align:'r'});
+      doc.rect(M,86,CW,2,{f:PB.navy});y=104;
+    }else{
+      doc.text(M,32,`Threshold Hit Report · ${r.dev} · ${r.intf}`,{size:7.4,color:PB.muted,maxW:CW-150});
+      doc.text(W-M,32,`${bD(o.from)} to ${bD(o.to)}`,{size:7.4,color:PB.muted,align:'r'});
+      doc.line(M,38,W-M,38,{c:PB.rule,lw:.8});y=54;
+    }};
+  const need=h=>{if(y+h>BOT)page(false);};
+  const h2=(t,body=0)=>{need(24+body);doc.text(M,y+9,t,{size:10,bold:true,color:PB.navy});doc.rect(M,y+13,CW,1.2,{f:PB.blue});y+=24;};
+  const kv=(k,v,col=PB.ink)=>{const ls=doc.wrap(v,CW-122,7.8,true);need(ls.length*10.5+3);
+    doc.text(M,y+7.5,k,{size:7.8,color:PB.muted});ls.forEach((l,i)=>doc.text(M+122,y+7.5+i*10.5,l,{size:7.8,bold:true,color:col}));y+=ls.length*10.5+2.5;};
+
+  page(true);if(bookmark)doc.mark(`${r.dev} ${r.intf}`);
+  doc.text(M,y+2,[r.cls,r.impact+' impact','Site '+r.site,'Capacity '+cap,r.ip||''].filter(Boolean).join('  ·  '),{size:8,color:PB.muted});y+=14;
+
+  h2('Link details');
+  const det=[['Device',r.dev],['Interface',r.intf],...(r.linkname?[['Link name / circuit',r.linkname]]:[]),['Site',r.site],...(r.ip?[['IP address',r.ip]]:[]),['Capacity',cap],['Class / impact',`${r.cls} · ${r.impact} impact`],
+    ...cfList().map(c=>[c.label,cfVal(r,c.key)]).filter(p=>p[1])];
+  const half=Math.ceil(det.length/2);
+  for(let i=0;i<half;i++){need(12);
+    for(const [col,pair] of [[0,det[i]],[1,det[half+i]]]){if(!pair)continue;const cx=M+col*CW/2;
+      doc.text(cx,y+7.5,pair[0],{size:7.8,color:PB.muted});doc.text(cx+82,y+7.5,pair[1],{size:7.8,bold:true,maxW:CW/2-90});}
+    y+=11.5;}
+  y+=4;
+
+  h2('Reporting parameters');
+  kv('Reporting period',`${bD(o.from)} to ${bD(o.to)} (${covDays} days)`);
+  kv('Hits counted as',hit.text);
+  kv('Hours basis',HOURS_LBL[o.hours]);
+  const bh=S.cfg.businessHours,p2=n=>String(n).padStart(2,'0');
+  kv('Market-hours window',`${p2(bh.startHr)}:${p2(bh.startMin||0)}–${p2(bh.endHr)}:${p2(bh.endMin||0)}, ${bh.days.map(d=>DOW[d]).join(' ')}`);
+  kv('Thresholds (market hrs)',`Warning from ${bPc(r.th.warn)} · High from ${bPc(r.th.high)} · Critical from ${bPc(r.th.crit)}`);
+  if(r.thOff)kv('Thresholds (non-market)',`Warning from ${bPc(r.thOff.warn)} · High from ${bPc(r.thOff.high)} · Critical from ${bPc(r.thOff.crit)}`);
+  kv('Samples evaluated',`${H.samples.length.toLocaleString()} (utilisation = busier direction, max of Transmit / Receive, against the capacity in force at each sample)`);
+  kv('Data coverage in period',P.covN?`${bT(P.covFirst)} to ${bT(P.covLast)} · ${P.covN.toLocaleString()} samples`:'No samples fall inside this period',P.covN?PB.ink:'#b45309');
+  const ur=r.upgradeRule;
+  kv('Upgrade policy status',`At or above ${ur.utilPct}%${ur.businessHoursOnly?' in market hours':''} on at least ${ur.days} days within the trailing ${ur.lookbackDays||'all'}${ur.lookbackDays?' days':' history'} to ${bD(r.end)}: ${r.upgradeDays} day(s) hit — ${r.upgradeNeeded?'TRIGGER MET':'not met'}`,r.upgradeNeeded?'#e11d48':PB.ink);
+  if(r.excluded&&r.excluded.n){const e=r.excluded,pt=[];
+    if(e.maint)pt.push(`${e.maint.n.toLocaleString()} sample(s) inside declared maintenance windows`);if(e.bad)pt.push(`${e.bad.n.toLocaleString()} invalid (negative) reading(s)`);
+    kv('Excluded from analysis',pt.join(' · ')+' — retained in the source data, left out of this report.');}
+  if(r.overCap)kv('Capacity review',`${r.overCap.count.toLocaleString()} sample(s) above ${Math.round(r.overCap.threshold*100)}% of stated capacity (max ${bPk(r.overCap.max)}) — kept in this report; verify the link's capacity.`,'#b45309');
+  if(r.capChange)kv('Capacity change',`${r.capChange.distinct.map(v=>fmtBps(v)).join(' to ')} within the loaded history; each sample is measured against the capacity in force at that time.`);
+  y+=6;
+
+  h2('Summary');
+  need(66);
+  const nd=!P.covN,cw=(CW-24)/4,cards=[
+    ['HITS',nd?'—':H.breaches.length.toLocaleString(),nd?PB.muted:o.bands==='crit'?PB.band.critical.c:o.bands==='high'?PB.band.high.c:o.bands==='warn'?PB.band.warning.c:PB.blue,nd?'no samples in this period':`at/above ${hit.name} (${bPc(hit.thr)})`],
+    ['CRITICAL',nd?'—':H.cC.toLocaleString(),nd?PB.muted:PB.band.critical.c,nd?'no samples in this period':`at/above ${bPc(r.th.crit)}`],
+    ['DAYS WITH HITS',nd?'—':H.dW.size.toLocaleString(),nd?PB.muted:PB.navy,nd?'no samples in this period':`of ${covDays} days in the period`],
+    ['PEAK UTILISATION',nd?'—':bPk(H.peak),nd?PB.muted:PB.navy,nd||!H.peakTs?'—':bT(H.peakTs)]];
+  cards.forEach(([l,v,c,sub],i)=>{const cx=M+i*(cw+8);doc.rect(cx,y,cw,54,{f:'#f8fafc',s:'#e5eaf1'});
+    doc.text(cx+9,y+13,l,{size:6.6,bold:true,color:PB.muted});doc.text(cx+9,y+36,v,{size:19,bold:true,color:c});doc.text(cx+9,y+48,sub,{size:6.6,color:PB.muted,maxW:cw-14});});
+  y+=62;
+  const parts=[];
+  if(H.sel.has('warning'))parts.push(['warning',H.cW]);if(H.sel.has('high'))parts.push(['high',H.cH]);if(H.sel.has('critical'))parts.push(['critical',H.cC]);
+  if(o.bands==='policy'&&H.cN)parts.push(['normal',H.cN]);
+  let lx=M;
+  for(const [k,n] of parts){doc.rect(lx,y-6.5,7,7,{f:PB.band[k].c});lx+=10;lx+=doc.text(lx,y,`${PB.band[k].l} `,{size:7.6,color:PB.muted});lx+=doc.text(lx,y,n.toLocaleString(),{size:7.6,bold:true})+14;}
+  if(o.hours==='all')doc.text(W-M,y,`Market hours ${H.mWarn.toLocaleString()} · Non-market ${H.nWarn.toLocaleString()}`,{size:7.6,color:PB.muted,align:'r'});
+  y+=18;
+
+  if(o.graph&&P.ser){h2('Utilisation graph',196);pdfChart(doc,M,y,CW,190,P);y+=200;}
+
+  const table=(cols,rows,cell)=>{
+    const hdr=()=>{doc.rect(M,y,CW,14,{f:PB.navy});let cx=M;for(const c of cols){doc.text(c.a==='r'?cx+c.w-5:cx+5,y+9.6,c.t,{size:6.6,bold:true,color:'#ffffff',align:c.a==='r'?'r':'l'});cx+=c.w;}y+=14;};
+    need(37);hdr();
+    rows.forEach((row,ri)=>{if(y+11.5>BOT){page(false);hdr();}
+      if(ri%2)doc.rect(M,y,CW,11.5,{f:'#f6f8fb'});
+      let cx=M;cols.forEach((c,ci)=>{const v=cell(row,ci,ri);
+        if(v&&v.pill){doc.rect(cx+4,y+1.6,c.w-8>40?40:c.w-8,8.2,{f:v.pill});doc.text(cx+4+(c.w-8>40?40:c.w-8)/2,y+7.6,v.t,{size:5.9,bold:true,color:'#ffffff',align:'c'});}
+        else{const t=v&&v.t!=null?v.t:v;doc.text(c.a==='r'?cx+c.w-5:cx+5,y+8.2,t,{size:7,color:v&&v.c||PB.ink,bold:!!(v&&v.b),align:c.a==='r'?'r':'l',maxW:c.w-8});}
+        cx+=c.w;});
+      y+=11.5;});
+    doc.rect(M,y,CW,.6,{f:PB.rule});y+=8;};
+
+  if(o.byDate){
+    h2('Hits by date',40);
+    const days=Object.keys(H.byDay).sort();
+    if(!days.length){need(30);doc.rect(M,y,CW,24,{f:'#f8fafc',s:'#e5eaf1'});doc.text(M+10,y+15,`No samples reached ${hit.name} (${bPc(hit.thr)}) in this period.`,{size:8,color:PB.muted});y+=34;}
+    else{
+      const showB=['warning','high','critical'].filter(b=>H.sel.has(b));
+      const cols=[{t:'DATE',w:62},{t:'DAY',w:34},...showB.map(b=>({t:PB.band[b].l.toUpperCase(),w:50,a:'r'})),{t:'TOTAL',w:48,a:'r'},{t:'PEAK',w:48,a:'r'},{t:'PEAK TIME',w:60},{t:'FIRST – LAST HIT',w:0}];
+      const used=cols.reduce((a,c)=>a+c.w,0);cols[cols.length-1].w=CW-used;
+      table(cols,days,(dk,ci)=>{const o2=H.byDay[dk],c=cols[ci].t;
+        if(c==='DATE')return dk;if(c==='DAY')return DOW[new Date(o2.first).getDay()];
+        if(c==='TOTAL')return {t:o2.n.toLocaleString(),b:true};if(c==='PEAK')return bPk(o2.peak);if(c==='PEAK TIME')return bHM(o2.peakTs);
+        if(c==='FIRST – LAST HIT')return `${bHM(o2.first)} – ${bHM(o2.last)}`;
+        const b=c==='WARNING'?'w':c==='HIGH'?'h':'c',n=o2[b];return n?{t:n.toLocaleString(),c:c==='CRITICAL'?PB.band.critical.c:PB.ink,b:c==='CRITICAL'}:'';});
+    }
+  }
+  if(o.byDateTime){
+    // ponytail: PDF lists the first 10,000 hits per link; the Excel pack carries every row.
+    const MAXR=10000,rows=H.breaches.slice(0,MAXR);
+    h2(`Hits by date-time${rows.length<H.breaches.length?` (first ${MAXR.toLocaleString()} of ${H.breaches.length.toLocaleString()})`:` (${H.breaches.length.toLocaleString()})`}`,40);
+    if(!rows.length){need(30);doc.rect(M,y,CW,24,{f:'#f8fafc',s:'#e5eaf1'});doc.text(M+10,y+15,'No hits to list for this period and hours basis.',{size:8,color:PB.muted});y+=34;}
+    else{
+      const cols=[{t:'#',w:36,a:'r'},{t:'TIMESTAMP',w:104},{t:'BAND',w:62},{t:'UTILISATION',w:66,a:'r'},{t:'TRANSMIT',w:72,a:'r'},{t:'RECEIVE',w:72,a:'r'},{t:'PERIOD',w:0}];
+      cols[6].w=CW-cols.reduce((a,c)=>a+c.w,0);
+      table(cols,rows,(x,ci,ri)=>[String(ri+1),bT(x.ts),{pill:PB.band[x.st].c,t:PB.band[x.st].l},{t:(x.util*100).toFixed(2)+'%',b:true},x.tx!=null?fmtBps(x.tx):'—',x.rx!=null?fmtBps(x.rx):'—',x.bh?'Market':'Non-market'][ci]);
+      if(rows.length<H.breaches.length){need(14);doc.text(M,y+6,`List capped at ${MAXR.toLocaleString()} rows for this PDF. The Excel pack holds every row.`,{size:7.2,color:PB.muted});y+=14;}
+    }
+  }
+
+  need(106);y+=10;
+  const sw=(CW-40)/3;
+  [['Prepared by',S.cfg.reportPreparedBy],['Reviewed by',S.cfg.reportReviewedBy],['Approved by',S.cfg.reportApprovedBy]].forEach(([l,v],i)=>{const sx=M+i*(sw+20);
+    doc.line(sx,y+26,sx+sw,y+26,{c:'#8895a7',lw:.7});doc.text(sx,y+36,l,{size:7,color:PB.muted});doc.text(sx,y+46,v||'',{size:8.5,bold:true,maxW:sw});});
+  y+=62;
+  y=doc.para(M,y,CW,`Generated by NetPulse. Utilisation is measured per sample against the capacity in force at that time (busier of Transmit / Receive). Timestamps are shown in ${tzLabel()}. The underlying data for this link spans ${bD(r.start)} to ${bD(r.end)}. Maintenance windows are excluded from analytics.`,{size:6.8,color:'#94a3b8'});
+}
+function pdfFooter(doc,i,n){
+  const inst=S.cfg.institution||'Network Operations';
+  doc.line(36,doc.H-38,doc.W-36,doc.H-38,{c:PB.rule,lw:.6});
+  doc.text(36,doc.H-26,`${inst} · Confidential · Threshold Hit Report`,{size:6.8,color:'#94a3b8',maxW:380});
+  doc.text(doc.W-36,doc.H-26,`Page ${i} of ${n}`,{size:6.8,color:'#94a3b8',align:'r'});
+}
+// Cover + contents for a combined PDF. Page numbers are final because the link pages are laid
+// out first and the cover is slotted in front afterwards.
+const BULK_COVER={first:48,next:60};
+const bulkCoverPages=n=>n<=BULK_COVER.first?1:1+Math.ceil((n-BULK_COVER.first)/BULK_COVER.next);
+function pdfCover(doc,preps,o,startPages){
+  const W=doc.W,M=36,CW=W-2*M,inst=S.cfg.institution||'Network Operations';
+  doc.addPage();
+  doc.text(M,40,inst.toUpperCase(),{size:7.5,bold:true,color:PB.navy});
+  doc.text(M,64,'Threshold Hit Report',{size:22,bold:true,color:PB.navy});
+  doc.text(M,82,`${preps.length} link${preps.length>1?'s':''} · ${bD(o.from)} to ${bD(o.to)}`,{size:11,color:PB.muted});
+  doc.text(W-M,40,'Generated',{size:6.8,color:PB.muted,align:'r'});doc.text(W-M,52,`${bT(Date.now())} ${tzLabel()}`,{size:8.5,bold:true,align:'r'});
+  doc.rect(M,90,CW,2,{f:PB.navy});
+  let y=110;
+  const kv=(k,v)=>{doc.text(M,y,k,{size:7.8,color:PB.muted});const ls=doc.wrap(v,CW-122,7.8,true);ls.forEach((l,i)=>doc.text(M+122,y+i*10.5,l,{size:7.8,bold:true}));y+=ls.length*10.5+2.5;};
+  kv('Hits counted as',preps[0].o.bands==='policy'?'Upgrade policy threshold (each link\'s own policy percentage)':({warn:'Warning and above',high:'High and above',crit:'Critical only'})[o.bands]+' — each link\'s own thresholds');
+  kv('Hours basis',HOURS_LBL[o.hours]);
+  kv('Included',[o.graph?'Utilisation graph':'',o.byDate?'Hits by date':'',o.byDateTime?'Hits by date-time':'',(!o.byDate&&!o.byDateTime)?'Summary only (no tables)':''].filter(Boolean).join(' · '));
+  kv('Total hits',preps.reduce((a,p)=>a+p.total,0).toLocaleString()+` across ${preps.filter(p=>p.total).length} link(s) with hits`);
+  const none=preps.filter(p=>!p.covN).length;
+  if(none)kv('No data in period',`${none} link(s) have no samples between ${bD(o.from)} and ${bD(o.to)}; they show "no data", not zero hits.`);
+  y+=8;
+  const cols=[{t:'#',w:26,a:'r'},{t:'LINK',w:0},{t:'HITS',w:56,a:'r'},{t:'CRITICAL',w:56,a:'r'},{t:'DAYS',w:44,a:'r'},{t:'PEAK',w:50,a:'r'},{t:'POLICY',w:52},{t:'PAGE',w:38,a:'r'}];
+  cols[1].w=CW-cols.reduce((a,c)=>a+c.w,0);
+  const hdr=()=>{doc.rect(M,y,CW,14,{f:PB.navy});let cx=M;for(const c of cols){doc.text(c.a==='r'?cx+c.w-5:cx+5,y+9.6,c.t,{size:6.6,bold:true,color:'#ffffff',align:c.a==='r'?'r':'l'});cx+=c.w;}y+=14;};
+  hdr();
+  preps.forEach((P,i)=>{
+    if(i===BULK_COVER.first||(i>BULK_COVER.first&&(i-BULK_COVER.first)%BULK_COVER.next===0)){doc.addPage();y=46;hdr();}
+    if(i%2)doc.rect(M,y,CW,11.5,{f:'#f6f8fb'});
+    const nd=!P.covN,cells=[String(i+1),`${P.r.dev} · ${P.r.intf}`,nd?'no data':P.total.toLocaleString(),nd?'—':P.H.cC.toLocaleString(),nd?'—':String(P.H.dW.size),nd?'—':bPk(P.H.peak),P.r.upgradeNeeded?'MET':'—',String(startPages[i])];
+    let cx=M;cols.forEach((c,ci)=>{doc.text(c.a==='r'?cx+c.w-5:cx+5,y+8.2,cells[ci],{size:7,bold:(ci===2&&P.total>0)||(ci===6&&P.r.upgradeNeeded),color:ci===6&&P.r.upgradeNeeded?PB.band.critical.c:(nd&&ci>=2&&ci<=5)?PB.muted:PB.ink,align:c.a==='r'?'r':'l',maxW:c.w-8});cx+=c.w;});
+    y+=11.5;
+  });
+  doc.rect(M,y,CW,.6,{f:PB.rule});
+}
+// Builds the PDF file(s). mode 'each' → one doc per link, 'one' → a single combined doc.
+async function bulkPdfFiles(preps,o,mode,onStep){
+  const info=n=>({title:n,author:S.cfg.reportPreparedBy||''});
+  if(mode==='one'&&preps.length>1){
+    const doc=new PdfDoc(info(`Threshold Hit Report — ${preps.length} links`)),nCover=bulkCoverPages(preps.length),starts=[];
+    preps.forEach((P,i)=>{starts.push(doc.pages.length+1+nCover);pdfLinkReport(doc,P,{bookmark:true});if(onStep)onStep(i+1);});
+    const before=doc.pages.length;pdfCover(doc,preps,o,starts);
+    const cv=doc.pages.splice(before);if(cv.length!==nCover)throw new Error('cover page count mismatch');doc.pages.unshift(...cv);doc.marks.forEach(m=>m.page+=cv.length);
+    doc.footer=pdfFooter;
+    return [{name:`Threshold_Hits_${preps.length}_links_${bD(o.from).replace(/-/g,'')}-${bD(o.to).replace(/-/g,'')}.pdf`,blob:await doc.build()}];
+  }
+  const out=[],used=new Set();
+  for(let i=0;i<preps.length;i++){
+    const P=preps[i],doc=new PdfDoc(info(`Threshold Hit Report — ${P.r.dev} ${P.r.intf}`));
+    pdfLinkReport(doc,P);doc.footer=pdfFooter;
+    let nm=`Threshold_Hits_${P.r.dev}_${P.r.intf}_${bD(o.from).replace(/-/g,'')}-${bD(o.to).replace(/-/g,'')}`.replace(/[^\w.-]+/g,'_');
+    const base=nm;for(let k=2;used.has(nm);k++)nm=base+'_'+k;used.add(nm);
+    out.push({name:nm+'.pdf',blob:await doc.build()});if(onStep)onStep(i+1);
+  }
+  return out;
+}
+
+/* ---- Excel pack: Summary + charts + hit tables, every figure from the same bulkPrep() -------- */
+const xlSerial=ts=>{const d=new Date(ts);return Date.UTC(d.getFullYear(),d.getMonth(),d.getDate(),d.getHours(),d.getMinutes(),d.getSeconds())/86400000+25569;};
+const xlDaySerial=key=>{const [y,m,d]=key.split('-').map(Number);return Date.UTC(y,m-1,d)/86400000+25569;};
+const xlDT=ts=>({v:xlSerial(ts),s:'dt'});
+function xlName(raw,used){          // Excel sheet names: ≤31 chars, none of []:*?/\ , unique ignoring case
+  const base=String(raw).replace(/[\[\]:*?\/\\]/g,'-').replace(/^'+|'+$/g,'').trim().slice(0,31)||'Sheet';
+  let n=base,k=2;while(used.has(n.toLowerCase())){const sfx=` (${k++})`;n=base.slice(0,31-sfx.length)+sfx;}
+  used.add(n.toLowerCase());return n;
+}
+const xlRef=(sheet,col,r1,r2)=>`${xlQ(sheet)}!$${colL(col)}$${r1}`+(r2?`:$${colL(col)}$${r2}`:'');
+const xlHdr=a=>a.map(t=>({v:t,s:'hdr'}));
+
+function bulkXlsx(preps,o){
+  const used=new Set(),cf=cfList(),inst=S.cfg.institution||'Network Operations';
+  const sorted=[...preps].sort((a,b)=>b.total-a.total||b.H.peak-a.H.peak);   // busiest links first
+  const out=[],hitLbl=sorted.length?(o.bands==='policy'?'Upgrade policy threshold (each link’s own policy percentage)':({warn:'Warning and above',high:'High and above',crit:'Critical only'})[o.bands]+' — each link’s own thresholds'):'';
+  const sumName=xlName('Summary',used);
+
+  // ---- Summary -------------------------------------------------------------------------
+  const head=['Device','Interface','Link name','Site',...cf.map(c=>c.label),'Class','Impact','Capacity (Mbps)','Data from','Data to','Samples in period',
+    'Total hits','Warning','High','Critical','Market-hr hits','Non-market hits','Distinct hit days','Peak utilization','Peak time','First hit','Last hit','Policy %','Policy days hit','Upgrade trigger met'];
+  const totalHits=sorted.reduce((a,P)=>a+P.total,0);
+  const sum=[
+    [{v:'Threshold Hit Report — Summary',s:'title'}],
+    [{v:inst,s:'bold'}],
+    [{v:`Generated ${bT(Date.now())} ${tzLabel()}`,s:'note'}],
+    [{v:'Reporting period',s:'bold'},`${bD(o.from)} to ${bD(o.to)} (${Math.max(1,Math.round((o.to-o.from)/86400000))} days)`],
+    [{v:'Hits counted as',s:'bold'},hitLbl],
+    [{v:'Hours basis',s:'bold'},HOURS_LBL[o.hours]],
+    [{v:'Links / total hits',s:'bold'},`${sorted.length.toLocaleString()} link(s) · ${totalHits.toLocaleString()} hit(s)`],
+    ...(sorted.some(P=>!P.covN)?[[{v:`${sorted.filter(P=>!P.covN).length} link(s) have no samples in this period (see "Samples in period" = 0). Their hit counts are 0 only because there is no data to measure.`,s:'bold'}]]:[[]]),
+    [{v:'Utilization = busier of Transmit / Receive, measured per sample against the capacity in force at that time. Timestamps are '+tzLabel()+'. Maintenance windows and invalid readings are excluded; they remain in the source data.',s:'note'}],
+    xlHdr(head)];
+  for(const P of sorted){
+    const {r,H}=P,ur=r.upgradeRule,first=H.breaches[0],last=H.breaches.at(-1);
+    sum.push([r.dev,r.intf,r.linkname||'',r.site,...cf.map(c=>cfVal(r,c.key)),r.cls,r.impact,r.speed?+(r.speed/1e6).toFixed(0):'',
+      P.covFirst!=null?xlDT(P.covFirst):'—',P.covLast!=null?xlDT(P.covLast):'—',{v:P.covN,s:'int'},
+      {v:P.total,s:'int'},H.cW,H.cH,H.cC,H.mWarn,H.nWarn,H.dW.size,{v:H.peak,s:'pct'},H.peakTs!=null?xlDT(H.peakTs):'—',
+      first?xlDT(first.ts):'—',last?xlDT(last.ts):'—',ur.utilPct,r.upgradeDays,r.upgradeNeeded?'YES':'no']);
+  }
+  if(!sorted.length)sum.push(['— No links selected —']);
+  const sheets=[{name:sumName,rows:sum,freeze:10,filter:`A10:${colL(head.length-1)}${10+Math.max(1,sorted.length)}`,
+    cols:[24,22,22,10,...cf.map(()=>16),11,10,14,18,18,14,11,10,8,9,14,15,14,16,18,18,18,10,14,16]}];
+
+  // ---- Top-links bar chart ------------------------------------------------------------
+  if(o.graph){
+    const nm=xlName('Top Links Chart',used),top=sorted.filter(P=>P.total>0).slice(0,25),pol=o.bands==='policy';
+    const rows=[xlHdr(['Link','Warning','High','Critical',...(pol?['Below warning']:[])])];
+    top.forEach(P=>rows.push([`${P.r.dev} ${P.r.intf}`,P.H.cW,P.H.cH,P.H.cC,...(pol?[P.H.cN]:[])]));
+    if(!top.length)rows.push(['— No hits in this period —']);
+    const bands=[['Warning','#B45309'],['High','#C2410C'],['Critical','#E11D48'],...(pol?[['Below warning','#64748B']]:[])];
+    sheets.push({name:nm,rows,cols:[34,11,11,11,14],freeze:1,
+      charts:top.length?[{type:'col',stacked:true,title:`Hits per link — ${top.length>=25?'top 25 of '+sorted.filter(P=>P.total>0).length:top.length+' link(s) with hits'}`,
+        cats:xlRef(nm,0,2,1+top.length),series:bands.map(([t,c],i)=>({name:xlRef(nm,1+i,1),val:xlRef(nm,1+i,2,1+top.length),color:c})),anchor:{c0:6,r0:1,c1:20,r1:24}}]:[]});
+  }
+
+  // ---- Hits by date -------------------------------------------------------------------
+  if(o.byDate){
+    const rows=[xlHdr(['Device','Interface','Date','Day','Warning','High','Critical','Total hits','Market-hr hits','Non-market hits','Peak utilization','Peak time','First hit','Last hit'])];
+    for(const P of sorted)for(const dk of Object.keys(P.H.byDay).sort()){const d=P.H.byDay[dk];
+      rows.push([P.r.dev,P.r.intf,{v:xlDaySerial(dk),s:'date'},DOW[new Date(d.first).getDay()],d.w||'',d.h||'',d.c||'',{v:d.n,s:'int'},d.m,d.n-d.m,{v:d.peak,s:'pct'},bHM(d.peakTs),bHM(d.first),bHM(d.last)]);}
+    if(rows.length===1)rows.push(['— No hits in this period —']);
+    sheets.push({name:xlName('Hits by Date',used),rows,freeze:1,filter:`A1:N${rows.length}`,cols:[24,22,12,7,10,8,9,11,14,15,16,11,11,11]});
+  }
+
+  // ---- Hits by date-time (split across sheets well under Excel's 1,048,576-row limit) ------
+  if(o.byDateTime){
+    const CH=200000,hdr=xlHdr(['Device','Interface','Timestamp','Band','Utilization','Transmit (Mbps)','Receive (Mbps)','Capacity (Mbps)','Period']);
+    let rows=[hdr],part=1;
+    const flush=()=>{if(rows.length===1)rows.push(['— No hits in this period —']);
+      sheets.push({name:xlName(part===1?'Hits by Date-Time':`Hits by Date-Time (${part})`,used),rows,freeze:1,filter:`A1:I${rows.length}`,cols:[24,22,19,12,12,15,15,15,13]});};
+    for(const P of sorted)for(const x of P.H.breaches){
+      if(rows.length>CH){flush();rows=[hdr];part++;}
+      rows.push([P.r.dev,P.r.intf,xlDT(x.ts),PB.band[x.st].l,{v:x.util,s:'pct2'},x.tx!=null?{v:+(x.tx/1e6).toFixed(3),s:'num1'}:'',x.rx!=null?{v:+(x.rx/1e6).toFixed(3),s:'num1'}:'',P.r.speed?+(P.r.speed/1e6).toFixed(0):'',x.bh?'Market':'Non-market']);
+    }
+    flush();
+  }
+
+  // ---- One chart sheet per link -------------------------------------------------------
+  if(o.graph)for(const P of sorted){
+    const {r,ser,hit}=P,nm=xlName(`${r.dev} ${r.intf}`,used),pol=o.bands==='policy',pts=ser?ser.pts:[];
+    const stepLbl={h:'hourly','6h':'6-hourly',d:'daily'}[ser?ser.step:'d'];
+    const hdr=['Time','Peak','Average','Peak at/above hit threshold','Warning','High','Critical',...(pol?['Policy']:[]),'Samples'];
+    const rows=[[{v:`${r.dev} · ${r.intf}${r.linkname?' · '+r.linkname:''}`,s:'title'}],
+      [{v:`Period ${bD(o.from)} to ${bD(o.to)} · ${HOURS_LBL[o.hours]} · ${P.total.toLocaleString()} hit(s) counted as: ${hit.text}`,s:'note'}],
+      [{v:`Chart resolution ${stepLbl}: each point is the highest / mean utilization in that bucket. Threshold lines are the market-hours bands${r.thOff?' (this link has separate non-market bands)':''}.`,s:'note'}],
+      [],xlHdr(hdr)];
+    const fmtT=step=>ts=>step==='d'?bD(ts):bT(ts).slice(0,16);
+    const lab=fmtT(ser?ser.step:'d'),thCols=[r.th.warn,r.th.high,r.th.crit,...(pol?[hit.thr]:[])];
+    pts.forEach(p=>rows.push([lab(p.t),{v:p.peak,s:'pct'},{v:p.avg,s:'pct'},p.peak>=hit.thr?{v:p.peak,s:'pct'}:'',
+      ...thCols.map(v=>({v,s:'pct'})),p.n]));
+    if(!pts.length)rows.push(['— No samples in this period —']);
+    const n=pts.length,last=5+n,series=[
+      {name:xlRef(nm,1,5),val:xlRef(nm,1,6,last),color:'#0369A1'},{name:xlRef(nm,2,5),val:xlRef(nm,2,6,last),color:'#93C5E8'},
+      {name:xlRef(nm,3,5),val:xlRef(nm,3,6,last),color:'#E11D48',marker:true},
+      {name:xlRef(nm,4,5),val:xlRef(nm,4,6,last),color:'#B45309',dash:true},{name:xlRef(nm,5,5),val:xlRef(nm,5,6,last),color:'#C2410C',dash:true},
+      {name:xlRef(nm,6,5),val:xlRef(nm,6,6,last),color:'#E11D48',dash:true},...(pol?[{name:xlRef(nm,7,5),val:xlRef(nm,7,6,last),color:'#475569',dash:true}]:[])];
+    sheets.push({name:nm,rows,freeze:5,cols:[17,10,10,16,10,10,10,...(pol?[10]:[]),10],
+      charts:n>1?[{type:'line',title:`${r.dev} · ${r.intf} — utilization ${bD(o.from)} to ${bD(o.to)}`,yFmt:'0%',skip:Math.max(1,Math.ceil(n/14)),
+        cats:xlRef(nm,0,6,last),series,anchor:{c0:pol?10:9,r0:3,c1:(pol?10:9)+12,r1:25}}]:[]});
+  }
+  return sheets;
+}
+
+/* ---- Reports-page panel and the generate button ---------------------------------------- */
+function bulkPanel(links){
+  const ur=S.cfg.upgradeRule;
+  if(!links.length)return `<div class="panel pad" style="margin-bottom:16px"><div class="sec-title"><h2>${ic('bars',17)} Threshold Hit Reports — multiple links</h2></div><div class="small" style="color:var(--muted)">Upload polling data to build these reports.</div></div>`;
+  const row=r=>`<label class="mlrow" data-q="${esc((r.dev+' '+r.intf+' '+(r.linkname||'')+' '+r.site+' '+r.cls).toLowerCase())}" data-flag="${r.upgradeNeeded?1:0}"><input type="checkbox" value="${esc(r.ifid)}" onchange="mlCount()"><span class="nm">${esc(r.dev)} · ${esc(r.intf)}</span><span class="mini">${esc(r.cls)} · ${r.speed?fmtBps(r.speed):'?'} · p95 ${(r.p95*100).toFixed(0)}%${r.upgradeNeeded?' · ⚠ upgrade':''}</span></label>`;
+  return `<div class="panel pad" style="margin-bottom:16px;border:1px solid var(--stroke2)">
+    <div class="sec-title"><h2>${ic('bars',17)} Threshold Hit Reports — multiple links</h2><span class="sub">pick any links · PDF per link or combined · Excel with charts${S.cfg.institution?' · '+esc(S.cfg.institution):''}</span></div>
+    <div class="grid g2" style="align-items:start">
+      <div>
+        <div class="flex" style="gap:8px;margin-bottom:8px"><input type="text" id="mlSearch" aria-label="Filter links" placeholder="Filter ${links.length.toLocaleString()} links…" oninput="mlFilter()" style="flex:1"><button class="btn sm ghost" onclick="mlSel('all')">All</button><button class="btn sm ghost" onclick="mlSel('flag')" title="Links meeting the upgrade trigger">⚠ Upgrade</button><button class="btn sm ghost" onclick="mlSel('none')">None</button></div>
+        <div id="mlList" class="mllist">${links.map(row).join('')}</div>
+        <div class="mini" id="mlCount" style="margin-top:6px">0 of ${links.length.toLocaleString()} selected</div>
+      </div>
+      <div>
+        <div class="grid g2" style="gap:10px">
+          <label class="fld"><span>Period</span><select id="mlPeriod" onchange="mlPeriod()"><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="183" selected>Last 6 months</option><option value="365">Last 12 months</option><option value="all">All loaded data</option><option value="custom">Custom range…</option></select></label>
+          <label class="fld"><span>Hours</span><select id="mlHours"><option value="all">All hours</option><option value="bh">Market hours only</option><option value="off">Non-market hours only</option></select></label>
+        </div>
+        <div id="mlCustom" class="grid g2" style="gap:10px;display:none"><label class="fld"><span>From</span><input type="datetime-local" id="mlFrom"></label><label class="fld"><span>To</span><input type="datetime-local" id="mlTo"></label></div>
+        <label class="fld"><span>Count a hit as</span><select id="mlBands"><option value="warn">Warning and above — each link’s own bands</option><option value="high">High and above</option><option value="crit">Critical only</option><option value="policy">Upgrade policy threshold (${ur.utilPct}%)</option></select></label>
+        <div class="fld"><span>Include</span>
+          <label class="mlck"><input type="checkbox" id="mlGraph" checked><span>Utilisation graph for the period</span></label>
+          <label class="mlck"><input type="checkbox" id="mlByDate" checked><span>Hits by date <span class="mini">— one row per day</span></span></label>
+          <label class="mlck"><input type="checkbox" id="mlByDT"><span>Hits by date-time <span class="mini">— every hit; can run to many pages (the PDF lists the first 10,000 per link, Excel has them all)</span></span></label>
+          <div class="mini" style="margin-top:2px">Untick both tables for a summary-and-graph report without tables.</div>
+        </div>
+        <div class="fld"><span>PDF layout</span>
+          <label class="mlck"><input type="radio" name="mlMode" value="each" checked><span>One PDF per link <span class="mini">— a .zip when several</span></span></label>
+          <label class="mlck"><input type="radio" name="mlMode" value="one"><span>One combined PDF <span class="mini">— cover page, contents and bookmarks</span></span></label>
+        </div>
+        <div class="flex" style="gap:10px;margin-top:6px"><button class="btn" id="mlPdf" onclick="bulkGenerate('pdf')">⤓ Generate PDF</button><button class="btn ghost" id="mlXls" onclick="bulkGenerate('xlsx')">⤓ Generate Excel (with charts)</button></div>
+        <div class="mini" id="mlStatus" style="margin-top:8px;min-height:14px"></div>
+      </div>
+    </div></div>`;
+}
+function mlCount(){const n=document.querySelectorAll('#mlList input:checked').length,t=document.querySelectorAll('#mlList .mlrow').length,e=$('#mlCount');if(e)e.textContent=`${n.toLocaleString()} of ${t.toLocaleString()} selected`;}
+function mlFilter(){const q=($('#mlSearch').value||'').trim().toLowerCase();document.querySelectorAll('#mlList .mlrow').forEach(l=>{l.style.display=(!q||l.dataset.q.includes(q))?'':'none';});}
+function mlSel(mode){document.querySelectorAll('#mlList .mlrow').forEach(l=>{if(l.style.display==='none')return;l.querySelector('input').checked=mode==='all'||(mode==='flag'&&l.dataset.flag==='1');});mlCount();}
+function mlPeriod(){const c=$('#mlCustom');if(c)c.style.display=$('#mlPeriod').value==='custom'?'':'none';}
+
+async function bulkGenerate(kind){
+  const checked=[...document.querySelectorAll('#mlList input:checked')];
+  if(!checked.length)return toast('Select at least one link');
+  const a=A(),list=checked.map(i=>a.ifs.find(r=>r.ifid===i.value)).filter(Boolean);
+  const v=id=>($('#'+id)||{}).value;
+  const win=bulkWindow(list,v('mlPeriod'),v('mlFrom'),v('mlTo'));
+  if(!(win.to>win.from))return toast('That period is empty — check the From / To dates');
+  const o={...win,hours:v('mlHours'),bands:v('mlBands'),graph:$('#mlGraph').checked,byDate:$('#mlByDate').checked,byDateTime:$('#mlByDT').checked};
+  const mode=(document.querySelector('input[name=mlMode]:checked')||{}).value||'each';
+  const say=t=>{const e=$('#mlStatus');if(e)e.textContent=t;},busy=b=>['#mlPdf','#mlXls'].forEach(s=>{const e=$(s);if(e)e.disabled=b;});
+  busy(true);
+  try{
+    const preps=[];
+    for(let i=0;i<list.length;i++){say(`Preparing ${i+1} of ${list.length}…`);await new Promise(r=>setTimeout(r,0));preps.push(bulkPrep(list[i],o));}
+    const hits=preps.reduce((s,P)=>s+P.total,0),none=preps.filter(P=>!P.covN).length,warn=none?` · ⚠ ${none} link(s) have no data in this period`:'',stamp=`${bD(o.from).replace(/-/g,'')}-${bD(o.to).replace(/-/g,'')}`;
+    if(kind==='pdf'){
+      const files=await bulkPdfFiles(preps,o,mode,i=>say(`Writing PDF ${i} of ${preps.length}…`));
+      if(files.length===1)dl(files[0].blob,files[0].name);
+      else{say('Zipping…');dl(zipStore(await Promise.all(files.map(async f=>({name:f.name,data:new Uint8Array(await f.blob.arrayBuffer())}))),'application/zip'),`Threshold_Hits_${files.length}_links_${stamp}.zip`);}
+      toast(`✓ ${files.length===1?'PDF':files.length+' PDFs (zip)'} downloaded — ${hits.toLocaleString()} hit(s) across ${list.length} link(s)${warn}`);
+    }else{
+      say('Building workbook…');await new Promise(r=>setTimeout(r,0));
+      const blob=await xlsxBlobZ(bulkXlsx(preps,o));
+      dl(blob,list.length===1?`Threshold_Hits_${(list[0].dev+'_'+list[0].intf).replace(/\W+/g,'_')}_${stamp}.xlsx`:`Threshold_Hits_${list.length}_links_${stamp}.xlsx`);
+      toast(`✓ Excel downloaded — ${hits.toLocaleString()} hit(s) across ${list.length} link(s)${warn}`);
+    }
+    say(none?`⚠ ${none} of ${list.length} link(s) have no samples between ${bD(o.from)} and ${bD(o.to)} — the period is anchored on the newest data among the selected links. They are marked “no data”, not zero hits.`:'');logAudit('report.bulk.'+kind,`${list.length} link(s)`,`${bD(o.from)}..${bD(o.to)} hours=${o.hours} hit=${o.bands} graph=${o.graph} byDate=${o.byDate} byDateTime=${o.byDateTime}${kind==='pdf'?' mode='+mode:''} · ${hits} hit(s)`);
+  }catch(e){console.error(e);say('');toast('✕ '+(e&&e.message||e));}
+  finally{busy(false);}
+}
+
+/*BULK-END*/
 function rcaCause(r){const f=r.forecast;if(f.growthMoM>0.1&&r.bhDays>=3)return'Organic business-hour demand growth';if(r.anomalies.some(a=>a.type.includes('Weekend')))return'Newly scheduled off-hours job (backup/replication) or misclassification';if(r.anomalies.some(a=>a.type.includes('imbalance')))return'Asymmetric routing / unidirectional flow';if(r.mx>0.9)return'Localized burst / elephant flow';return'Elevated utilization consistent with steady load';}
 
 /* ------------------------------ interactions ------------------------------ */

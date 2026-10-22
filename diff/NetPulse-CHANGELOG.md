@@ -59,6 +59,25 @@ reports generated in-browser. Enforced offline by a Content-Security-Policy.
 
 **This session (data-correctness + reporting hardening):**
 
+- **v64** — **Multi-link Threshold Hit Reports** (Reports page, top panel). Pick any number of
+  links (filter, All / ⚠ Upgrade / None) and get, from one set of options:
+  a **period** (7 d … 12 months, all data, or custom range), **hours** (all / market / non-market),
+  **what counts as a hit** (Warning+, High+, Critical, or the Upgrade-policy threshold), and what to
+  include — a **utilisation graph for the period** (default on), **hits by date**, **hits by
+  date-time**, or none of the tables. Output is **real PDF files** — one per link (a .zip when
+  several) or one combined document with a cover page, contents and bookmarks — plus an **Excel
+  workbook with native charts**: Summary, a stacked top-links chart, hits by date, hits by
+  date-time (split across sheets at 200,000 rows) and one chart sheet per link (peak, average,
+  threshold lines, hit markers). PDFs are written directly rather than printed, because a print
+  dialog can only ever produce one file. Every figure comes from one shared `hitCalc()`, extracted
+  from the existing Threshold Report, whose output is **byte-identical** before and after
+  (45 hours × band × link combinations compared). Links with no data in the period are marked
+  "no data", never shown as zero hits. The Excel writer gained styles, frozen headers, filters,
+  native charts and deflate compression (existing exports unchanged). Limits, all stated in the
+  documents: PDFs use the built-in Helvetica face so non-Latin-1 characters in device names print
+  as "?" (Excel keeps them); a PDF lists the first 10,000 hits per link (Excel lists all); the
+  period is anchored on the newest sample among the selected links.
+  New `scripts/regression.mjs` is the one runnable check for everything since v60.
 - **v63** — **Storage safety + design/accessibility pass.**
   *Storage:* a refused write (browser quota) used to be a silent unhandled rejection —
   the screen showed the upload as committed and it was gone on reload. Writes now roll

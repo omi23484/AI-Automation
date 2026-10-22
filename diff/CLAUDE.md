@@ -34,7 +34,12 @@ fonts instead of web fonts, local `data:`/`blob:` assets instead of remote ones.
 
 ## Testing
 
-Regression harness (Playwright) lives at `/tmp/fullreg.mjs`; it renders every view,
-exercises interactions, downloads, theme, and IndexedDB reload, and asserts **zero
-console/page errors** (CSP violations surface as console errors, so this also guards
-the offline invariant). Run it after any change to `netpulse.html`.
+Regression check (Playwright, drives the real page): `node scripts/regression.mjs` from the
+repository root. It renders every view, builds every export, and covers maintenance exclusion,
+link merge, workspace isolation, storage rollback, and the multi-link PDF/Excel pack — including
+a cross-check of its hit counts against the Threshold Report's printed numbers. It asserts zero
+console/page errors (CSP violations surface as console errors, so this also guards the offline
+invariant) and exits non-zero on any failure. Run it after any change to `netpulse.html`.
+
+Numeric parity of the server-side analytics against this file's engine is separate:
+`node scripts/capture-golden.mjs`, then `dotnet test` in `server/tests/NetPulse.Analytics.Tests`.
