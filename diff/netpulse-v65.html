@@ -727,7 +727,7 @@ input[type="date"]:hover::-webkit-calendar-picker-indicator{opacity:.8}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v64</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v65</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -1911,6 +1911,10 @@ function theilSen(pts,ci){
   return {slope,inter:percentile(pts.map(p=>p.y-slope*p.x),0.5),slopeLo:percentile(slopes,a),slopeHi:percentile(slopes,1-a)};
 }
 const maeOf=(fit,pts)=>pts.length?mean(pts.map(p=>Math.abs(p.y-(fit.slope*p.x+fit.inter)))):Infinity;
+// Ceiling for the fitted level AND every projection. They used to differ (level 1.5, projections
+// 1.2), so a link already running above 120% had its range band start at 150% and "fall" to 120%
+// over 30 days and run flat — a decline made entirely by the clamps.
+const FC_MAX=1.5;
 function forecastFrom(daily,p95,cls){
   const out={slopePerDay:0,current:p95,t80:null,t90:null,t95:null,t80Lo:null,t80Hi:null,t90Lo:null,t90Hi:null,t95Lo:null,t95Hi:null,growthMoM:0,conf:0.2,proj:{30:p95,60:p95,90:p95,180:p95},projLo:{},projHi:{},window:null,r2:0,ci:(S.cfg.forecastCI||0.8),modelNote:''};
   if(daily.length<5){out.modelNote='not enough history for a trend';return out;}
@@ -1944,12 +1948,12 @@ function forecastFrom(daily,p95,cls){
   const slope=clamp(fit.slope,-0.04,0.04); // ±4%/day plausibility ceiling
   const sHi=clamp(fit.slopeHi,-0.04,0.04),sLo=clamp(fit.slopeLo,-0.04,0.04);
   const lastX=pts.at(-1).x;
-  const cur=clamp(slope*lastX+fit.inter,0,1.5);
+  const cur=clamp(slope*lastX+fit.inter,0,FC_MAX);
   out.slopePerDay=slope;out.current=cur;out.r2=clamp(1-relErr,0,1);out.slopeLo=sLo;out.slopeHi=sHi;
   // #1 days-to-threshold as a RANGE: faster slope (sHi) → reaches sooner (Lo days); slower → Hi days.
   const ttFor=(T,sl)=>cur>=T?0:(sl>1e-5?(T-cur)/sl:null);
   for(const T of [80,90,95]){const t=T/100;out['t'+T]=ttFor(t,slope);out['t'+T+'Lo']=ttFor(t,sHi);out['t'+T+'Hi']=ttFor(t,sLo);}
-  for(const dd of [30,60,90,180]){out.proj[dd]=clamp(cur+slope*dd,0,1.2);out.projLo[dd]=clamp(cur+sLo*dd,0,1.2);out.projHi[dd]=clamp(cur+sHi*dd,0,1.2);}
+  for(const dd of [30,60,90,180]){out.proj[dd]=clamp(cur+slope*dd,0,FC_MAX);out.projLo[dd]=clamp(cur+sLo*dd,0,FC_MAX);out.projHi[dd]=clamp(cur+sHi*dd,0,FC_MAX);}
   // #4 growth taken from the SAME fitted slope (relative monthly rate) — no separate estimate to disagree
   out.growthMoM=clamp(slope*30/Math.max(cur,0.03),-3,3);
   const agree=cands.length===2&&Math.sign(cands[0].fit.slope)===Math.sign(cands[1].fit.slope);
@@ -2141,7 +2145,7 @@ function chartSVG(cfg,animate){
   // anchor the edge labels inward (start on the left, end on the right) so they never
   // extend past the plot box — combined with svg overflow:hidden this stops the spill.
   const xlabs=[[x0,'start'],[(x0+x1)/2,'middle'],[x1,'end']].map(([v,a])=>`<text class="ax" x="${X(v)}" y="${h-8}" text-anchor="${a}" font-size="9">${fmtX(v)}</text>`).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" ${animate?'':'data-nodraw="1"'}>${grid}${bhRects}${bands}${policy}${maint}${paths}${selLine}${evs}${xlabs}<rect x="${pad.l}" y="${pad.t}" width="${w-pad.l-pad.r}" height="${h-pad.t-pad.b}" fill="transparent"/><g class="hg"></g></svg>`;
+  return `<svg viewBox="0 0 ${w} ${h}" ${animate?'':'data-nodraw="1"'}><defs><clipPath id="cp-${cfg.id}"><rect x="${pad.l}" y="${pad.t-2}" width="${w-pad.l-pad.r}" height="${h-pad.t-pad.b+4}"/></clipPath></defs>${grid}${bhRects}${bands}${policy}${maint}<g clip-path="url(#cp-${cfg.id})">${paths}</g>${selLine}${evs}${xlabs}<rect x="${pad.l}" y="${pad.t}" width="${w-pad.l-pad.r}" height="${h-pad.t-pad.b}" fill="transparent"/><g class="hg"></g></svg>`;
 }
 function redrawChart(cfg){const el=document.querySelector(`.chart[data-chart="${cfg.id}"] svg`);if(el)el.outerHTML=chartSVG(cfg,false);}
 function chartAt(e){const el=e.target.closest&&e.target.closest('.chart[data-chart]');if(!el)return null;const cfg=CHARTS[el.dataset.chart];if(!cfg)return null;cfg.el=el;return cfg;}
@@ -2514,7 +2518,7 @@ function view_intf(){
   const bwSub=(txs.length&&rxs.length)?`Transmit p95 ${fmtBps(percentile(txs,0.95))} · Received p95 ${fmtBps(percentile(rxs,0.95))}${pks.length?` · Peak ${pct1(amax(pks))}`:''}`:'Transmit / Received with threshold bands';
   // forecast chart series
   const lastD=r.daily.at(-1)?.d||Date.now();
-  const proj=[0,30,60,90,180].map(dd=>[lastD+dd*86400000,clamp(f.current+f.slopePerDay*dd,0,2)]);
+  const proj=[0,30,60,90,180].map(dd=>[lastD+dd*86400000,dd?f.proj[dd]:f.current]);
   const events=buildTimeline(r);
   // anomalies as markers on the traffic chart; dropdown below points at them
   S.intfAnomalies=r.anomalies.filter(an=>!hasFlt||inFlt(an)).map(an=>({ts:an.ts,ifid:r.ifid,type:an.type,util:an.util,exp:an.exp,z:an.z,jump:an.jump,ratio:an.ratio}));
@@ -2575,7 +2579,7 @@ function view_intf(){
         <div class="sec-title"><h2>Capacity forecast</h2><span class="spacer"></span><span class="tabs" style="margin:0"><button class="${(S.cfg.forecastHours||'all')!=='bh'?'active':''}" onclick="setForecastHours('all')">All hours</button><button class="${S.cfg.forecastHours==='bh'?'active':''}" onclick="setForecastHours('bh')">Market hours</button></span></div>
         <div class="sub" style="margin:-6px 0 8px">when this link runs out of headroom · ${f.modelNote||'trend model'} · basis: ${S.cfg.forecastHours==='bh'?'market hours only':'all hours'}${hasFlt?' · always full history (unfiltered)':''}</div>
         ${(()=>{const bandLo=[[lastD,f.current]].concat([30,60,90,180].map(dd=>[lastD+dd*864e5,f.projLo[dd]!=null?f.projLo[dd]:f.current]));const bandHi=[[lastD,f.current]].concat([30,60,90,180].map(dd=>[lastD+dd*864e5,f.projHi[dd]!=null?f.projHi[dd]:f.current]));
-          return svgLineArea([{data:r.daily.map(d=>[d.d,d.p95]),color:'#2dd4bf',wide:true,name:'Historical daily p95'},{data:bandHi,color:'#fbbf24',dash:true,name:'range-hi'},{data:bandLo,color:'#fbbf24',dash:true,name:'range-lo'},{data:proj,color:'#fb923c',dash:true,name:'Forecast'}],{h:200,bands:r.th,y1:Math.max(1,f.proj[180]*1.1),speed:r.speed});})()}
+          return svgLineArea([{data:r.daily.map(d=>[d.d,d.p95]),color:'#2dd4bf',wide:true,name:'Historical daily p95'},{data:bandHi,color:'#fbbf24',dash:true,name:'range-hi'},{data:bandLo,color:'#fbbf24',dash:true,name:'range-lo'},{data:proj,color:'#fb923c',dash:true,name:'Forecast'}],{h:200,bands:r.th,y1:niceTop(Math.min(2,Math.max(1,1.06*amax([...r.daily.map(d=>d.p95),...bandHi.map(p=>p[1]),...bandLo.map(p=>p[1]),...proj.map(p=>p[1])]))) ),speed:r.speed});})()}
         <div class="legend"><span><i style="background:#2dd4bf"></i>historical p95</span><span><i style="background:#fb923c"></i>forecast (mid)</span><span><i style="background:#fbbf24"></i>${(f.ci*100||80).toFixed(0)}% range</span></div>
         <div class="grid g4 kpis" style="margin-top:12px">
           ${fcell('Days to 80% full',f.t80,f.t80Lo,f.t80Hi)}${fcell('Days to 90% full',f.t90,f.t90Lo,f.t90Hi)}${fcell('Days to 95% full',f.t95,f.t95Lo,f.t95Hi)}
@@ -4382,7 +4386,8 @@ function bulkPanel(links){
           <div class="mini" style="margin-top:2px">Untick both tables for a summary-and-graph report without tables.</div>
         </div>
         <div class="fld"><span>PDF layout</span>
-          <label class="mlck"><input type="radio" name="mlMode" value="each" checked><span>One PDF per link <span class="mini">— a .zip when several</span></span></label>
+          <label class="mlck"><input type="radio" name="mlMode" value="files" checked><span>Separate PDF files <span class="mini">— one download per link (up to 25); your browser may ask to allow several downloads</span></span></label>
+          <label class="mlck"><input type="radio" name="mlMode" value="each"><span>One .zip of PDFs <span class="mini">— best for many links. If Windows says a file is “potentially harmful” on extracting, right-click the .zip → Properties → <b>Unblock</b> first, or extract to a local drive rather than a network share</span></span></label>
           <label class="mlck"><input type="radio" name="mlMode" value="one"><span>One combined PDF <span class="mini">— cover page, contents and bookmarks</span></span></label>
         </div>
         <div class="flex" style="gap:10px;margin-top:6px"><button class="btn" id="mlPdf" onclick="bulkGenerate('pdf')">⤓ Generate PDF</button><button class="btn ghost" id="mlXls" onclick="bulkGenerate('xlsx')">⤓ Generate Excel (with charts)</button></div>
@@ -4403,7 +4408,7 @@ async function bulkGenerate(kind){
   const win=bulkWindow(list,v('mlPeriod'),v('mlFrom'),v('mlTo'));
   if(!(win.to>win.from))return toast('That period is empty — check the From / To dates');
   const o={...win,hours:v('mlHours'),bands:v('mlBands'),graph:$('#mlGraph').checked,byDate:$('#mlByDate').checked,byDateTime:$('#mlByDT').checked};
-  const mode=(document.querySelector('input[name=mlMode]:checked')||{}).value||'each';
+  const mode=(document.querySelector('input[name=mlMode]:checked')||{}).value||'files';
   const say=t=>{const e=$('#mlStatus');if(e)e.textContent=t;},busy=b=>['#mlPdf','#mlXls'].forEach(s=>{const e=$(s);if(e)e.disabled=b;});
   busy(true);
   try{
@@ -4411,10 +4416,13 @@ async function bulkGenerate(kind){
     for(let i=0;i<list.length;i++){say(`Preparing ${i+1} of ${list.length}…`);await new Promise(r=>setTimeout(r,0));preps.push(bulkPrep(list[i],o));}
     const hits=preps.reduce((s,P)=>s+P.total,0),none=preps.filter(P=>!P.covN).length,warn=none?` · ⚠ ${none} link(s) have no data in this period`:'',stamp=`${bD(o.from).replace(/-/g,'')}-${bD(o.to).replace(/-/g,'')}`;
     if(kind==='pdf'){
-      const files=await bulkPdfFiles(preps,o,mode,i=>say(`Writing PDF ${i} of ${preps.length}…`));
+      const files=await bulkPdfFiles(preps,o,mode==='one'?'one':'each',i=>say(`Writing PDF ${i} of ${preps.length}…`));
+      // ponytail: browsers throttle bursts of automatic downloads, so separate files stop at 25 and fall back to a .zip.
+      const separate=mode==='files'&&files.length>1&&files.length<=25;
       if(files.length===1)dl(files[0].blob,files[0].name);
+      else if(separate){for(let i=0;i<files.length;i++){say(`Downloading ${i+1} of ${files.length}…`);dl(files[i].blob,files[i].name);await new Promise(r=>setTimeout(r,400));}}
       else{say('Zipping…');dl(zipStore(await Promise.all(files.map(async f=>({name:f.name,data:new Uint8Array(await f.blob.arrayBuffer())}))),'application/zip'),`Threshold_Hits_${files.length}_links_${stamp}.zip`);}
-      toast(`✓ ${files.length===1?'PDF':files.length+' PDFs (zip)'} downloaded — ${hits.toLocaleString()} hit(s) across ${list.length} link(s)${warn}`);
+      toast(`✓ ${files.length===1?'PDF':separate?files.length+' PDF files':files.length+' PDFs (zip'+(mode==='files'?' — more than 25, so zipped':'')+')'} downloaded — ${hits.toLocaleString()} hit(s) across ${list.length} link(s)${warn}`);
     }else{
       say('Building workbook…');await new Promise(r=>setTimeout(r,0));
       const blob=await xlsxBlobZ(bulkXlsx(preps,o));

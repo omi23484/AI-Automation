@@ -59,6 +59,19 @@ reports generated in-browser. Enforced offline by a Content-Security-Policy.
 
 **This session (data-correctness + reporting hardening):**
 
+- **v65** — **Two fixes.** (1) *Capacity forecast drew a decline for links above ~120%.* The
+  forecast engine capped the fitted **level** at 150% but every **projection** (`proj`, and the
+  range band `projLo`/`projHi`) at 120%, so a link already above 120% had its band start at 150%
+  and "fall" to 120% over 30 days, then run flat — beside text saying "growing ~21%/month". One
+  ceiling now applies to both. The chart also sized its y-axis from the 180-day projection alone,
+  so history was drawn outside the plot; it now sizes from everything plotted, and every chart
+  clips its series to the plot area. The 120% cap had also been flattening far-horizon
+  projections on ordinary links projected above 120%; those now show their real value (up to
+  150%). The C# analytics port was changed identically and its parity fixtures regenerated.
+  (2) *Windows blocked the PDFs extracted from the .zip* ("potentially harmful"). PDF layout is now
+  **Separate PDF files** (default, up to 25, one download per link), **One .zip**, or **One
+  combined PDF**; the zip option explains the Unblock step. Cause is Windows' Mark-of-the-Web on a
+  downloaded zip, which Explorer cannot persist onto a network share.
 - **v64** — **Multi-link Threshold Hit Reports** (Reports page, top panel). Pick any number of
   links (filter, All / ⚠ Upgrade / None) and get, from one set of options:
   a **period** (7 d … 12 months, all data, or custom range), **hours** (all / market / non-market),

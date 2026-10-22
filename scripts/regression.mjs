@@ -48,11 +48,12 @@ check('renders a link page',errs.length===0,errs[0]||'');
 
 console.log('exports build');
 const ex=await p.evaluate(async()=>{
-  const got=[];window.dl=(blob,name)=>got.push({name,size:blob.size});const out={};
+  const got=[],realDl=window.dl;window.dl=(blob,name)=>got.push({name,size:blob.size});const out={};
   const t=(k,f)=>{try{f();out[k]='ok';}catch(e){out[k]=e.message;}};
   const id=A().ifs[0].ifid;
   t('policy xlsx',()=>genUpgradePolicyXlsx('all'));t('regulatory xlsx',()=>genRegReport('all','xlsx'));
   t('threshold report html',()=>breachReportHTML(A().ifs[0],'all','warn'));t('link html',()=>exportLink(id,'html'));
+  window.dl=realDl;                                   // later sections need real downloads
   out.files=got.length;return out;
 });
 for(const [k,v] of Object.entries(ex))if(k!=='files')check('export '+k,v==='ok',v==='ok'?'':v);
@@ -111,6 +112,31 @@ check('bulk hit count == legacy Threshold Report, every link',bk.rows.every(r=>r
 check('hits-by-date and date-time rows both sum to the hit total',bk.rows.every(r=>r.byDay===r.bulk)&&bk.dt===bk.total,`${bk.total} hits`);
 check('one valid PDF per link + one combined',bk.pdfN===bk.links&&bk.pdfHead==='%PDF-'&&bk.oneHead==='%PDF-');
 check('Excel is a zip with a chart per link + the top-links chart',bk.xlsxZip&&bk.charts===bk.links+1,`${bk.charts} charts`);
+
+console.log('download modes');
+await p.evaluate(()=>{S.analytics=null;go('reports');});await p.waitForTimeout(300);
+const dls=[];p.on('download',d=>dls.push(d));
+for(const i of [1,2,3])await p.click(`#mlList .mlrow:nth-child(${i}) input`);
+const settle=async()=>{await p.waitForFunction(()=>document.getElementById('mlStatus').textContent===''&&!document.getElementById('mlPdf').disabled,null,{timeout:60000});await p.waitForTimeout(500);};
+await p.check('input[name=mlMode][value=files]');await p.click('#mlPdf');await settle();
+const sep=dls.splice(0),heads=[];for(const d of sep){const buf=fs.readFileSync(await d.path());heads.push(buf.subarray(0,5).toString());}
+check('"separate files" downloads one real PDF per selected link',sep.length===3&&sep.every(d=>d.suggestedFilename().endsWith('.pdf'))&&heads.every(h=>h==='%PDF-'),sep.map(d=>d.suggestedFilename().slice(0,28)).join(' | '));
+await p.check('input[name=mlMode][value=each]');await p.click('#mlPdf');await settle();
+const zip=dls.splice(0);check('".zip" mode downloads a single zip',zip.length===1&&zip[0].suggestedFilename().endsWith('.zip'));
+
+console.log('forecast on an over-capacity link (v65)');
+const fc=await p.evaluate(()=>{
+  let seed=11;const rnd=()=>{seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff;};
+  S.samples=[];S.maintenance=[];S.analytics=null;S.cfg.forecastMetric='max';
+  const HR=3600000,t0=new Date(2026,2,23).getTime(),N=150*24,sp=200e6;
+  for(let k=0;k<N;k++){const ts=t0+k*HR,d=new Date(ts),wk=d.getDay()>=1&&d.getDay()<=5,u=wk&&d.getHours()>=15&&d.getHours()<=20?(0.95+0.5*k/N)*(0.95+0.1*rnd()):0.12+0.1*rnd();
+    S.samples.push({ifid:'X|Y',dev:'X',intf:'Y',ts,tx:u*sp,rx:u*sp*.3,ptx:null,prx:null,pu:null,speed:sp,speedTx:sp,speedRx:sp,util:u,batch:'b'});}
+  const f=A().ifs[0].forecast,p=f.proj,lo=f.projLo,hi=f.projHi;
+  const up=f.slopePerDay>0;
+  return {cur:f.current,slope:f.slopePerDay,rises:[30,60,90,180].every(d=>p[d]>=f.current-1e-9),bandOrdered:[30,60,90,180].every(d=>lo[d]<=p[d]+1e-9&&p[d]<=hi[d]+1e-9),up};
+});
+check('a growing link above 120% never projects below its current level',fc.up&&fc.rises,`current ${(fc.cur*100).toFixed(0)}%`);
+check('the range band brackets the projection',fc.bandOrdered);
 
 console.log('offline invariant');
 const html=fs.readFileSync(HTML,'utf8');

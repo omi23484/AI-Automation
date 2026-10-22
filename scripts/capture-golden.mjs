@@ -76,6 +76,11 @@ const data=await p.evaluate(()=>{
   //     fire. Kept as a regression witness for that behaviour.
   add('weekly-cycle-9to1', mkDaily(140,(i,dow)=>(dow===0||dow===6?0.10:0.90)),0.90,'Trading');
 
+  // 24-25. a link already ABOVE the old 1.2 projection ceiling: its projections must not fall below
+  //     its own current level (they used to — level capped at 1.5, projections at 1.2)
+  add('over-capacity-growing', mkDaily(90,i=>1.15+i*0.002),1.30,'Core');
+  add('over-capacity-flat',    mkDaily(90,()=>1.35),1.35,'Core');
+
   // riskScore cases
   const risks=[];
   const addRisk=(name,f)=>risks.push({name,cfg,input:f,result:JSON.parse(JSON.stringify(riskScore(f)))});

@@ -48,6 +48,9 @@ public static class Forecast
 {
     private const double DayMs = 86_400_000d;
     private const double SlopeCeiling = 0.04;   // ±4 %/day plausibility ceiling
+    // Ceiling for the fitted level AND every projection. They were 1.5 and 1.2, so a link already
+    // above 120% had its range band start at 150% and "fall" to 120% — a decline made by the clamps.
+    private const double FcMax = 1.5;
 
     /// <summary>
     /// Theil–Sen with a slope confidence interval. Pairs are sampled with a stride of
@@ -157,7 +160,7 @@ public static class Forecast
         var sHi = Stats.Clamp(fit.SlopeHi, -SlopeCeiling, SlopeCeiling);
         var sLo = Stats.Clamp(fit.SlopeLo, -SlopeCeiling, SlopeCeiling);
         var lastX = xy[^1].X;
-        var cur = Stats.Clamp(slope * lastX + fit.Intercept, 0, 1.5);
+        var cur = Stats.Clamp(slope * lastX + fit.Intercept, 0, FcMax);
 
         o.SlopePerDay = slope; o.Current = cur; o.R2 = Stats.Clamp(1 - relErr, 0, 1);
         o.SlopeLo = sLo; o.SlopeHi = sHi;
@@ -170,9 +173,9 @@ public static class Forecast
 
         foreach (var dd in new[] { 30, 60, 90, 180 })
         {
-            o.Proj[dd] = Stats.Clamp(cur + slope * dd, 0, 1.2);
-            o.ProjLo[dd] = Stats.Clamp(cur + sLo * dd, 0, 1.2);
-            o.ProjHi[dd] = Stats.Clamp(cur + sHi * dd, 0, 1.2);
+            o.Proj[dd] = Stats.Clamp(cur + slope * dd, 0, FcMax);
+            o.ProjLo[dd] = Stats.Clamp(cur + sLo * dd, 0, FcMax);
+            o.ProjHi[dd] = Stats.Clamp(cur + sHi * dd, 0, FcMax);
         }
 
         // Growth comes from the same fitted slope, so it can never disagree with the trend.

@@ -35,6 +35,14 @@ exponent, the violations divisor, the impact multiplier — makes it fail every
 time. The first round of fixtures missed three of those, which is why boundary
 cases were added.
 
+### Projection ceiling (changed with v65 of the browser app)
+
+`forecastFrom()` capped the fitted level at 1.5 but every projection at 1.2, so a link already
+above 120 % projected a decline made entirely by the clamps. Both now use one ceiling (`FcMax`,
+1.5) in the JavaScript engine and in `Forecast.cs`; the fixtures were regenerated and two cases
+(`over-capacity-growing`, `over-capacity-flat`) pin it. Far-horizon projections on ordinary links
+that exceed 120 % also changed — expected, and visible in the regenerated `forecast.json`.
+
 ### Regenerating the fixtures
 
 ```bash
