@@ -59,6 +59,10 @@ reports generated in-browser. Enforced offline by a Content-Security-Policy.
 
 **This session (data-correctness + reporting hardening):**
 
+- **v66** — **Threshold Report chart now plots the daily peak, not the daily p95.** The cards count
+  individual samples (e.g. 71 hits, peak 108%) but the chart drew each day's p95, which ignores the
+  top 5% of samples, so a handful of bursts could never appear and its "peak 29.9%" contradicted
+  the 108% card. The chart now shows daily peak and average, and its peak label matches the card.
 - **v65** — **Two fixes.** (1) *Capacity forecast drew a decline for links above ~120%.* The
   forecast engine capped the fitted **level** at 150% but every **projection** (`proj`, and the
   range band `projLo`/`projHi`) at 120%, so a link already above 120% had its band start at 150%

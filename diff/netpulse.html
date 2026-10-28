@@ -727,7 +727,7 @@ input[type="date"]:hover::-webkit-calendar-picker-indicator{opacity:.8}
 </head>
 <body>
 <div id="app">
-  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v65</span></div>
+  <div id="brand"><span class="dot"></span><b>NetPulse</b><span class="chip" title="build version">v66</span></div>
   <div id="topbar">
     <div id="search" title="Ask NetPulse (grounded, offline)">
       <span>⌘K</span>
@@ -3779,7 +3779,7 @@ function breachReportHTML(r,hours,bands){
   // threshold guide lines, the peak day marked, and a legend underneath.
   const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const axD=ts=>{const d=new Date(ts);return `${p2(d.getDate())} ${MON[d.getMonth()]}`;};
-  let chart='';{const dd=r.daily.filter(d=>d.d>=winStart&&d.d<=winEnd);
+  let chart='';{const dd=hitSeries(r,{winStart,winEnd,hours}).pts.map(p=>({d:p.t,p95:p.peak,avg:p.avg}));   // daily PEAK: hits are single samples, which a p95 line cannot show
     if(dd.length>1){
       const w=760,h=230,L=46,R=64,T=26,B=44;                    // plot margins
       const ys=dd.map(d=>d.p95);const y1=Math.max(th.crit*1.12,amax(ys)*1.12,0.01);
@@ -3800,18 +3800,18 @@ function breachReportHTML(r,hours,bands){
         pk=`<circle cx="${X(bi).toFixed(1)}" cy="${Y(dd[bi].p95).toFixed(1)}" r="3.2" fill="#0369a1" stroke="#fff" stroke-width="1.2"/><text x="${X(bi).toFixed(1)}" y="${(Y(dd[bi].p95)-7).toFixed(1)}" font-size="9" fill="#0369a1" font-weight="700" text-anchor="middle">peak ${(dd[bi].p95*100).toFixed(1)}%</text>`;}
       chart=`<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="max-width:100%;height:auto">
         <rect width="${w}" height="${h}" fill="#fff" stroke="#e5eaf1"/>
-        <text x="${L}" y="15" font-size="10.5" fill="#0f2740" font-weight="700">Daily busy-period utilization (p95) — ${fmtD(winStart)} to ${fmtD(winEnd)}</text>
+        <text x="${L}" y="15" font-size="10.5" fill="#0f2740" font-weight="700">Daily peak and average utilization — ${fmtD(winStart)} to ${fmtD(winEnd)}</text>
         ${grid}
         <line x1="${L}" x2="${L}" y1="${T}" y2="${h-B}" stroke="#94a3b8" stroke-width="1"/>
         <line x1="${L}" x2="${w-R}" y1="${h-B}" y2="${h-B}" stroke="#94a3b8" stroke-width="1"/>
         ${gl(th.warn,'#b45309','Warning')}${gl(th.high,'#c2410c','High')}${gl(th.crit,'#e11d48','Critical')}
         <path d="${area}" fill="#0369a1" opacity=".07"/>
-        <path d="${line}" fill="none" stroke="#0369a1" stroke-width="1.8" stroke-linejoin="round"/>
+        <path d="${dd.map((d,i)=>(i?'L':'M')+X(i).toFixed(1)+' '+Y(d.avg).toFixed(1)).join(' ')}" fill="none" stroke="#93c5e8" stroke-width="1.2"/><path d="${line}" fill="none" stroke="#0369a1" stroke-width="1.8" stroke-linejoin="round"/>
         ${pk}${xlab}
         <text x="${(L+(w-R))/2}" y="${h-6}" font-size="9.5" fill="#64748b" text-anchor="middle">Date (${tzLabel()}) · ${dd.length} days plotted</text>
-        <text x="13" y="${(T+h-B)/2}" font-size="9.5" fill="#64748b" text-anchor="middle" transform="rotate(-90 13 ${((T+h-B)/2).toFixed(1)})">Utilization (p95)</text>
+        <text x="13" y="${(T+h-B)/2}" font-size="9.5" fill="#64748b" text-anchor="middle" transform="rotate(-90 13 ${((T+h-B)/2).toFixed(1)})">Utilization (daily peak)</text>
       </svg>
-      <div class="legend" style="margin:6px 0 2px"><span><i style="background:#0369a1"></i>Daily p95 utilization</span><span><i style="background:#b45309"></i>Warning ${(th.warn*100).toFixed(0)}%</span><span><i style="background:#c2410c"></i>High ${(th.high*100).toFixed(0)}%</span><span><i style="background:#e11d48"></i>Critical ${(th.crit*100).toFixed(0)}%</span><span style="color:#64748b">Dashed = threshold</span></div>`;}}
+      <div class="legend" style="margin:6px 0 2px"><span><i style="background:#0369a1"></i>Daily peak</span><span><i style="background:#93c5e8"></i>Daily average</span><span><i style="background:#b45309"></i>Warning ${(th.warn*100).toFixed(0)}%</span><span><i style="background:#c2410c"></i>High ${(th.high*100).toFixed(0)}%</span><span><i style="background:#e11d48"></i>Critical ${(th.crit*100).toFixed(0)}%</span><span style="color:#64748b">Dashed = threshold</span></div>`;}}
   const kv=(k,v)=>`<tr><td class="k">${k}</td><td class="v">${v}</td></tr>`;
   const MAXDET=3000; const detail=breaches.slice(0,MAXDET);
   const dayRows=Object.keys(byDay).sort().map(dk=>{const o=byDay[dk];
