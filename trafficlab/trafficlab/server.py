@@ -17,6 +17,7 @@ from .config import make_config, DEFAULTS
 from .store import CRStore, STATUSES
 from .interpret import RULES
 from .presets import PRESETS
+from . import profile as prof_mod
 
 WEB = os.path.join(os.path.dirname(__file__), "web")
 MAX_BODY = 1024 * 1024 * 1024
@@ -34,6 +35,10 @@ class State:
         self.result = None
         self.job = {"state": "idle", "done": 0, "total": 0, "error": None}
         self.checks = None
+        self.profile = None
+
+    def cfg(self, req=None):
+        return prof_mod.effective_config(self.profile, req)
 
 
 def evidence_pack(st, fid_):
@@ -147,7 +152,9 @@ def make_handler(st):
         # ---------------- GET ----------------
         def api_get(self, p, q):
             if p == "/api/defaults":
-                return 200, {"config": DEFAULTS, "statuses": STATUSES, "rules": RULES, "presets": PRESETS, "synth_mapping32": synth.SYN_MAPPING32, "synth_mapping64": synth.SYN_MAPPING}
+                return 200, {"config": DEFAULTS, "statuses": STATUSES, "rules": RULES, "presets": prof_mod.all_presets(st.profile), "profile": st.profile, "profile_import": prof_mod.import_defaults(st.profile), "effective_config": st.cfg(), "synth_mapping32": synth.SYN_MAPPING32, "synth_mapping64": synth.SYN_MAPPING}
+            if p == "/api/profile":
+                return 200, (st.profile or {"empty": True})
             if p == "/api/status":
                 return 200, dict(st.job, has_data=st.ds is not None, has_result=st.result is not None)
             if p == "/api/validation":
@@ -231,6 +238,9 @@ def make_handler(st):
 
         # ---------------- POST ----------------
         def api_post(self, p, b):
+            if p == "/api/profile":
+                st.profile = None if b.get("clear") else prof_mod.load(b["profile"])
+                return 200, {"profile": st.profile, "import": prof_mod.import_defaults(st.profile), "presets": sorted(prof_mod.all_presets(st.profile))}
             if p == "/api/synth":
                 text, man = synth.generate(mixed_formats=bool(b.get("mixed_formats", True)))
                 mapping = synth.SYN_MAPPING32 if b.get("bits32_wan", True) else synth.SYN_MAPPING
@@ -248,7 +258,7 @@ def make_handler(st):
                     if st.ds is None:
                         return 400, {"error": "import data first"}
                     st.job = {"state": "running", "done": 0, "total": len(st.series), "error": None}
-                cfg = make_config(b.get("config"))
+                cfg = st.cfg(b.get("config"))
                 threading.Thread(target=self._run, args=(cfg, b.get("workers")), daemon=True).start()
                 return 202, {"started": True}
             if p == "/api/import_weekly":
@@ -257,7 +267,7 @@ def make_handler(st):
                     files.append((f["name"], base64.b64decode(f["b64"]) if f.get("b64") else f.get("text", "")))
                 if not files:
                     return 400, {"error": "no files"}
-                cfg = make_config(b.get("config"))
+                cfg = st.cfg(b.get("config"))
                 inv = ingest.load_inventory(b["inventory_text"]) if b.get("inventory_text") else None
                 series, rep = weekly.build_series(files, cfg, b.get("tz") or "UTC", b.get("overrides") or None, None, inv)
                 if not series:
@@ -284,7 +294,7 @@ def make_handler(st):
                     caps = devcheck.load_items(items, pol)
                 if not caps:
                     return 400, {"error": "no usable captures: files need a 'COMMAND: show ...' first line, 'host# show ...' prompts, or show_*.txt names, inside <device>/ folders"}
-                cfg = make_config({"devcheck": {k: v for k, v in (b.get("devcheck") or {}).items()}})
+                cfg = st.cfg({"devcheck": b.get("devcheck") or {}} if b.get("devcheck") else None)
                 st.checks = devcheck.analyze_captures(caps, cfg)
                 return 200, {"summary": st.checks["summary"]}
             if p == "/api/crs":
@@ -297,8 +307,8 @@ def make_handler(st):
             return 404, {"error": "not found"}
 
         def _load(self, text, mapping, fmts, tz, delim, inv, source):
-            ds = ingest.load_csv(text, mapping, fmts, tz, delim, inv, source)
-            cfg = make_config()
+            ds = ingest.load_csv(text, mapping, fmts, tz, delim, inv, source, zone_map=st.cfg().get("zone_map"))
+            cfg = st.cfg()
             series, dq = counters.build_all(ds, cfg)
             with st.lock:
                 st.ds, st.series, st.dq = ds, series, dq

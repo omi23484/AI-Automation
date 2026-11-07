@@ -52,11 +52,13 @@ function setStatus(t) { $("#status").textContent = t; }
 
 // ------------------------------------------------------------------ Import
 async function tImport(m) {
-  if (!S.defaults) S.defaults = await api("/api/defaults");
+  S.defaults = await api("/api/defaults");
+  const pi = S.defaults.profile_import || {};
+  if (pi.mapping && !S.mapping) S.mapping = pi.mapping;
   const file = h("input", { type: "file", accept: ".csv,.txt,.tsv" });
   const delim = h("input", { value: ",", size: 2 });
-  const tz = h("input", { value: "UTC", size: 22, title: "IANA name, e.g. UTC, Europe/London. Used ONLY for timestamps without an offset" });
-  const fmts = h("input", { size: 60, placeholder: "e.g. %Y-%m-%d %H:%M:%S  (comma separated; blank = built-in ISO candidates; epoch_s / epoch_ms allowed)" });
+  const tz = h("input", { value: pi.tz || "UTC", size: 22, title: "IANA name, e.g. UTC, Europe/London. Used ONLY for timestamps without an offset" });
+  const fmts = h("input", { size: 60, value: (pi.ts_formats || []).join(","), placeholder: "e.g. %Y-%m-%d %H:%M:%S  (comma separated; blank = built-in ISO candidates; epoch_s / epoch_ms allowed)" });
   const map = h("textarea", { rows: 16 }, JSON.stringify(S.mapping || MAP_TEMPLATE, null, 2));
   const inv = h("input", { type: "file", accept: ".csv" });
   const hdr = h("div", { class: "muted" }, "Pick a file to see its header columns.");
@@ -85,7 +87,8 @@ async function tImport(m) {
     S.validation = r.validation; S.result = null; showValidation(out);
     out.prepend(h("div", { class: "banner" }, "SYNTHETIC DATA (fake). Ground truth: ", h("pre", { class: "mono" }, JSON.stringify(r.manifest.ground_truth, null, 1))));
   };
-  m.append(
+  const prof = profileCard(() => render(), () => ({ tz: tz.value.trim(), ts_formats: fmts.value.trim() ? fmts.value.split(",").map(x => x.trim()) : undefined, mapping: (() => { try { return JSON.parse(map.value); } catch (e) { return undefined; } })() }));
+  m.append(prof,
     h("div", { class: "banner" }, "Data stays on this machine (server bound to 127.0.0.1). Raw rows are never modified; timestamps keep ts_raw and get a separate ts_parsed. No captures are bundled: provide your own CSV."),
     h("div", { class: "card" }, h("div", { class: "row" }, presetSel), h("div", { class: "row" }, file, "delimiter", delim, "timezone for offset-less timestamps", tz), h("div", { class: "row" }, "timestamp formats", fmts), hdr,
       h("div", { class: "row" }, "optional inventory CSV (device,zone[,interface,speed_bps])", inv)),
@@ -94,6 +97,22 @@ async function tImport(m) {
     weeklyCard(out2),
     out);
   if (S.validation) showValidation(out, S.validation.mode === "weekly");
+}
+function profileCard(rerender, formImport) {
+  const file = h("input", { type: "file", accept: ".json" }), name = h("input", { size: 18, placeholder: "profile name" }), msg = h("span", { class: "muted" });
+  const cur = S.defaults.profile;
+  file.onchange = async () => { try { const r = await api("/api/profile", { profile: JSON.parse(await file.files[0].text()) }); S.mapping = null; msg.textContent = "loaded " + r.profile.name; rerender(); } catch (e) { msg.textContent = ""; box.append(h("div", { class: "banner err" }, e.message)); } };
+  const clear = async () => { await api("/api/profile", { clear: true }); S.mapping = null; rerender(); };
+  const save = async () => {
+    try { const base = cur || { config: {} }; const imp = formImport(); const profile = { ...base, name: name.value.trim() || base.name || "profile", import: { ...(base.import || {}), ...Object.fromEntries(Object.entries(imp).filter(([, v]) => v !== undefined && v !== "")) } };
+      delete profile.import.preset; await api("/api/profile", { profile }); msg.textContent = "saved into active profile"; rerender(); } catch (e) { msg.textContent = e.message; }
+  };
+  const box = h("div", { class: "card" }, h("b", {}, "Environment profile"),
+    h("div", { class: "muted" }, "One JSON file holds everything that differs between customers: zones, groups, thresholds, header aliases, week rules, waivers, custom parsers/rules, presets. Unknown keys are rejected. See docs/ADAPTING.md and profiles/example-neutral.json."),
+    h("div", { class: "row" }, cur ? h("span", {}, "active: ", h("b", {}, cur.name), cur.description ? " - " + cur.description : "") : h("span", { class: "muted" }, "none active (built-in defaults)"),
+      "load", file, cur ? h("button", { onclick: clear }, "clear") : "", cur ? h("a", { href: "/api/profile", download: (cur.name || "profile") + ".json" }, h("button", {}, "download active")) : ""),
+    h("div", { class: "row" }, name, h("button", { onclick: save }, "save form (tz, formats, mapping) into profile"), msg));
+  return box;
 }
 const out2 = h("div");
 function weeklyCard(box) {
@@ -132,7 +151,7 @@ function showValidation(out, weeklyMode) {
     out.append(h("div", { class: "row" }, h("button", { class: "pri", onclick: () => { S.tab = "Overview"; render(); } }, "Open results (Overview)")));
     return;
   }
-  const cfg = h("textarea", { rows: 10, id: "cfg" }, JSON.stringify(S.defaults.config, null, 2));
+  const cfg = h("textarea", { rows: 10, id: "cfg" }, JSON.stringify(S.defaults.effective_config || S.defaults.config, null, 2));
   const prog = h("span", { class: "muted" });
   out.append(h("h3", {}, "Run analysis"), h("div", { class: "muted" }, "Config below = defaults chosen by the author (not standards). Edit freely; add per-zone overrides under \"zones\", e.g. {\"WAN\":{\"anomaly\":{\"z_threshold\":5}}}."), cfg,
     h("div", { class: "row" }, h("button", { class: "pri", onclick: async () => { try { await api("/api/analyze", { config: JSON.parse(cfg.value) }); poll(prog); } catch (e) { prog.textContent = "error: " + e.message; } } }, "Analyze"), prog));

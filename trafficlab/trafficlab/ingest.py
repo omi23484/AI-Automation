@@ -98,7 +98,7 @@ def validate_mapping(mapping, header):
             raise IngestError(f"counter {c.get('name')}: bits must be 32 or 64")
 
 
-def load_csv(text, mapping, ts_formats=None, tz="UTC", delimiter=",", inventory=None, source="<memory>", keep_cells=False):
+def load_csv(text, mapping, ts_formats=None, tz="UTC", delimiter=",", inventory=None, source="<memory>", keep_cells=False, zone_map=None):
     """keep_cells=False: full cell tuples are retained only for FLAGGED rows (memory); ts_raw/device/interface are always kept
     exactly. The source file remains the complete raw record."""
     get_tz(tz)  # fail early on bad tz
@@ -180,8 +180,11 @@ def load_csv(text, mapping, ts_formats=None, tz="UTC", delimiter=",", inventory=
         zone = None
         if i_zone is not None and cells[i_zone].strip():
             zone = cells[i_zone].strip()
-        elif dev in inventory:
+        elif dev in inventory and inventory[dev].get("zone"):
             zone = inventory[dev].get("zone")
+        elif zone_map:
+            from .config import glob_lookup
+            zone = glob_lookup(dev, zone_map, "zone")
         if sp is None and (dev, ifc) in inventory.get("__speeds__", {}):
             sp = inventory["__speeds__"][(dev, ifc)]
         rows.append(RawRow(lineno, cells[i_ts], sys.intern(cells[i_dev]), sys.intern(cells[i_if]), tuple(cells) if (keep_cells or fl) else ()))

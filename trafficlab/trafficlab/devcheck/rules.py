@@ -153,10 +153,12 @@ def run_device(dev, facts, cfg):
 
 def run_cross(per_dev_facts, findings_by_dev, cfg):
     """Cross-device rules compare devices only inside the same group (cfg devcheck.groups; default one group 'all')."""
+    from ..config import glob_lookup
     out = []
-    grp = cfg["devcheck"].get("groups", {})
-    for gname in sorted({grp.get(d, "all") for d in per_dev_facts}):
-        out += _cross_group(gname, {d: f for d, f in per_dev_facts.items() if grp.get(d, "all") == gname})
+    dc = cfg["devcheck"]
+    gof = lambda d: dc.get("groups", {}).get(d) or glob_lookup(d, dc.get("group_map"), "group", "all")
+    for gname in sorted({gof(d) for d in per_dev_facts}):
+        out += _cross_group(gname, {d: f for d, f in per_dev_facts.items() if gof(d) == gname})
     return out
 
 

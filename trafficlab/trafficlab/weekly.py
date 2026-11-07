@@ -115,14 +115,26 @@ BPS_METRICS = ["avg_in_bps", "avg_out_bps", "peak_in_bps", "peak_out_bps"]
 PCT_METRICS = ["util_in_pct", "util_out_pct", "util_avg_pct", "util_p95_pct", "util_peak_pct"]
 
 
-def resolve_header(row, override=None):
+def alias_table(extra=None):
+    """Built-in aliases + user additions (config weekly.aliases). Unknown canonical names are an error."""
+    rev = dict(ALIAS_REV)
+    for canon, names in (extra or {}).items():
+        if canon not in ALIASES:
+            raise ValueError(f"weekly.aliases: unknown field '{canon}'. Valid: {sorted(ALIASES)}")
+        for n in names:
+            rev[_norm(n)] = canon
+    return rev
+
+
+def resolve_header(row, override=None, rev=None):
     """-> {canonical: (col_index, header_text, default_unit)} or None if the row doesn't look like a header."""
     override = override or {}
+    rev = rev or ALIAS_REV
     found = {}
     for i, h in enumerate(row):
         if not h:
             continue
-        key = override.get(h) or ALIAS_REV.get(_norm(h))
+        key = override.get(h) or rev.get(_norm(h))
         if not key or key in found:
             continue
         unit = None
@@ -143,8 +155,13 @@ STAMP = re.compile(r"(\d{4})[_-](\d{2})[_-](\d{2})[_-](\d{2})[_-](\d{2})[_-](\d{
 ISOWEEK = re.compile(r"(\d{4})-?W(\d{2})")
 
 
-def week_of(name, tz_name, overrides=None):
-    """-> dict(start_ms, end_ms, ts_raw, basis, assumption) or None."""
+BASES = ("stamp_period_ends", "stamp_period_starts", "stamp_week_contains")
+
+
+def week_of(name, tz_name, overrides=None, basis="stamp_period_ends"):
+    """-> dict(start_ms, end_ms, ts_raw, basis, assumption) or None. Priority: explicit override > ISO-week in name > file-name stamp (per `basis`)."""
+    if basis not in BASES:
+        raise ValueError(f"weekly.week_basis must be one of {BASES}")
     tz = get_tz(tz_name)
     base = os.path.basename(name)
     if overrides and (base in overrides or name in overrides):
@@ -158,9 +175,16 @@ def week_of(name, tz_name, overrides=None):
     m = STAMP.search(base)
     if m:
         g = datetime(*[int(x) for x in m.groups()], tzinfo=tz)
-        end = _to_ms(g)
-        return dict(start_ms=end - WEEK_MS, end_ms=end, ts_raw=m.group(0), basis="file-name stamp = generation time; period = 7 days before",
-                    assumption=True)
+        t = _to_ms(g)
+        if basis == "stamp_period_ends":
+            st, en, why = t - WEEK_MS, t, "file-name stamp = end of the 7-day period (report generated after the week it covers)"
+        elif basis == "stamp_period_starts":
+            st, en, why = t, t + WEEK_MS, "file-name stamp = start of the 7-day period"
+        else:
+            mon = (g - timedelta(days=g.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+            st = _to_ms(mon)
+            st, en, why = st, st + WEEK_MS, "ISO week (Mon-Sun) containing the file-name stamp"
+        return dict(start_ms=st, end_ms=en, ts_raw=m.group(0), basis=why, assumption=True)
     return None
 
 
@@ -181,6 +205,8 @@ def build_series(files, cfg=None, tz="UTC", overrides=None, mapping_override=Non
     """files: [(name, bytes|str)] .xlsx or .csv. -> (series_list, report). Raw cell text is never modified."""
     cfg = cfg or make_config()
     wcfg = cfg["weekly"]
+    rev = alias_table(wcfg.get("aliases"))
+    from .config import glob_lookup
     rep = {"files": [], "issues": [], "weeks": [], "duplicates": [], "conflicts": [], "cells": {"unit_from_header": 0, "bad": 0, "blank": 0}}
     pts = defaultdict(list)       # (device, iface, metric) -> [(start, end, ts_raw, value, file)]
     meta = {}
@@ -191,7 +217,7 @@ def build_series(files, cfg=None, tz="UTC", overrides=None, mapping_override=Non
         rep["issues"].append({"severity": sev, "message": msg})
 
     for name, blob in files:
-        wk = week_of(name, tz, overrides)
+        wk = week_of(name, tz, overrides, wcfg["week_basis"])
         f = {"file": name, "recognized": False}
         rep["files"].append(f)
         try:
@@ -203,7 +229,7 @@ def build_series(files, cfg=None, tz="UTC", overrides=None, mapping_override=Non
         hdr = rows = None
         for sh, rws in sheets:
             for ri, r in enumerate(rws[:25]):
-                hdr = resolve_header([("" if c is None else str(c)) for c in r], mapping_override)
+                hdr = resolve_header([("" if c is None else str(c)) for c in r], mapping_override, rev)
                 if hdr:
                     rows, f["sheet"], f["header_row"] = rws[ri + 1:], sh, ri + 1
                     break
@@ -230,7 +256,8 @@ def build_series(files, cfg=None, tz="UTC", overrides=None, mapping_override=Non
             dev, ifc = dev or link, ifc or link or "?"
             n_rows += 1
             key = (dev, ifc)
-            meta.setdefault(key, {"site": g("site"), "zone": (inventory or {}).get(dev, {}).get("zone", "unassigned")})
+            zone = (inventory or {}).get(dev, {}).get("zone") or glob_lookup(dev, cfg.get("zone_map"), "zone", "unassigned")
+            meta.setdefault(key, {"site": g("site"), "zone": zone})
             sp = None
             for sk in ("speed_in", "speed_out", "speed"):
                 if g(sk):
@@ -324,8 +351,8 @@ def build_series(files, cfg=None, tz="UTC", overrides=None, mapping_override=Non
         issue("warn", f"{rep['cells']['bad']} cells unparseable (flagged, treated as missing)")
     asm = [f for f in rep["files"] if f.get("week", {}).get("assumption")]
     if asm:
-        issue("warn", f"{len(asm)} file(s): week ASSUMED from the file-name stamp (= generation time; covered period = the 7 days before it), e.g. {asm[0]['file']!r} -> stamp {asm[0]['week']['ts_raw']}. "
-                      "Per-file basis is in the report; pass week overrides if wrong")
+        issue("warn", f"{len(asm)} file(s): week ASSUMED from the file-name stamp ({asm[0]['week']['basis']}), e.g. {asm[0]['file']!r} -> stamp {asm[0]['week']['ts_raw']}. "
+                      "Change weekly.week_basis or pass per-file overrides if wrong")
     weeks = sorted({s_end for s in out for s_end in s.ts_ms})
     rep["weeks"] = weeks
     issue("info", f"{len(out)} weekly series from {sum(1 for f in rep['files'] if f['recognized'])} recognised files, {len(weeks)} distinct weeks")

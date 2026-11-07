@@ -60,6 +60,8 @@ DEFAULTS = {
         "followup_weeks": 6,          # anomaly this soon after a same-direction shift = continuation (R6)
         "corr_margin_weeks": 6,
         "util_mismatch_pts": 1.0,     # |supplied % - recomputed %| above this => data-quality note
+        "aliases": {},                # extra header names per canonical field: {"avg_in_bps":["Mean RX"], "device":["CI Name"]}
+        "week_basis": "stamp_period_ends",  # stamp_period_ends | stamp_period_starts | stamp_week_contains  (ISO-week folder names and explicit overrides always win)
     },
     "cr": {"lookahead_h": 24},
     "devcheck": {                     # Module 4 thresholds: author's defaults, not standards
@@ -69,8 +71,14 @@ DEFAULTS = {
         "flap_min_events": 3,         # up/down log events on one interface in the capture => warning
         "log_repeat_min": 20,         # same message tag seen >= times in the capture => noisy-message finding
         "groups": {},                 # device -> group label. Cross-device rules (X01/X02) compare ONLY within a group; default group "all"
+        "group_map": [],              # glob rules: [{"match":"leaf-*","group":"fabricA"}] (exact "groups" entries win)
         "waivers": [],                # [{"rule":"DC05","device":"n93*","contains":"192.0.2.2","reason":"lab: no peer by design"}]
+        "rules": {},                  # per-rule control: {"DC13":{"enabled":false},"DC12":{"severity":"info"}}. Disabled rules are LISTED in the output
+        "custom_parsers": [],         # declarative regex parsers, see docs/ADAPTING.md
+        "custom_rules": [],           # declarative field checks, see docs/ADAPTING.md
+        "max_custom_findings": 50,    # per custom rule per device; truncation is reported
     },
+    "zone_map": [],                   # device-name globs -> zone: [{"match":"*-wan-*","zone":"WAN"}]. Order: data column > inventory > zone_map > 'unassigned' 
     "interpret": {"shift_followup_days": 21},  # anomaly after same-direction shift => continuation (R6)
     # per-zone overrides, same nested shape, e.g. {"WAN": {"anomaly": {"z_threshold": 5}}}
     "zones": {},
@@ -86,11 +94,43 @@ def _merge(base, over):
     return base
 
 
-def make_config(user=None):
+# nodes whose children are free-form (user-chosen keys) and are therefore not key-checked
+_FREE = {"baseline.scale_floor_abs", "devcheck.groups", "devcheck.rules", "weekly.aliases"}
+
+
+def check_keys(over, base=None, path=""):
+    """Strict validation: an unknown key is an ERROR (a typo must not silently do nothing)."""
+    base = DEFAULTS if base is None else base
+    for k, v in over.items():
+        here = f"{path}.{k}" if path else k
+        if path == "zones":                      # zones.<ZONE>: same shape as the top level (minus 'zones')
+            check_keys(v, {kk: vv for kk, vv in DEFAULTS.items() if kk != "zones"}, "")
+            continue
+        if k not in base:
+            raise ValueError(f"unknown config key '{here}'. Valid at this level: {sorted(base)}")
+        if isinstance(v, dict) and here not in _FREE and here != "zones" and isinstance(base[k], dict):
+            check_keys(v, base[k], here)
+        elif isinstance(v, dict) and here == "zones":
+            for z, zv in v.items():
+                check_keys(zv, {kk: vv for kk, vv in DEFAULTS.items() if kk != "zones"}, "")
+
+
+def make_config(user=None, strict=True):
     cfg = copy.deepcopy(DEFAULTS)
     if user:
+        if strict:
+            check_keys(user)
         _merge(cfg, user)
     return cfg
+
+
+def glob_lookup(name, entries, key, default=None):
+    """First matching {'match': glob, key: value} entry. Case-insensitive."""
+    import fnmatch
+    for e in entries or []:
+        if fnmatch.fnmatch(name.lower(), str(e.get("match", "")).lower()):
+            return e.get(key, default)
+    return default
 
 
 def cfg_for_zone(cfg, zone):

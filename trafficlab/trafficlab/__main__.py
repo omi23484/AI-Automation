@@ -17,15 +17,15 @@ def main(argv=None):
     s = sub.add_parser("serve"); s.add_argument("--port", type=int, default=8765); s.add_argument("--db", default="trafficlab.db")
     s = sub.add_parser("synth"); s.add_argument("--out", default="synthetic"); s.add_argument("--days", type=int, default=35)
     s.add_argument("--seed", type=int, default=42); s.add_argument("--mixed-formats", action="store_true")
-    s = sub.add_parser("analyze"); s.add_argument("file"); s.add_argument("--mapping"); s.add_argument("--preset", help="nexus_collect_utilization | nexus_collect_errors"); s.add_argument("--tz", default="UTC")
+    s = sub.add_parser("analyze"); s.add_argument("file"); s.add_argument("--mapping"); s.add_argument("--preset", help="nexus_collect_utilization | nexus_collect_errors"); s.add_argument("--tz", default=None, help="default UTC, or the profile's import.tz")
     s.add_argument("--formats", default=None, help="comma separated strptime formats, or epoch_s / epoch_ms")
     s.add_argument("--delimiter", default=","); s.add_argument("--inventory"); s.add_argument("--cr"); s.add_argument("--config"); s.add_argument("--out", default="out")
-    s.add_argument("--workers", type=int, default=None)
+    s.add_argument("--workers", type=int, default=None); s.add_argument("--profile", help="environment profile JSON (see docs/ADAPTING.md)")
     s = sub.add_parser("devcheck", help="Module 4: rule-based checks on raw show captures (dir or .zip)")
-    s.add_argument("path"); s.add_argument("--pass-policy", default="latest", choices=["latest", "all"]); s.add_argument("--config"); s.add_argument("--out", default="out")
+    s.add_argument("path"); s.add_argument("--pass-policy", default="latest", choices=["latest", "all"]); s.add_argument("--config"); s.add_argument("--out", default="out"); s.add_argument("--profile")
     s = sub.add_parser("weekly", help="week-over-week mode on aggregated weekly .xlsx/.csv exports (folder or files)")
-    s.add_argument("paths", nargs="+"); s.add_argument("--tz", default="UTC"); s.add_argument("--overrides", help="JSON {file name: 'YYYY-MM-DD' (Monday of covered week)}")
-    s.add_argument("--config"); s.add_argument("--cr"); s.add_argument("--out", default="out")
+    s.add_argument("paths", nargs="+"); s.add_argument("--tz", default=None, help="default UTC, or the profile's import.tz"); s.add_argument("--overrides", help="JSON {file name: 'YYYY-MM-DD' (Monday of covered week)}")
+    s.add_argument("--config"); s.add_argument("--cr"); s.add_argument("--out", default="out"); s.add_argument("--profile")
     sub.add_parser("test")
     a = ap.parse_args(argv)
     if a.cmd == "serve":
@@ -37,22 +37,29 @@ def main(argv=None):
         print("wrote", p, "(+ SYNTHETIC_manifest.json, SYNTHETIC_crs.json). ALL DATA IS FAKE.")
     elif a.cmd == "analyze":
         from . import ingest, counters, pipeline, report
-        from .config import make_config
         from .store import CRStore
+        from . import profile as pm
+        prof = pm.load(json.load(open(a.profile))) if a.profile else None
+        imp = pm.import_defaults(prof)
         text = open(a.file, newline="", encoding="utf-8-sig").read()
-        from .presets import PRESETS
+        presets = pm.all_presets(prof)
         if a.preset:
-            pr = PRESETS[a.preset]
+            pr = presets[a.preset]
             mapping = pr["mapping"]
-            if not a.formats:
+            if not a.formats and pr.get("ts_formats"):
                 a.formats = ",".join(pr["ts_formats"])
         elif a.mapping:
             mapping = json.load(open(a.mapping))
+        elif imp.get("mapping"):
+            mapping = imp["mapping"]
+            if not a.formats and imp.get("ts_formats"):
+                a.formats = ",".join(imp["ts_formats"])
         else:
-            ap.error("analyze needs --mapping or --preset")
+            ap.error("analyze needs --mapping, --preset, or a --profile with import.mapping/import.preset")
+        a.tz = a.tz or imp.get("tz") or "UTC"
         inv = ingest.load_inventory(open(a.inventory).read()) if a.inventory else None
-        cfg = make_config(json.load(open(a.config)) if a.config else None)
-        ds = ingest.load_csv(text, mapping, a.formats.split(",") if a.formats else None, a.tz, a.delimiter, inv, a.file)
+        cfg = pm.effective_config(prof, json.load(open(a.config)) if a.config else None)
+        ds = ingest.load_csv(text, mapping, a.formats.split(",") if a.formats else None, a.tz, a.delimiter, inv, a.file, zone_map=cfg.get("zone_map"))
         series, dq = counters.build_all(ds, cfg)
         val = pipeline.validation_report(ds, series, dq)
         for i in val["issues"]:
@@ -67,9 +74,10 @@ def main(argv=None):
         prim = [f for f in res["findings"] if not f.get("continuation_of")]
         print(f"{len(res['findings'])} findings ({len(prim)} primary), {len(res['clusters'])} clusters, {res['elapsed_s']}s -> {a.out}/")
     elif a.cmd == "weekly":
-        from . import weekly, report
-        from .config import make_config
+        from . import weekly, report, profile as pm
         from .store import CRStore
+        prof = pm.load(json.load(open(a.profile))) if a.profile else None
+        a.tz = a.tz or pm.import_defaults(prof).get("tz") or "UTC"
         files = []
         for pth in a.paths:
             if os.path.isdir(pth):
@@ -80,7 +88,7 @@ def main(argv=None):
                             files.append((os.path.relpath(fp, pth).replace(os.sep, "/"), open(fp, "rb").read()))
             else:
                 files.append((os.path.basename(pth), open(pth, "rb").read()))
-        cfg = make_config(json.load(open(a.config)) if a.config else None)
+        cfg = pm.effective_config(prof, json.load(open(a.config)) if a.config else None)
         series, rep = weekly.build_series(files, cfg, a.tz, json.load(open(a.overrides)) if a.overrides else None)
         for i in rep["issues"]:
             print(f"[{i['severity']}] {i['message'][:200]}")
@@ -97,8 +105,9 @@ def main(argv=None):
     elif a.cmd == "devcheck":
         from . import devcheck
         from .devcheck import report as dcr
-        from .config import make_config
-        cfg = make_config(json.load(open(a.config)) if a.config else None)
+        from . import profile as pm
+        prof = pm.load(json.load(open(a.profile))) if a.profile else None
+        cfg = pm.effective_config(prof, json.load(open(a.config)) if a.config else None)
         caps = devcheck.load_path(a.path, a.pass_policy)
         res = devcheck.analyze_captures(caps, cfg)
         os.makedirs(a.out, exist_ok=True)
