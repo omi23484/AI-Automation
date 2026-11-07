@@ -91,15 +91,17 @@ def annotate(result, topo):
         c["topology"] = cnt
         if cnt["same_link"]:
             c["label_topology"] = "includes both ends of one link (CDP/LLDP): consistent with a single link event"
+            peers = defaultdict(list)
             for p in c["pairs"]:
                 if p.get("topology") == "same_link":
-                    for fid_ in (p["a"], p["b"]):
-                        f = byid.get(fid_)
-                        if f:
-                            f["interpretation"] = [i for i in f["interpretation"] if i.get("rule")] + [{"rule": "R7_both_ends_of_link", "claim": "both ends of this link show a finding in the same window (per CDP/LLDP): consistent with one link-level event, not proof of cause",
-                                                                                                    "evidence": [p["a"], p["b"], c["id"]]}]
-                        if f and not f["interpretation"]:
-                            f["interpretation"] = [{"rule": None, "claim": "Unknown - insufficient evidence", "evidence": []}]
+                    peers[p["a"]].append(p["b"])
+                    peers[p["b"]].append(p["a"])
+            for fid_, others in peers.items():           # ONE note per finding, citing every peer finding on the other end of the link
+                f = byid.get(fid_)
+                if f:
+                    f["interpretation"] = [i for i in f["interpretation"] if i.get("rule")] + [{
+                        "rule": "R7_both_ends_of_link", "claim": "both ends of this link show a finding in the same window (per CDP/LLDP): consistent with one link-level event, not proof of cause",
+                        "evidence": list(dict.fromkeys([fid_, *others, c["id"]]))}]
     present = {(norm_dev(f["device"]), canon_if(f["interface"])) for f in result["findings"]}
     for f in result["findings"]:
         k = (norm_dev(f["device"]), canon_if(f["interface"]))

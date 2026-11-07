@@ -17,6 +17,7 @@ import hashlib
 from .devcheck import report as dc_report
 from .devcheck import topology as topo_mod
 from . import context as context_mod
+from . import slm as slm_mod
 from .config import make_config, DEFAULTS
 from .store import CRStore, STATUSES
 from .interpret import RULES
@@ -282,6 +283,10 @@ def make_handler(st):
                 row = st.store.add_feedback(f, b.get("verdict"), b.get("note", ""), b.get("actor", "user"))
                 pipeline.annotate_feedback(st.result["findings"], st.store.list_feedback())
                 return 200, {"feedback": row, "note": "a 'false' mark raises that series' thresholds on the NEXT analysis; 'real'/'expected' only annotate"}
+            if p == "/api/slm/explain":
+                if not st.result:
+                    return 404, {"error": "no result"}
+                return 200, slm_mod.explain(st.result, st.checks, b.get("finding_id", ""), st.cfg())
             if p == "/api/feedback/delete":
                 st.store.delete_feedback(int(b["id"]))
                 if st.result:

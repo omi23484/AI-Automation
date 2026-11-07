@@ -109,7 +109,7 @@ class Annotate(unittest.TestCase):
         self.assertEqual(c["topology"], {"same_link": 1, "adjacent": 0, "unknown": 0})
         self.assertIn("both ends of one link", c["label_topology"])
         r7 = [i for f in res["findings"] for i in f["interpretation"] if i["rule"] == "R7_both_ends_of_link"]
-        self.assertEqual(len(r7), 2)
+        self.assertEqual(len(r7), 2)                                                               # one note per finding (two findings)
         self.assertIn("not proof of cause", r7[0]["claim"])
         f = [x for x in res["findings"] if x["device"] == "A"][0]
         self.assertEqual(f["topology"]["peer_device"], "b")

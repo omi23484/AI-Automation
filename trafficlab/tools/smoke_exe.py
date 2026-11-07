@@ -65,6 +65,17 @@ with tempfile.TemporaryDirectory() as td:
         check("analysis finished (process pool works frozen)", s["state"] == "done", str(s))
         code, f = call("/api/findings?hide_continuation=1")
         check("findings produced", code == 200 and len(f["findings"]) >= 6, str(len(f.get("findings", []))))
+        code, fc = call("/api/forecasts")
+        check("capacity outlook endpoint", code == 200 and "forecasts" in fc, str(fc)[:100])
+        code, hs = call("/api/history/add", {})
+        check("history add", code == 200 and hs["points_added"] > 1000, str(hs)[:120])
+        code, hs = call("/api/history/add", {})
+        check("history idempotent", code == 200 and hs["points_added"] == 0, str(hs)[:120])
+        fid = f["findings"][0]["id"]
+        code, fb = call("/api/feedback", {"finding_id": fid, "verdict": "real", "note": "smoke"})
+        check("feedback", code == 200, str(fb)[:100])
+        code, e = call("/api/slm/explain", {"finding_id": fid})
+        check("local-model explainer is off by default", code == 400 and "disabled" in e["error"], str(e)[:100])
         cap = "COMMAND: show ip bgp summary\n\nBGP router identifier 10.1.1.1, local AS number 65001\n\nNeighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd\n10.1.1.3        4        65003       0       0        0    0    0 00:39:45 Idle     \n"
         code, j = call("/api/checks/upload", {"files": [{"name": "r1/show_ip_bgp_summary.txt", "text": cap}]})
         check("device checks", code == 200 and j["summary"]["by_severity"].get("critical") == 1, str(j))

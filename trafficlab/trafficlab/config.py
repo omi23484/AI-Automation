@@ -78,6 +78,15 @@ DEFAULTS = {
         "cap": 1.75,                  # ... up to this multiplier. 'real' and 'expected' marks never change thresholds.
     },
     "signatures": [],                 # editable known-pattern library (docs/ADAPTING.md): symptom combination -> candidate cause + checks
+    "slm": {                          # OPTIONAL local language-model explainer. Off by default. Never used for detection.
+        "enabled": False,
+        "endpoint": "http://127.0.0.1:11434/v1/chat/completions",   # any OpenAI-compatible chat-completions server on THIS machine
+        "model": "",
+        "timeout_s": 90,
+        "temperature": 0.1,
+        "max_pack_chars": 6000,       # the evidence pack is trimmed to fit a small context
+        "allow_non_loopback": False,  # keep False for offline use: the endpoint must be this machine
+    },
     "cr": {"lookahead_h": 24},
     "devcheck": {                     # Module 4 thresholds: author's defaults, not standards
         "bgp_recent_s": 300,          # established session younger than this => info

@@ -441,7 +441,21 @@ async function tExplain(m) {
         h("details", {}, h("summary", {}, "evidence pack (exactly what an optional SLM would be allowed to see)"), h("pre", { class: "mono" }, JSON.stringify(r.evidence_pack, null, 1))));
     } catch (er) { box.replaceChildren(h("div", { class: "banner err" }, er.message)); }
   };
-  m.append(h("div", { class: "row" }, "finding / cluster id", id, h("button", { class: "pri", onclick: go }, "Explain")), box); if (id.value) go();
+  const slmBox = h("div"), slmOn = (S.defaults && S.defaults.effective_config && S.defaults.effective_config.slm.enabled);
+  const askSlm = async () => {
+    slmBox.replaceChildren(h("div", { class: "muted" }, "asking the local model..."));
+    try {
+      const r = await api("/api/slm/explain", { finding_id: id.value.trim() }), cls = r.sections;
+      slmBox.replaceChildren(h("div", { class: "banner" }, r.banner), r.pack_truncated ? h("div", { class: "muted" }, "evidence pack was trimmed to fit the context") : "",
+        h("div", { class: "card" }, ...Object.entries(cls).flatMap(([k, v]) => [h("b", {}, k), h("pre", {}, v)])),
+        r.stripped_causes.length ? h("div", { class: "banner err" }, h("b", {}, "Stripped (no valid citation):"), h("ul", {}, r.stripped_causes.map(x => h("li", {}, x.line + "  -  " + x.reason)))) : "",
+        r.invalid_ids.length ? h("div", { class: "banner err" }, "ids that do not exist in the evidence pack: " + r.invalid_ids.join(", ")) : "",
+        r.unverified_numbers.length ? h("div", { class: "banner" }, "numbers not found in the evidence pack (check them): " + r.unverified_numbers.join(", ")) : "",
+        r.missing_sections.length ? h("div", { class: "banner" }, "sections missing from the model output: " + r.missing_sections.join(", ")) : "");
+    } catch (e) { slmBox.replaceChildren(h("div", { class: "banner err" }, e.message)); }
+  };
+  m.append(h("div", { class: "row" }, "finding / cluster id", id, h("button", { class: "pri", onclick: go }, "Explain"),
+    h("button", { onclick: askSlm, title: slmOn ? "" : "disabled in this profile (config.slm.enabled)" }, "Ask local model (optional)")), box, slmBox); if (id.value) go();
 }
 
 // ------------------------------------------------------------------ Export

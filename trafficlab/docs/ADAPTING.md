@@ -54,10 +54,18 @@ Use these when a command or check you need is not built in. They are regexes and
 - `week_basis`: `stamp_period_ends` (stamp = end of the 7 days covered), `stamp_period_starts`, `stamp_week_contains` (ISO week containing the stamp).
   An ISO-week folder name (`2026-W23/`) or a per-file override beats the basis. The assignment is always listed in the validation report.
 
-## 5. What still needs code
+## 5. Intelligence features you configure
+- **Signatures** (`config.signatures`): symptom-combination -> candidate cause. One `traffic` condition is the anchor; add `devcheck` / `cr` / `cluster` / `topology` conditions. Ships empty; see the three examples in `profiles/example-neutral.json` and `trafficlab/signatures.py` for the exact schema. Treat entries as hypotheses and mark `verify_on_device`.
+- **Feedback** (`config.feedback`): `step` and `cap` control how much each distinct "false positive" mark raises that series' thresholds; `enabled: false` ignores marks.
+- **Forecast** (`config.forecast`): history needed (`min_days` / `min_weeks`), thresholds (`thresholds_pct`), significance (`alpha`), horizon.
+- **Topology**: run device checks on captures that include `show cdp neighbors detail` / `show lldp neighbors detail`; CLI `--captures PATH` or the Devices tab.
+- **History**: CLI `history add|analyze|summary|retention --db FILE`, or the Import tab. Overlap consecutive chunks by at least one poll.
+- **Local model** (`config.slm`): `enabled`, `endpoint` (an OpenAI-compatible chat-completions server on this machine), `model`, `max_pack_chars`. Off by default. The tool never starts or installs a model.
+
+## 6. What still needs code
 Output formats with no regex-able row structure (multi-line records, tree output), new counter arithmetic, periods other than 7 days in weekly mode, new statistical methods, and anything that needs topology.
 
-## 6. Sharing and access
+## 7. Sharing and access
 - The tool runs locally and binds to `127.0.0.1` only; there is **no authentication or roles**. Whoever can reach the machine's loopback can use it. Run one instance per user.
 - Uploaded data is held in memory; the CR tracker writes a local SQLite file (`--db`). Treat that file and any exports as customer data.
 - To share the tool, share the folder (code + a profile), not captures or databases. Keep raw captures out of version control (`captures/` is git-ignored).

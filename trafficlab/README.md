@@ -1,11 +1,12 @@
-# trafficlab - offline traffic analysis (Phases 1-2 + weekly mode)
+# trafficlab - offline traffic analysis
 
 Offline, local-only tool for bandwidth pattern-shift detection, anomaly detection, CR tracking and
 cross-device correlation across **Enterprise / WAN / DC** zones. Python 3.10+ standard library only
 (developed and tested on 3.13). No network, no CDN, no telemetry, no AI in detection.
 
-**Status:** Phase 1 (traffic engine, CR tracker), Phase 2 (multi-device rule checks on raw `show` captures) and a
-week-over-week mode for aggregated weekly exports are built. Phase 3 (optional SLM explainer) is NOT built.
+**Status:** traffic engine, CR tracker, device checks on raw `show` captures, weekly-export mode, capacity outlook, persisted history, analyst feedback,
+CDP/LLDP topology context, an editable signature library, tiers, a single-file executable build (Linux verified; Windows via CI, not run by the author), and an
+**optional** local-model explainer (off by default; tested only against a fake server). See `docs/INTELLIGENCE.md` for what is and is not "intelligent".
 
 ## Not tied to one customer: profiles
 Everything environment-specific is a setting, not code: zones (`zone_map` globs, inventory CSV, data column), device groups for cross-device rules, thresholds (global and per
@@ -14,8 +15,8 @@ and rules** (regex + comparisons, no code). One JSON **profile** bundles them (`
 Start from `profiles/example-neutral.json`; full guide: **[docs/ADAPTING.md](docs/ADAPTING.md)**.
 
 ## Delivering to a customer: tiers
-Small / medium / large tiers (capacity limits + feature switches) are JSON files in `tiers/`; the numbers shipped are **proposals** for the owner to dictate. A tier banner shows limits and live usage;
-over-limit input is refused with a clear message, never truncated. `tools/make_bundle.py` builds a customer zip with a manifest. Enforcement is soft (not tamper-proof). See **[docs/TIERS.md](docs/TIERS.md)**.
+Small / medium / large tiers are defined by **device count** (capacity only), as JSON files in `trafficlab/tiers/`; the numbers shipped are **proposals** for the owner to dictate. A tier banner shows limits and live usage;
+over-limit input is refused with a clear message, never truncated. Single-file executable: **[docs/PACKAGING.md](docs/PACKAGING.md)**. Folder bundle: `tools/make_bundle.py`. Enforcement is soft (accepted). See **[docs/TIERS.md](docs/TIERS.md)**.
 What the tool's "intelligence" is, and is not: **[docs/INTELLIGENCE.md](docs/INTELLIGENCE.md)**.
 
 ## Run (offline)
@@ -23,7 +24,7 @@ What the tool's "intelligence" is, and is not: **[docs/INTELLIGENCE.md](docs/INT
 ```bash
 cd trafficlab
 python3 -m trafficlab serve            # UI at http://127.0.0.1:8765/  (binds loopback only)
-python3 -m trafficlab test             # 96 unit/integration tests
+python3 -m trafficlab test             # 247 unit/integration tests
 python3 -m trafficlab synth --out synthetic --mixed-formats     # FAKE data + ground-truth manifest
 python3 -m trafficlab analyze FILE.csv --mapping map.json --tz UTC \
     --formats "%Y-%m-%d %H:%M:%S" [--inventory inv.csv] [--cr crs.json] [--config cfg.json] --out out

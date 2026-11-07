@@ -1,50 +1,36 @@
 # Tiers (small / medium / large)
 
-The owner dictates the tiers. `tiers/small.json`, `medium.json`, `large.json` are **proposals** (`"proposal": true`, shown in the UI banner) built from measured performance. Edit the numbers, then deliver with `--final`.
+**Decisions (owner):** a tier is defined by the **number of devices**; **capacity only** (every feature is in every tier); **soft enforcement is accepted**;
+the upgrade path is simply a replacement tier file. The numbers in `trafficlab/tiers/*.json` are still **proposals** (flagged in the UI banner until you deliver with `--final`).
 
-## What a tier contains
-```json
-{ "name": "medium", "proposal": true,
-  "limits":   { "max_devices": 150, "max_series": 5000, "max_rows": 1000000, "max_captures": 12000, "max_cr": 2000, "max_zones": 10 },
-  "features": { "poll_mode": true, "weekly_mode": true, "devcheck": true, "custom_rules": true, "profiles": true, "report_export": true } }
-```
-`null` = unlimited. A missing feature = on. Unknown keys are rejected.
+| tier | max devices (proposed) |
+|---|---|
+| small | 25 |
+| medium | 150 |
+| large | 500 |
 
-| limit | counted on | where checked |
-|---|---|---|
-| `max_rows` | CSV rows in one import | while reading (stops early, never truncates silently) |
-| `max_devices` | distinct devices in the imported series / device-check captures | after parsing |
-| `max_series` | device x interface x metric series | after parsing |
-| `max_zones` | distinct zones (incl. `unassigned`) | after parsing |
-| `max_captures` | per-command captures in one device-check run | before analysis |
-| `max_cr` | change requests in the tracker | on create |
+## How it works
+- A tier file: `{"name": "medium", "proposal": true, "limits": {"max_devices": 150}}`. (The schema can also express rows, series, zones, captures, CR count and feature switches; the shipped tiers use none of them, per the decisions.)
+- Devices are counted over imported series, device-check captures and the **whole stored history**. Over the limit: a clear error naming the tier, the limit and the count; nothing is truncated or partly written.
+- A bar under the tabs shows the tier and live usage. `python3 -m trafficlab tier list|show [NAME]` prints definitions.
+- Resolution: `--tier NAME|PATH` > env `TRAFFICLAB_TIER` > `tier.json` beside the app/executable > tier baked into the executable > none.
+- **Upgrade**: `python3 -m trafficlab tier install new-tier.json` (or just drop the file in as `tier.json` beside the program). It validates first, keeps the old file as `tier.json.bak`. Restart to apply.
 
-Features: `poll_mode` (poll-based CSV engine), `weekly_mode`, `devcheck`, `custom_rules` (custom parsers/rules), `profiles`, `report_export` (HTML/JSON exports).
-Over a limit or a missing feature => a clear error naming the tier, the limit and the count. The UI shows the tier and live usage in a bar under the tabs.
+## Technical safety caps (not commercial limits)
+Independent of the tier, to prevent out-of-memory crashes: **3,000,000 rows per import/analysis, 50,000 captures, 100,000 series**. They come from measured behaviour (`tools/bench.py`: ~1.1 KB RAM and ~25 microseconds per row; 2.6M rows = 3 GB, ~66 s).
 
-## Proposed numbers (basis)
-Measured on this project's benchmark (`tools/bench.py`, 4 cores, 16 GB sandbox, synthetic rows): about **1.1 KB RAM and 25 microseconds per row**. Measured: 864k rows = 1.0 GB, ~20 s; 2.6M rows = 3 GB, ~66 s.
-| tier | rows | devices | series | est. RAM / time at the row limit |
-|---|---|---|---|---|
-| small | 200k | 25 | 500 | ~0.25 GB, ~5 s (extrapolated) |
-| medium | 1M | 150 | 5,000 | ~1.1 GB, ~25 s (interpolated between measurements) |
-| large | 3M | 500 | 20,000 | ~3.3 GB, ~75 s (slightly beyond the largest measured run) |
-These are capacity numbers, not business terms. Price, support and SLA are yours. Beyond ~3M rows per import needs a streaming ingest, which is not built.
+### The scaling point that "devices" alone hides
+Rows = devices x monitored interfaces x polls. A 150-device customer polling **all 48 ports every 5 minutes** produces about 14.4M rows per week: over the cap. What fits (estimates):
+| scenario | rows |
+|---|---|
+| 150 devices x 8 monitored uplinks x 5-min polls x 1 day | ~0.35M |
+| same, 7 days | ~2.4M (near the cap) |
+| 150 devices x 48 ports x 5-min polls x 1 day | ~2.1M |
+So the practical advice for medium/large customers is: **monitor links that matter (uplinks, WAN, DC interconnects), not every access port**, and import **in chunks into the history store** (overlap chunks by one poll), analysing a window (e.g. the last 35 days). Anything beyond needs downsampling upstream or a streaming engine, which is not built.
 
-## Choosing and delivering
-- Resolution order: `--tier NAME|PATH` > env `TRAFFICLAB_TIER` > `tier.json` next to the package > none (no limits; the UI says so).
-- `python3 -m trafficlab tier list|show [NAME]` shows definitions.
-- Build a customer bundle: `python3 tools/make_bundle.py --tier medium --name acme --profile profiles/acme.json --out dist --final`
-  -> `dist/trafficlab-acme-medium.zip`: package, docs, `tier.json`, the profile, `README-FIRST.txt`, `MANIFEST.sha256`. No tests, tools, captures or databases. It refuses to ship an invalid profile.
-- In the delivered folder: `python3 -m trafficlab verify` compares every file with the manifest.
+## Delivering
+- Single-file executable per OS: see `docs/PACKAGING.md` (`tools/build_exe.py --tier medium --final`).
+- Folder bundle (needs Python on the customer machine): `python3 tools/make_bundle.py --tier medium --name acme --profile profiles/acme.json --final`.
 
-## Honest limits of enforcement
-This is **soft** enforcement. The tool is plain Python source on the customer's machine: anyone can edit `tier.json` or the code. The manifest check makes accidental or casual changes visible; it does not stop a determined user.
-Stronger options, each with a cost: (a) a signed licence file verified with an asymmetric signature (needs a third-party crypto package, since Python's standard library has none, and a private key you must protect);
-(b) a licence server (breaks the offline requirement); (c) contractual terms. Decide what the contract needs before choosing.
-
-## Questions only the owner can answer
-1. Which dimension defines the tier: devices, rows per import, or both? Are limits per import or cumulative?
-2. Should smaller tiers lose features (e.g. `custom_rules`, `weekly_mode`, `report_export`) or only capacity?
-3. Is soft enforcement acceptable, or is tamper resistance a requirement?
-4. Upgrade path: how does a customer move small -> medium (new bundle, or a replacement `tier.json`)?
+## Soft enforcement, honestly
+The tier file sits beside a plain program on the customer's machine: it can be edited or replaced. The software shows and enforces it so accidents are caught and scope is explicit; it is not a security control (accepted by the owner). If that changes, the options are a signed licence file (needs a third-party crypto package and a private key you protect), a licence server (breaks offline use), or contract terms.
