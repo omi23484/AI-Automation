@@ -77,6 +77,7 @@ DEFAULTS = {
         "step": 0.15,                 # each distinct 'false positive' mark on a series raises its thresholds by this fraction ...
         "cap": 1.75,                  # ... up to this multiplier. 'real' and 'expected' marks never change thresholds.
     },
+    "signatures": [],                 # editable known-pattern library (docs/ADAPTING.md): symptom combination -> candidate cause + checks
     "cr": {"lookahead_h": 24},
     "devcheck": {                     # Module 4 thresholds: author's defaults, not standards
         "bgp_recent_s": 300,          # established session younger than this => info

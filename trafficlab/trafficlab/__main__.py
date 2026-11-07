@@ -11,6 +11,20 @@ import os
 import sys
 
 
+def _apply_captures(a, res, cfg, outdir):
+    """--captures PATH: run device checks on raw show captures, use their topology and findings as context (signature library, CDP/LLDP links)."""
+    if not getattr(a, "captures", None):
+        return
+    from . import devcheck, context
+    from .devcheck import report as dcr
+    checks = devcheck.analyze_captures(devcheck.load_path(a.captures), cfg)
+    context.apply(res, checks, cfg)
+    json.dump({"format": "trafficlab-devcheck/1", "result": checks}, open(os.path.join(outdir, "devcheck.json"), "w"), indent=1)
+    open(os.path.join(outdir, "devcheck.html"), "w", encoding="utf-8").write(dcr.build(checks))
+    kb = sum(1 for f in res["findings"] for i in f["interpretation"] if str(i.get("rule")).startswith("KB:"))
+    print(f"device checks: {checks['summary']['findings']} findings, {len(checks['topology']['links'])} links; signature matches: {kb}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="trafficlab")
     ap.add_argument("--tier", help="tier name or JSON path (else env TRAFFICLAB_TIER, else tier.json next to the package, else no limits)")
@@ -22,7 +36,7 @@ def main(argv=None):
     s = sub.add_parser("analyze"); s.add_argument("file"); s.add_argument("--mapping"); s.add_argument("--preset", help="nexus_collect_utilization | nexus_collect_errors"); s.add_argument("--tz", default=None, help="default UTC, or the profile's import.tz")
     s.add_argument("--formats", default=None, help="comma separated strptime formats, or epoch_s / epoch_ms")
     s.add_argument("--delimiter", default=","); s.add_argument("--inventory"); s.add_argument("--cr"); s.add_argument("--config"); s.add_argument("--out", default="out")
-    s.add_argument("--workers", type=int, default=None); s.add_argument("--profile", help="environment profile JSON (see docs/ADAPTING.md)")
+    s.add_argument("--workers", type=int, default=None); s.add_argument("--profile", help="environment profile JSON (see docs/ADAPTING.md)"); s.add_argument("--captures", help="folder/zip of raw show captures: adds topology + device-check context")
     s = sub.add_parser("devcheck", help="Module 4: rule-based checks on raw show captures (dir or .zip)")
     s.add_argument("path"); s.add_argument("--pass-policy", default="latest", choices=["latest", "all"]); s.add_argument("--config"); s.add_argument("--out", default="out"); s.add_argument("--profile")
     s = sub.add_parser("weekly", help="week-over-week mode on aggregated weekly .xlsx/.csv exports (folder or files)")
@@ -32,7 +46,7 @@ def main(argv=None):
     s.add_argument("action", choices=["add", "summary", "analyze", "retention"]); s.add_argument("file", nargs="?", help="CSV for 'add'")
     s.add_argument("--db", required=True, help="SQLite file holding the history"); s.add_argument("--mapping"); s.add_argument("--preset"); s.add_argument("--profile")
     s.add_argument("--tz", default=None); s.add_argument("--formats"); s.add_argument("--delimiter", default=","); s.add_argument("--inventory"); s.add_argument("--config"); s.add_argument("--cr")
-    s.add_argument("--window-days", type=float, default=None); s.add_argument("--days", type=float, default=None, help="retention days"); s.add_argument("--out", default="out"); s.add_argument("--workers", type=int, default=None)
+    s.add_argument("--window-days", type=float, default=None); s.add_argument("--captures"); s.add_argument("--days", type=float, default=None, help="retention days"); s.add_argument("--out", default="out"); s.add_argument("--workers", type=int, default=None)
     s = sub.add_parser("tier", help="tier definitions: list | show [NAME] | install FILE (upgrade = replace tier.json)"); s.add_argument("action", choices=["list", "show", "install"]); s.add_argument("name", nargs="?")
     sub.add_parser("verify", help="check this install against MANIFEST.sha256 (accident/tamper-evidence only)")
     sub.add_parser("test")
@@ -119,6 +133,7 @@ def main(argv=None):
             st.import_json(json.load(open(a.cr)))
         res = pipeline.analyze(series, cfg, st, a.workers)
         os.makedirs(a.out, exist_ok=True)
+        _apply_captures(a, res, cfg, a.out)
         json.dump({"format": "trafficlab-findings/1", "validation": val, "result": res}, open(os.path.join(a.out, "findings.json"), "w"), indent=1)
         open(os.path.join(a.out, "report.html"), "w", encoding="utf-8").write(report.build_report(res, val, {s.key: s for s in series}))
         prim = [f for f in res["findings"] if not f.get("continuation_of")]
@@ -163,6 +178,8 @@ def main(argv=None):
             if a.cr:
                 st.import_json(json.load(open(a.cr)))
             res = pipeline.analyze(series, cfg, st, a.workers)
+            os.makedirs(a.out, exist_ok=True)
+            _apply_captures(a, res, cfg, a.out)
             val = {"source": f"history {a.db}", "issues": [], "timestamps": {"formats": {}, "tz_assumed": cfg["tz"]}}
             os.makedirs(a.out, exist_ok=True)
             json.dump({"format": "trafficlab-findings/1", "mode": "history", "validation": val, "result": res}, open(os.path.join(a.out, "findings.json"), "w"), indent=1)
@@ -192,6 +209,8 @@ def main(argv=None):
         if a.cr:
             st.import_json(json.load(open(a.cr)))
         res = weekly.analyze_weekly(series, cfg, st)
+        os.makedirs(a.out, exist_ok=True)
+        _apply_captures(a, res, cfg, a.out)
         val = {"source": "weekly exports", "issues": rep["issues"], "timestamps": {"formats": {}, "tz_assumed": a.tz}}
         os.makedirs(a.out, exist_ok=True)
         json.dump({"format": "trafficlab-findings/1", "mode": "weekly", "validation": val, "weekly": rep, "result": res}, open(os.path.join(a.out, "findings.json"), "w"), indent=1)

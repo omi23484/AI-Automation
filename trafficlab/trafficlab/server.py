@@ -16,6 +16,7 @@ from .history import HistoryStore
 import hashlib
 from .devcheck import report as dc_report
 from .devcheck import topology as topo_mod
+from . import context as context_mod
 from .config import make_config, DEFAULTS
 from .store import CRStore, STATUSES
 from .interpret import RULES
@@ -350,8 +351,7 @@ def make_handler(st):
                 if not series:
                     return 400, {"error": "no weekly series recognised", "issues": rep["issues"]}
                 res = weekly.analyze_weekly(series, cfg, st.store)
-                if st.checks:
-                    topo_mod.annotate(res, st.checks.get("topology"))
+                context_mod.apply(res, st.checks, cfg)
                 with st.lock:
                     st.ds, st.series, st.dq = None, series, None
                     st.smap = {x.key: x for x in series}
@@ -376,7 +376,7 @@ def make_handler(st):
                 cfg = st.cfg({"devcheck": b.get("devcheck") or {}} if b.get("devcheck") else None)
                 st.checks = devcheck.analyze_captures(caps, cfg)
                 if st.result:
-                    topo_mod.annotate(st.result, st.checks.get("topology"))      # re-annotate an existing traffic result with the new topology
+                    context_mod.apply(st.result, st.checks, st.cfg())        # re-annotate an existing traffic result with the new topology / device findings
                 return 200, {"summary": st.checks["summary"], "links": len(st.checks["topology"]["links"])}
             if p == "/api/crs":
                 return 200, {"cr": st.store.upsert(b)}
@@ -404,8 +404,7 @@ def make_handler(st):
                 def prog(d, t):
                     st.job["done"], st.job["total"] = d, t
                 st.result = pipeline.analyze(series, cfg, st.store, workers, prog)
-                if st.checks:
-                    topo_mod.annotate(st.result, st.checks.get("topology"))
+                context_mod.apply(st.result, st.checks, cfg)
                 st.job["state"] = "done"
             except Exception as e:
                 traceback.print_exc()
@@ -421,8 +420,7 @@ def make_handler(st):
                 def prog(d, t):
                     st.job["done"], st.job["total"] = d, t
                 st.result = pipeline.analyze(series, cfg, st.store, workers, prog)
-                if st.checks:
-                    topo_mod.annotate(st.result, st.checks.get("topology"))
+                context_mod.apply(st.result, st.checks, cfg)
                 st.job["state"] = "done"
             except Exception as e:
                 traceback.print_exc()
