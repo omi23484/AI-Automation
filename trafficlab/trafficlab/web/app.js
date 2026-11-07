@@ -105,7 +105,7 @@ async function tImport(m) {
     } catch (e) { out.replaceChildren(h("div", { class: "banner err" }, e.message)); }
   };
   const prof = profileCard(() => render(), () => ({ tz: tz.value.trim(), ts_formats: fmts.value.trim() ? fmts.value.split(",").map(x => x.trim()) : undefined, mapping: (() => { try { return JSON.parse(map.value); } catch (e) { return undefined; } })() }));
-  m.append(prof,
+  m.append(prof, await historyCard(),
     h("div", { class: "banner" }, "Data stays on this machine (server bound to 127.0.0.1). Raw rows are never modified; timestamps keep ts_raw and get a separate ts_parsed. No captures are bundled: provide your own CSV."),
     h("div", { class: "card" }, h("div", { class: "row" }, presetSel), h("div", { class: "row" }, file, "delimiter", delim, "timezone for offset-less timestamps", tz), h("div", { class: "row" }, "timestamp formats", fmts), hdr,
       h("div", { class: "row" }, "optional inventory CSV (device,zone[,interface,speed_bps])", inv)),
@@ -114,6 +114,19 @@ async function tImport(m) {
     weeklyCard(out2),
     out);
   if (S.validation) showValidation(out, S.validation.mode === "weekly");
+}
+async function historyCard() {
+  const box = h("div", { class: "card" }), msg = h("span", { class: "muted" });
+  const sm = await api("/api/history");
+  const win = h("input", { size: 5, value: "35", title: "analyse only the most recent N days of stored history" }), ret = h("input", { size: 5, placeholder: "days" });
+  const act = async fn => { try { msg.textContent = "working..."; const r = await fn(); msg.textContent = JSON.stringify(r).slice(0, 160); const nb = await historyCard(); box.replaceWith(nb); } catch (e) { msg.textContent = ""; box.append(h("div", { class: "banner err" }, e.message)); } };
+  const analyze = async () => { await api("/api/history/analyze", { window_days: Number(win.value) || null, config: S.defaults.effective_config }); await poll(msg); };
+  box.append(h("b", {}, "Stored history (persisted across imports)"),
+    h("div", { class: "muted" }, "Keep derived rate series between imports so new data is scored against everything seen before, and large inputs can be imported in chunks (overlap consecutive chunks by at least one poll, or one rate interval at each boundary is lost). Re-importing the same points is a no-op; conflicting values are recorded, never overwritten; gaps stay gaps."),
+    h("div", {}, sm.series ? `${sm.series} series · ${sm.devices} devices · ${sm.points.toLocaleString()} points · ${new Date(sm.t_min).toISOString().slice(0, 10)} → ${new Date(sm.t_max).toISOString().slice(0, 10)} · ${sm.batches.length} imports · conflicts ${sm.conflicts}` : "empty"),
+    h("div", { class: "row" }, h("button", { onclick: () => act(() => api("/api/history/add", {})) }, "add current import to history"), "analyse last", win, "days", h("button", { class: "pri", onclick: () => act(analyze) }, "analyse history"),
+      ret, h("button", { onclick: () => ret.value && act(() => api("/api/history/retention", { days: Number(ret.value) })) }, "apply retention (deletes older points)"), msg));
+  return box;
 }
 function profileCard(rerender, formImport) {
   const file = h("input", { type: "file", accept: ".json" }), name = h("input", { size: 18, placeholder: "profile name" }), msg = h("span", { class: "muted" });

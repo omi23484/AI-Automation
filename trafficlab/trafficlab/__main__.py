@@ -28,6 +28,11 @@ def main(argv=None):
     s = sub.add_parser("weekly", help="week-over-week mode on aggregated weekly .xlsx/.csv exports (folder or files)")
     s.add_argument("paths", nargs="+"); s.add_argument("--tz", default=None, help="default UTC, or the profile's import.tz"); s.add_argument("--overrides", help="JSON {file name: 'YYYY-MM-DD' (Monday of covered week)}")
     s.add_argument("--config"); s.add_argument("--cr"); s.add_argument("--out", default="out"); s.add_argument("--profile")
+    s = sub.add_parser("history", help="persisted history: add | summary | analyze | retention (chunked imports, scored against everything stored)")
+    s.add_argument("action", choices=["add", "summary", "analyze", "retention"]); s.add_argument("file", nargs="?", help="CSV for 'add'")
+    s.add_argument("--db", required=True, help="SQLite file holding the history"); s.add_argument("--mapping"); s.add_argument("--preset"); s.add_argument("--profile")
+    s.add_argument("--tz", default=None); s.add_argument("--formats"); s.add_argument("--delimiter", default=","); s.add_argument("--inventory"); s.add_argument("--config"); s.add_argument("--cr")
+    s.add_argument("--window-days", type=float, default=None); s.add_argument("--days", type=float, default=None, help="retention days"); s.add_argument("--out", default="out"); s.add_argument("--workers", type=int, default=None)
     s = sub.add_parser("tier", help="tier definitions: list | show [NAME] | install FILE (upgrade = replace tier.json)"); s.add_argument("action", choices=["list", "show", "install"]); s.add_argument("name", nargs="?")
     sub.add_parser("verify", help="check this install against MANIFEST.sha256 (accident/tamper-evidence only)")
     sub.add_parser("test")
@@ -118,6 +123,52 @@ def main(argv=None):
         open(os.path.join(a.out, "report.html"), "w", encoding="utf-8").write(report.build_report(res, val, {s.key: s for s in series}))
         prim = [f for f in res["findings"] if not f.get("continuation_of")]
         print(f"{len(res['findings'])} findings ({len(prim)} primary), {len(res['clusters'])} clusters, {res['elapsed_s']}s -> {a.out}/")
+    elif a.cmd == "history":
+        from . import ingest, counters, pipeline, report, profile as pm
+        from .history import HistoryStore
+        from .store import CRStore
+        import hashlib
+        prof = pm.load(json.load(open(a.profile))) if a.profile else None
+        imp = pm.import_defaults(prof)
+        cfg = pm.effective_config(prof, json.load(open(a.config)) if a.config else None)
+        h = HistoryStore(a.db)
+        if a.action == "summary":
+            sm = h.summary()
+            print(json.dumps({k: v for k, v in sm.items() if k != "batches"}, indent=1)); print("batches:", len(sm["batches"]))
+        elif a.action == "retention":
+            if a.days is None:
+                ap.error("retention needs --days")
+            print(h.apply_retention(a.days))
+        elif a.action == "add":
+            if not a.file:
+                ap.error("add needs a CSV file")
+            raw = open(a.file, "rb").read()
+            text = raw.decode("utf-8-sig")
+            presets = pm.all_presets(prof)
+            mapping = presets[a.preset]["mapping"] if a.preset else json.load(open(a.mapping)) if a.mapping else imp.get("mapping")
+            if mapping is None:
+                ap.error("add needs --mapping, --preset or a profile with import.mapping")
+            fm = a.formats or ",".join((presets[a.preset].get("ts_formats") if a.preset else imp.get("ts_formats")) or []) or None
+            ds = ingest.load_csv(text, mapping, fm.split(",") if fm else None, a.tz or imp.get("tz") or "UTC", a.delimiter, ingest.load_inventory(open(a.inventory).read()) if a.inventory else None, a.file, zone_map=cfg.get("zone_map"))
+            series, dq = counters.build_all(ds, cfg)
+            for i in pipeline.validation_report(ds, series, dq)["issues"]:
+                if i["severity"] != "info":
+                    print(f"[{i['severity']}] {i['message']}")
+            print(h.add_series(series, os.path.basename(a.file), hashlib.sha256(raw).hexdigest()))
+        else:
+            series = h.load_series(a.window_days)
+            if not series:
+                sys.exit("history is empty")
+            st = CRStore()
+            if a.cr:
+                st.import_json(json.load(open(a.cr)))
+            res = pipeline.analyze(series, cfg, st, a.workers)
+            val = {"source": f"history {a.db}", "issues": [], "timestamps": {"formats": {}, "tz_assumed": cfg["tz"]}}
+            os.makedirs(a.out, exist_ok=True)
+            json.dump({"format": "trafficlab-findings/1", "mode": "history", "validation": val, "result": res}, open(os.path.join(a.out, "findings.json"), "w"), indent=1)
+            open(os.path.join(a.out, "report.html"), "w", encoding="utf-8").write(report.build_report(res, val, {x.key: x for x in series}))
+            prim = [f for f in res["findings"] if not f.get("continuation_of")]
+            print(f"{len(series)} series, {len(res['findings'])} findings ({len(prim)} primary), {len(res['clusters'])} clusters -> {a.out}/")
     elif a.cmd == "weekly":
         from . import weekly, report, profile as pm
         from .store import CRStore

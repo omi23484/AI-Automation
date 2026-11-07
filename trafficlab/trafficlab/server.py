@@ -12,6 +12,8 @@ import base64
 from . import synth, ingest, counters, pipeline, report
 from . import devcheck
 from . import weekly
+from .history import HistoryStore
+import hashlib
 from .devcheck import report as dc_report
 from .config import make_config, DEFAULTS
 from .store import CRStore, STATUSES
@@ -29,6 +31,8 @@ class State:
     def __init__(self, db_path):
         self.lock = threading.Lock()
         self.store = CRStore(db_path)
+        self.history = HistoryStore(db_path)
+        self.import_sha = None
         self.ds = None
         self.series = []
         self.smap = {}
@@ -171,6 +175,9 @@ def make_handler(st):
                 return 200, ({"active": t.describe(), "usage": usage} if t else {"active": None, "usage": usage})
             if p == "/api/export/findings" and False:
                 pass
+            if p == "/api/history":
+                sm = st.history.summary()
+                return 200, dict(sm, conflicts_sample=st.history.conflicts(20))
             if p == "/api/profile":
                 return 200, (st.profile or {"empty": True})
             if p == "/api/status":
@@ -260,6 +267,35 @@ def make_handler(st):
 
         # ---------------- POST ----------------
         def api_post(self, p, b):
+            if p == "/api/history/add":
+                if not st.series or st.ds is None:
+                    return 400, {"error": "import poll-based data first (weekly mode and device checks are not stored in history)"}
+                return 200, st.history.add_series(st.series, st.ds.source, st.import_sha)
+            if p == "/api/history/retention":
+                return 200, st.history.apply_retention(float(b["days"]))
+            if p == "/api/history/clear":
+                if b.get("confirm") is not True:
+                    return 400, {"error": "send {\"confirm\": true} to delete all stored history"}
+                st.history.clear()
+                return 200, {"cleared": True}
+            if p == "/api/history/analyze":
+                with st.lock:
+                    if st.job["state"] == "running":
+                        return 409, {"error": "analysis already running"}
+                series = st.history.load_series(b.get("window_days"))
+                if not series:
+                    return 400, {"error": "history is empty"}
+                with st.lock:
+                    st.ds, st.series, st.dq = None, series, None
+                    st.smap = {x.key: x for x in series}
+                    st.validation = {"source": "stored history", "rows": sum(len(x.rate) for x in series), "series_count": len(series), "mode": "history",
+                                     "timestamps": {"formats": {}, "tz_assumed": st.cfg()["tz"], "unparseable_samples": [], "mixed_formats": False, "tz_sources": {}, "flag_counts": {}, "slash_census": {"slash_dates": 0}},
+                                     "issues": [{"severity": "info", "message": f"{len(series)} series loaded from stored history (window_days={b.get('window_days')})"}],
+                                     "series": [{"key": x.key, "zone": x.zone, "samples": x.n_samples, "points": len(x.rate), "interval_s": (x.interval_ms or 0) / 1000, "excluded": len(x.excluded), "speed_bps": x.speed_bps} for x in series]}
+                    st.result = None
+                    st.job = {"state": "running", "done": 0, "total": len(series), "error": None}
+                threading.Thread(target=self._run_series, args=(series, st.cfg(b.get("config")), b.get("workers")), daemon=True).start()
+                return 202, {"started": True}
             if p == "/api/profile":
                 st.profile = None if b.get("clear") else prof_mod.load(b["profile"])
                 return 200, {"profile": st.profile, "import": prof_mod.import_defaults(st.profile), "presets": sorted(prof_mod.all_presets(st.profile))}
@@ -330,6 +366,7 @@ def make_handler(st):
 
         def _load(self, text, mapping, fmts, tz, delim, inv, source):
             ds = ingest.load_csv(text, mapping, fmts, tz, delim, inv, source, zone_map=st.cfg().get("zone_map"))
+            st.import_sha = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
             cfg = st.cfg()
             series, dq = counters.build_all(ds, cfg)
             with st.lock:
@@ -338,6 +375,16 @@ def make_handler(st):
                 st.validation = pipeline.validation_report(ds, series, dq)
                 st.result = None
                 st.job = {"state": "idle", "done": 0, "total": 0, "error": None}
+
+        def _run_series(self, series, cfg, workers):
+            try:
+                def prog(d, t):
+                    st.job["done"], st.job["total"] = d, t
+                st.result = pipeline.analyze(series, cfg, st.store, workers, prog)
+                st.job["state"] = "done"
+            except Exception as e:
+                traceback.print_exc()
+                st.job.update(state="error", error=f"{type(e).__name__}: {e}")
 
         def _run(self, cfg, workers):
             try:
