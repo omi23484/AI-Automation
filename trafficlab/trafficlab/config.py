@@ -72,6 +72,11 @@ DEFAULTS = {
         "thresholds_pct": [80, 90, 100],
         "horizon_days": 1825,         # farther than this => reported as beyond horizon
     },
+    "feedback": {                     # effect of analyst verdicts on scoring (visible and reversible)
+        "enabled": True,
+        "step": 0.15,                 # each distinct 'false positive' mark on a series raises its thresholds by this fraction ...
+        "cap": 1.75,                  # ... up to this multiplier. 'real' and 'expected' marks never change thresholds.
+    },
     "cr": {"lookahead_h": 24},
     "devcheck": {                     # Module 4 thresholds: author's defaults, not standards
         "bgp_recent_s": 300,          # established session younger than this => info

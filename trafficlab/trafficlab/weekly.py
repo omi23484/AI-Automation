@@ -490,4 +490,6 @@ def analyze_weekly(series_list, cfg=None, store=None):
     crs = store.list() if store else []
     res = finish(findings, sums, resid, series_list, ccfg2, crs, t0, 1, shift_uncertainty_ms=WEEK_MS, followup_days=7 * cfg["weekly"]["followup_weeks"])
     res["mode"] = "weekly"
+    from .pipeline import annotate_feedback
+    annotate_feedback(res["findings"], store.list_feedback() if store else [])
     return res

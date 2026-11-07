@@ -289,3 +289,37 @@ def p_clock(lines, first):
         if m:
             row.update(source=m[1], source_line=_ln(first, i), source_text=s)
     return {"kind": "clock", "rows": [row] if row["text"] else []}
+
+
+# ------------------------------------------------------------------ CDP / LLDP neighbors (topology source; no rules)
+@register(r"^showcdpneighbors?detail$", "cdp_neighbors_detail", "IOS-XE + NX-OS (real formats seen)")
+def p_cdp(lines, first):
+    rows, cur = [], None
+    for i, l in enumerate(lines):
+        m = re.match(r"^Device ID:\s*(\S.*?)\s*$", l)
+        if m:
+            cur = {"remote_device": m[1], "line": _ln(first, i), "text": l.strip()}
+            rows.append(cur)
+            continue
+        m = re.match(r"^Interface:\s*([^,\s]+),\s*Port ID \(outgoing port\):\s*(\S+)", l)
+        if m and cur is not None:
+            cur.update(local_interface=m[1], remote_interface=m[2], if_line=_ln(first, i), if_text=l.strip())
+    return {"kind": "cdp", "rows": [r for r in rows if "local_interface" in r]}
+
+
+@register(r"^showlldpneighbors?detail$", "lldp_neighbors_detail", "NX-OS (real format seen); IOS-XE LLDP detail NOT seen")
+def p_lldp(lines, first):
+    rows, cur = [], None
+    for i, l in enumerate(lines):
+        if re.match(r"^Chassis id:", l):
+            cur = {"line": _ln(first, i), "text": l.strip()}
+            rows.append(cur)
+            continue
+        if cur is None:
+            continue
+        for key, rx in (("remote_interface", r"^Port id:\s*(\S+)"), ("local_interface", r"^Local (?:Port id|Intf):\s*(\S+)"), ("remote_device", r"^System Name:\s*(\S.*?)\s*$")):
+            m = re.match(rx, l)
+            if m:
+                cur[key] = m[1]
+                cur[key + "_line"] = _ln(first, i)
+    return {"kind": "lldp", "rows": [r for r in rows if r.get("local_interface") and r.get("remote_interface") and r.get("remote_device")]}

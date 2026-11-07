@@ -3,6 +3,7 @@ Windows are stored as raw string + parsed epoch (same integrity rules as traffic
 import json
 import sqlite3
 import time
+from collections import defaultdict
 
 from .timeparse import parse_ts
 from . import tier
@@ -20,6 +21,8 @@ CREATE TABLE IF NOT EXISTS crs(
  created_utc TEXT, updated_utc TEXT);
 CREATE TABLE IF NOT EXISTS cr_scope(cr_id TEXT, device TEXT, interface TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS cr_findings(cr_id TEXT, finding_id TEXT, UNIQUE(cr_id, finding_id));
+CREATE TABLE IF NOT EXISTS feedback(id INTEGER PRIMARY KEY AUTOINCREMENT, finding_id TEXT, series_key TEXT, kind TEXT, direction TEXT, start_ms INTEGER, end_ms INTEGER,
+ verdict TEXT, note TEXT, actor TEXT, ts_utc TEXT);
 CREATE TABLE IF NOT EXISTS cr_log(id INTEGER PRIMARY KEY AUTOINCREMENT, cr_id TEXT, ts_utc TEXT, actor TEXT, field TEXT, old TEXT, new TEXT);
 """
 
@@ -113,6 +116,33 @@ class CRStore:
         if cr_id:
             q, a = q + " WHERE cr_id=?", (cr_id,)
         return [dict(r) for r in self.db.execute(q + " ORDER BY id", a)]
+
+    VERDICTS = ("real", "false", "expected")
+
+    def add_feedback(self, finding, verdict, note="", actor="user"):
+        if verdict not in self.VERDICTS:
+            raise ValueError(f"verdict must be one of {self.VERDICTS}")
+        w = finding["window"]
+        self.db.execute("INSERT INTO feedback(finding_id, series_key, kind, direction, start_ms, end_ms, verdict, note, actor, ts_utc) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (finding["id"], finding["series_key"], finding["kind"], finding.get("direction"), w["start_ms"], w["end_ms"], verdict, note, actor, _now()))
+        self.db.commit()
+        return self.list_feedback()[-1]
+
+    def list_feedback(self):
+        cols = ("id", "finding_id", "series_key", "kind", "direction", "start_ms", "end_ms", "verdict", "note", "actor", "ts_utc")
+        return [dict(zip(cols, r)) for r in self.db.execute("SELECT " + ",".join(cols) + " FROM feedback ORDER BY id")]
+
+    def delete_feedback(self, fid):
+        self.db.execute("DELETE FROM feedback WHERE id=?", (fid,))
+        self.db.commit()
+
+    def threshold_multipliers(self, step, cap):
+        """series_key -> multiplier from DISTINCT 'false' marks (same window marked twice counts once). Everything else leaves scoring untouched."""
+        seen = {(r["series_key"], r["start_ms"], r["end_ms"]) for r in self.list_feedback() if r["verdict"] == "false"}
+        n = defaultdict(int)
+        for k, _, _ in seen:
+            n[k] += 1
+        return {k: min(cap, 1.0 + step * c) for k, c in n.items()}
 
     def export_json(self):
         return {"format": "trafficlab-crs/1", "exported_utc": _now(), "crs": self.list(), "log": self.log()}

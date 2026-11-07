@@ -31,10 +31,10 @@ def _summ(s):
 
 
 def _work(args):
-    s, cfg = args
+    s, cfg, mult = args
     eff = cfg_for_zone(cfg, s.zone)
     t = time.time()
-    an, summ, resid = detect(s, eff)
+    an, summ, resid = detect(s, eff, mult)
     sh, shst = detect_shifts(s, eff)
     out = _summ(s)
     out.update(baseline=summ, shift_status=shst, tz_used=eff["tz"], secs=round(time.time() - t, 3))
@@ -47,7 +47,9 @@ def analyze(series_list, cfg=None, store=None, workers=None, progress=None):
     t0 = time.time()
     results = []
     workers = workers if workers is not None else min(4, os.cpu_count() or 1)
-    jobs = [(s, cfg) for s in series_list]
+    fb = cfg["feedback"]
+    mults = store.threshold_multipliers(fb["step"], fb["cap"]) if (store and fb["enabled"]) else {}
+    jobs = [(s, cfg, mults.get(s.key, 1.0)) for s in series_list]
     if workers > 1 and len(jobs) > 1:
         with ProcessPoolExecutor(max_workers=workers) as ex:
             for i, r in enumerate(ex.map(_work, jobs, chunksize=max(1, len(jobs) // (workers * 4)))):
@@ -64,7 +66,23 @@ def analyze(series_list, cfg=None, store=None, workers=None, progress=None):
         findings += f
         sums.append(s)
         resid.update(r)
-    return finish(findings, sums, resid, series_list, cfg, crs, t0, workers)
+    res = finish(findings, sums, resid, series_list, cfg, crs, t0, workers)
+    res["feedback_multipliers"] = mults
+    annotate_feedback(res["findings"], store.list_feedback() if store else [])
+    return res
+
+
+def annotate_feedback(findings, rows):
+    """Attach analyst verdicts to findings on the same series whose windows overlap a mark (same kind). 'false'/'expected' => suppressed_by_feedback (hidden by default, never deleted)."""
+    for f in findings:
+        f.pop("feedback", None)
+        f.pop("suppressed_by_feedback", None)
+        w = f["window"]
+        for r in rows:
+            if r["series_key"] == f["series_key"] and r["kind"] == f["kind"] and r["start_ms"] <= w["end_ms"] and r["end_ms"] >= w["start_ms"]:
+                f["feedback"] = {"id": r["id"], "verdict": r["verdict"], "note": r["note"], "ts_utc": r["ts_utc"], "actor": r["actor"]}
+                if r["verdict"] in ("false", "expected"):
+                    f["suppressed_by_feedback"] = True
 
 
 def finish(findings, sums, resid, series_list, cfg, crs, t0, workers, shift_uncertainty_ms=3_600_000, followup_days=None):

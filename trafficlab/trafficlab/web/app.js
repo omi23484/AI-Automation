@@ -205,7 +205,7 @@ async function tOverview(m) {
     h("table", {}, h("tr", {}, ["zone", "devices", "series", "points", "primary findings"].map(x => h("th", {}, x))), Object.entries(r.zones).map(([z, v]) => h("tr", {}, h("td", {}, z), h("td", {}, v.devices), h("td", {}, v.series), h("td", {}, fmtN(v.points)), h("td", {}, v.findings)))));
   const { findings, clusters } = await api("/api/findings?hide_continuation=1");
   m.append(h("h3", {}, "Cross-device clusters"), clusters.length ? h("table", {}, h("tr", {}, ["id", "devices", "zones", "mean r", "label (interpretation)", "CR candidates"].map(x => h("th", {}, x))),
-    clusters.map(c => h("tr", { onclick: () => { S.sel = c.id; S.tab = "Explain"; render(); } }, h("td", { class: "mono" }, c.id), h("td", {}, c.devices.join(", ")), h("td", {}, c.zones.join(", ") + (c.cross_zone ? " (cross-zone)" : "")), h("td", {}, c.mean_pearson_r ?? "n/a"), h("td", {}, c.label), h("td", {}, (c.cr_candidates || []).map(x => x.cr_id).join(", "))))) : h("div", { class: "muted" }, "none"));
+    clusters.map(c => h("tr", { onclick: () => { S.sel = c.id; S.tab = "Explain"; render(); } }, h("td", { class: "mono" }, c.id), h("td", {}, c.devices.join(", ")), h("td", {}, c.zones.join(", ") + (c.cross_zone ? " (cross-zone)" : "")), h("td", {}, c.mean_pearson_r ?? "n/a"), h("td", {}, c.label + (c.label_topology ? " | " + c.label_topology : (c.topology ? ` | topology: ${c.topology.same_link} same-link, ${c.topology.adjacent} adjacent, ${c.topology.unknown} no known link` : ""))), h("td", {}, (c.cr_candidates || []).map(x => x.cr_id).join(", "))))) : h("div", { class: "muted" }, "none"));
   m.append(h("h3", {}, "Top primary findings"), findingsTable(findings.slice(0, 15)));
   const fcs = (await api("/api/forecasts")).forecasts, up = fcs.filter(f => f.status === "upward_trend");
   const dr = x => x ? x : "-";
@@ -230,16 +230,17 @@ function summarize(f) {
 async function tFindings(kind) {
   const m = $("#main");
   if (!S.result) { try { S.result = await api("/api/result"); } catch (e) { m.append(h("div", { class: "banner" }, "No analysis yet.")); return; } }
+  const hideM = h("input", { type: "checkbox", checked: true });
   const hide = h("input", { type: "checkbox", checked: true }), sev = h("select", {}, ["all", "high", "medium", "low"].map(x => h("option", {}, x))), zone = h("select", {}, ["all", ...Object.keys(S.result.zones)].map(x => h("option", {}, x))), txt = h("input", { placeholder: "device/interface filter" });
   const list = h("div"), detail = h("div");
   const load = async () => {
-    const { findings } = await api(`/api/findings?kind=${kind}` + (hide.checked ? "&hide_continuation=1" : ""));
+    const { findings } = await api(`/api/findings?kind=${kind}` + (hide.checked ? "&hide_continuation=1" : "") + (hideM.checked ? "&hide_marked=1" : ""));
     let fs = findings.filter(f => (sev.value === "all" || f.severity === sev.value) && (zone.value === "all" || f.zone === zone.value) && (f.device + " " + f.interface).toLowerCase().includes(txt.value.toLowerCase()));
     list.replaceChildren(h("div", { class: "muted" }, `${fs.length} shown`), findingsTable(fs, f => showFinding(detail, f, load)));
     const cur = fs.find(f => f.id === S.sel); if (cur) showFinding(detail, cur, load);
   };
-  [hide, sev, zone].forEach(e => e.onchange = load); txt.oninput = load;
-  m.append(h("div", { class: "row" }, kind === "anomaly" ? h("label", {}, hide, "hide continuations of a pattern shift (R6)") : "", "severity", sev, "zone", zone, txt),
+  [hide, hideM, sev, zone].forEach(e => e.onchange = load); txt.oninput = load;
+  m.append(h("div", { class: "row" }, kind === "anomaly" ? h("label", {}, hide, "hide continuations of a pattern shift (R6)") : "", h("label", {}, hideM, "hide findings marked false/expected"), "severity", sev, "zone", zone, txt),
     kind === "pattern_shift" ? h("div", { class: "muted" }, (S.validation && S.validation.mode === "weekly")
       ? "Weekly mode: shift resolution is 1 week (first week of the new level); no seasonality removed; needs >= 8 weeks. A gradual ramp can show up as several small steps. Statistic is a heuristic score, not a calibrated p-value."
       : "Shift time resolution is 1 hour. Seasonal profile removed first; refuses when history < 5 days. Statistic is a heuristic score, not a calibrated p-value.") : "", list, detail);
@@ -257,11 +258,22 @@ async function showFinding(el, f, reload) {
       h("div", {}, `confidence: ${f.confidence.level} — ${f.confidence.justification}`)),
       h("div", {}, h("div", {}, h("span", { class: "tag stat" }, "statistical"), " exact math"), mathRows)),
     h("div", {}, h("span", { class: "tag interp" }, "interpretation"), " (candidate only):", h("ul", {}, f.interpretation.map(i => h("li", {}, i.claim, " ", h("span", { class: "mono muted" }, "[" + i.evidence.join(", ") + "]"))))),
+    f.topology ? h("div", {}, h("b", {}, "Topology (CDP/LLDP): "), `this interface connects to ${f.topology.peer_device} ${f.topology.peer_interface} (${f.topology.sources.join("+")}); ` +
+      (f.topology.peer_findings_same_window.length ? `the peer end also shows ${f.topology.peer_findings_same_window.length} finding(s) in this window` : f.topology.peer_in_dataset ? "the peer end shows no finding in this window" : "the peer end is not in the imported data")) : "",
     f.cr_candidates.length ? h("div", {}, h("b", {}, "CR candidates: "), f.cr_candidates.map(c => h("div", {}, `${c.cr_id} ${c.title} — ${c.relation}${c.delta_s ? " +" + (c.delta_s / 3600).toFixed(1) + "h" : ""} (${c.window_used} window) — ${c.label}`))) : "",
+    feedbackRow(f, reload),
     h("div", { class: "row" }, linkSel, h("button", { onclick: () => { S.sel = f.id; S.tab = "Explain"; render(); } }, "Explain"))));
   const crs = (await api("/api/crs")).crs;
   chart = new Chart(cv, f.series_key, { findings: [f], crs: crs.filter(c => c.scope.some(s => s.device === f.device)), focus: [f.window.start_ms, f.window.end_ms] });
   chart.load();
+}
+
+function feedbackRow(f, reload) {
+  const v = h("select", {}, h("option", { value: "real" }, "real issue"), h("option", { value: "false" }, "false positive"), h("option", { value: "expected" }, "expected / known")), note = h("input", { size: 28, placeholder: "note (optional)" }), msg = h("span", { class: "muted" });
+  const save = async () => { try { const r = await api("/api/feedback", { finding_id: f.id, verdict: v.value, note: note.value }); msg.textContent = r.note; if (reload) reload(); } catch (e) { msg.textContent = e.message; } };
+  const del = async () => { await api("/api/feedback/delete", { id: f.feedback.id }); msg.textContent = "mark removed; re-run analysis to restore thresholds"; if (reload) reload(); };
+  return h("div", { class: "row" }, h("b", {}, "Feedback:"), f.feedback ? h("span", {}, `${f.feedback.verdict}${f.feedback.note ? " - " + f.feedback.note : ""} `, h("button", { onclick: del }, "remove mark")) : "", v, note, h("button", { onclick: save }, "save verdict"), msg,
+    f.numbers.threshold_multiplier_from_feedback ? h("span", { class: "tag interp" }, `thresholds x${f.numbers.threshold_multiplier_from_feedback} from earlier false-positive marks`) : "");
 }
 
 // ------------------------------------------------------------------ Devices

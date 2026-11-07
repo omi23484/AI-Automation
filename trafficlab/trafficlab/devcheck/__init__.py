@@ -8,6 +8,7 @@ from .capture import Capture, load_path, load_items, load_zip_bytes, from_file, 
 from .parsers import find_parser
 from . import rules as R
 from . import custom as C
+from . import topology as TOPO
 
 SEV = {"critical": 3, "warning": 2, "info": 1}
 
@@ -98,4 +99,5 @@ def analyze_captures(caps, cfg=None):
             "summary": {"devices": len(devices), "captures": len(caps), "findings": len(allf), "by_severity": dict(Counter(f["severity"] for f in allf if not f.get("waived"))),
                         "waived": sum(1 for f in allf if f.get("waived")), "by_rule": dict(Counter(f["rule"] for f in allf)),
                         "disabled_rules": dict(disabled), "custom_truncated": trunc},
+            "topology": TOPO.build(facts),
             "config": {k: v for k, v in cfg["devcheck"].items()}}

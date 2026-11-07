@@ -15,6 +15,7 @@ from . import weekly
 from .history import HistoryStore
 import hashlib
 from .devcheck import report as dc_report
+from .devcheck import topology as topo_mod
 from .config import make_config, DEFAULTS
 from .store import CRStore, STATUSES
 from .interpret import RULES
@@ -202,6 +203,8 @@ def make_handler(st):
                                         "clusters": len(r["clusters"]), "series": len(r["series"])}}
             if p == "/api/forecasts":
                 return (200, {"forecasts": st.result.get("forecasts", [])}) if st.result else (404, {"error": "no result"})
+            if p == "/api/feedback":
+                return 200, {"feedback": st.store.list_feedback()}
             if p == "/api/findings":
                 if not st.result:
                     return 404, {"error": "no result"}
@@ -209,6 +212,8 @@ def make_handler(st):
                 fs = [f for f in st.result["findings"] if (not kind or f["kind"] == kind)]
                 if q.get("hide_continuation") == "1":
                     fs = [f for f in fs if not f.get("continuation_of")]
+                if q.get("hide_marked") == "1":
+                    fs = [f for f in fs if not f.get("suppressed_by_feedback")]
                 return 200, {"findings": fs, "clusters": st.result["clusters"] if not kind else []}
             if p == "/api/series_list":
                 return 200, {"series": st.result["series"] if st.result else []}
@@ -246,6 +251,8 @@ def make_handler(st):
                 if pack is None:
                     return 404, {"error": "unknown id"}
                 return 200, {"evidence_pack": pack, "explanation": explain(pack), "slm": "disabled (Phase 3 not built)"}
+            if p == "/api/topology":
+                return 200, (st.checks or {}).get("topology", {"links": []})
             if p == "/api/checks/result":
                 return (200, st.checks) if st.checks else (200, {"empty": True})
             if p.startswith("/api/export/") or p == "/api/crs/export":
@@ -267,6 +274,18 @@ def make_handler(st):
 
         # ---------------- POST ----------------
         def api_post(self, p, b):
+            if p == "/api/feedback":
+                f = next((x for x in (st.result or {}).get("findings", []) if x["id"] == b.get("finding_id")), None)
+                if f is None:
+                    return 404, {"error": "unknown finding id (re-run analysis?)"}
+                row = st.store.add_feedback(f, b.get("verdict"), b.get("note", ""), b.get("actor", "user"))
+                pipeline.annotate_feedback(st.result["findings"], st.store.list_feedback())
+                return 200, {"feedback": row, "note": "a 'false' mark raises that series' thresholds on the NEXT analysis; 'real'/'expected' only annotate"}
+            if p == "/api/feedback/delete":
+                st.store.delete_feedback(int(b["id"]))
+                if st.result:
+                    pipeline.annotate_feedback(st.result["findings"], st.store.list_feedback())
+                return 200, {"deleted": int(b["id"])}
             if p == "/api/history/add":
                 if not st.series or st.ds is None:
                     return 400, {"error": "import poll-based data first (weekly mode and device checks are not stored in history)"}
@@ -331,6 +350,8 @@ def make_handler(st):
                 if not series:
                     return 400, {"error": "no weekly series recognised", "issues": rep["issues"]}
                 res = weekly.analyze_weekly(series, cfg, st.store)
+                if st.checks:
+                    topo_mod.annotate(res, st.checks.get("topology"))
                 with st.lock:
                     st.ds, st.series, st.dq = None, series, None
                     st.smap = {x.key: x for x in series}
@@ -354,7 +375,9 @@ def make_handler(st):
                     return 400, {"error": "no usable captures: files need a 'COMMAND: show ...' first line, 'host# show ...' prompts, or show_*.txt names, inside <device>/ folders"}
                 cfg = st.cfg({"devcheck": b.get("devcheck") or {}} if b.get("devcheck") else None)
                 st.checks = devcheck.analyze_captures(caps, cfg)
-                return 200, {"summary": st.checks["summary"]}
+                if st.result:
+                    topo_mod.annotate(st.result, st.checks.get("topology"))      # re-annotate an existing traffic result with the new topology
+                return 200, {"summary": st.checks["summary"], "links": len(st.checks["topology"]["links"])}
             if p == "/api/crs":
                 return 200, {"cr": st.store.upsert(b)}
             if p == "/api/crs/link":
@@ -381,6 +404,8 @@ def make_handler(st):
                 def prog(d, t):
                     st.job["done"], st.job["total"] = d, t
                 st.result = pipeline.analyze(series, cfg, st.store, workers, prog)
+                if st.checks:
+                    topo_mod.annotate(st.result, st.checks.get("topology"))
                 st.job["state"] = "done"
             except Exception as e:
                 traceback.print_exc()
@@ -396,6 +421,8 @@ def make_handler(st):
                 def prog(d, t):
                     st.job["done"], st.job["total"] = d, t
                 st.result = pipeline.analyze(series, cfg, st.store, workers, prog)
+                if st.checks:
+                    topo_mod.annotate(st.result, st.checks.get("topology"))
                 st.job["state"] = "done"
             except Exception as e:
                 traceback.print_exc()

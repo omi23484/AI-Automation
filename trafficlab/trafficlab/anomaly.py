@@ -127,8 +127,11 @@ def _sev(pz, acfg):
     return "high" if pz >= acfg["severity_high"] else "medium" if pz >= acfg["severity_medium"] else "low"
 
 
-def detect(s, cfg):
-    """Returns (findings, summary, resid) for one series. resid = {finding_id: [[ms, resid],..]}"""
+def detect(s, cfg, mult=1.0):
+    """Returns (findings, summary, resid) for one series. resid = {finding_id: [[ms, resid],..]}
+    mult: per-series threshold multiplier derived from analyst 'false positive' feedback (1.0 = none)."""
+    if mult != 1.0:
+        cfg = dict(cfg, anomaly=dict(cfg["anomaly"], z_threshold=cfg["anomaly"]["z_threshold"] * mult, ewma_L=cfg["anomaly"]["ewma_L"] * mult))
     tz = get_tz(cfg["tz"])
     bcfg, acfg = cfg["baseline"], cfg["anomaly"]
     summary = {"tier_counts": {}, "scored_points": 0, "insufficient_points": 0, "ewma_limit": None}
@@ -205,6 +208,8 @@ def detect(s, cfg):
                              "params": {"lambda": acfg["ewma_lambda"], "L": acfg["ewma_L"], "limit": round(elimit, 4),
                                         "z_clip": acfg["ewma_z_clip"], "min_points": acfg["ewma_min_points"]}})
                 nums.update(ewma_peak_S=round(c["peak_S"], 3), ewma_points=len(c["run"]))
+        if mult != 1.0:
+            nums["threshold_multiplier_from_feedback"] = round(mult, 3)
         fidv = fid("anomaly", s.key, m["start"], m["end"])
         # confidence
         both = len(methods) == 2
