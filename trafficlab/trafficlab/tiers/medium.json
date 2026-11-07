@@ -1,0 +1,9 @@
+{
+  "name": "medium",
+  "proposal": true,
+  "description": "PROPOSAL ONLY (medium): the tier is defined by device count; capacity only, all features included. The owner dictates the real numbers; edit this file.",
+  "limits": {
+    "max_devices": 150
+  },
+  "features": {}
+}

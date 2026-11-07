@@ -1,0 +1,9 @@
+{
+  "name": "large",
+  "proposal": true,
+  "description": "PROPOSAL ONLY (large): the tier is defined by device count; capacity only, all features included. The owner dictates the real numbers; edit this file.",
+  "limits": {
+    "max_devices": 500
+  },
+  "features": {}
+}

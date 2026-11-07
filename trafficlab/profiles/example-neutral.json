@@ -1,0 +1,199 @@
+{
+  "name": "example-neutral",
+  "description": "Neutral template. Copy, rename, edit. Every key is optional; unknown keys are rejected. See docs/ADAPTING.md.",
+  "config": {
+    "tz": "UTC",
+    "zone_map": [
+      {
+        "match": "*-wan-*",
+        "zone": "WAN"
+      },
+      {
+        "match": "*-dc-*",
+        "zone": "DC"
+      },
+      {
+        "match": "*-campus-*",
+        "zone": "Enterprise"
+      }
+    ],
+    "zones": {
+      "WAN": {
+        "anomaly": {
+          "z_threshold": 5.0
+        }
+      }
+    },
+    "weekly": {
+      "week_basis": "stamp_period_ends",
+      "aliases": {
+        "device": [
+          "CI Name"
+        ],
+        "avg_in_bps": [
+          "Mean RX"
+        ]
+      }
+    },
+    "devcheck": {
+      "group_map": [
+        {
+          "match": "lab-a-*",
+          "group": "lab-a"
+        }
+      ],
+      "rules": {
+        "DC13": {
+          "enabled": false
+        },
+        "DC12": {
+          "severity": "warning"
+        }
+      },
+      "waivers": [
+        {
+          "rule": "DC05",
+          "device": "lab-*",
+          "contains": "192.0.2.",
+          "reason": "example: peer absent by design"
+        }
+      ],
+      "custom_parsers": [
+        {
+          "name": "example_fan_status",
+          "command_regex": "^show environment fan",
+          "header_regex": "^Fan\\s+Model\\s+Status",
+          "row_regex": "^(?P<fan>\\S+)\\s+(?P<model>\\S+)\\s+(?P<status>\\S+)\\s*$"
+        }
+      ],
+      "custom_rules": [
+        {
+          "id": "CFAN1",
+          "name": "fan not Ok",
+          "severity": "warning",
+          "kind": "custom:example_fan_status",
+          "when": {
+            "field": "status",
+            "op": "not_in",
+            "value": [
+              "Ok",
+              "ok"
+            ]
+          },
+          "title": "fan {fan} status is {status}"
+        },
+        {
+          "id": "CSTP1",
+          "name": "STP topology change log",
+          "severity": "info",
+          "kind": "log",
+          "when": [
+            {
+              "field": "facility",
+              "op": "eq",
+              "value": "SPANTREE"
+            }
+          ],
+          "title": "{tag}: {msg}"
+        }
+      ]
+    },
+    "signatures": [
+      {
+        "id": "SIG-EX-PHY",
+        "name": "throughput drop with physical-layer errors on the same interface",
+        "scope": "interface",
+        "confidence": "low",
+        "verify_on_device": true,
+        "cause": "a physical-layer problem (cable, optic, port) may be reducing usable throughput",
+        "checks": [
+          "compare error counters over two captures a few minutes apart to see whether they still increase",
+          "inspect optics/cabling for the interface (verify the command on the platform)"
+        ],
+        "all": [
+          {
+            "source": "traffic",
+            "kind": "anomaly",
+            "direction": "low"
+          },
+          {
+            "source": "devcheck",
+            "rule": "DC01",
+            "min_severity": "warning"
+          }
+        ]
+      },
+      {
+        "id": "SIG-EX-ROUTING",
+        "name": "traffic anomaly with a routing neighbor not established on the same device",
+        "scope": "device",
+        "confidence": "low",
+        "verify_on_device": true,
+        "cause": "loss of a routing adjacency may have moved traffic away from, or onto, this link",
+        "checks": [
+          "check the neighbor state history and logs around the finding window"
+        ],
+        "all": [
+          {
+            "source": "traffic",
+            "kind": "anomaly"
+          },
+          {
+            "source": "devcheck",
+            "rule": "DC05",
+            "min_severity": "info"
+          }
+        ]
+      },
+      {
+        "id": "SIG-EX-CHANGE",
+        "name": "level shift that follows a change request on a shared-cause cluster",
+        "scope": "device",
+        "confidence": "medium",
+        "verify_on_device": false,
+        "cause": "a change may have altered traffic on several devices at once",
+        "checks": [
+          "review the CR scope, actual window and rollback plan"
+        ],
+        "all": [
+          {
+            "source": "traffic",
+            "kind": "pattern_shift"
+          },
+          {
+            "source": "cr",
+            "relation": "follows"
+          },
+          {
+            "source": "cluster",
+            "label_startswith": "shared"
+          }
+        ]
+      }
+    ]
+  },
+  "import": {
+    "tz": "UTC",
+    "ts_formats": [
+      "%Y-%m-%d %H:%M:%S"
+    ],
+    "mapping": {
+      "device": "device",
+      "interface": "interface",
+      "timestamp": "timestamp",
+      "zone": null,
+      "counters": [
+        {
+          "name": "in_bps",
+          "column": "in_octets",
+          "bits": 64,
+          "mult": 8,
+          "unit": "bps"
+        }
+      ],
+      "uptime": null,
+      "speed": null
+    }
+  },
+  "presets": {}
+}
