@@ -1,11 +1,11 @@
-# trafficlab - offline traffic analysis (Phase 1)
+# trafficlab - offline traffic analysis (Phases 1-2 + weekly mode)
 
 Offline, local-only tool for bandwidth pattern-shift detection, anomaly detection, CR tracking and
 cross-device correlation across **Enterprise / WAN / DC** zones. Python 3.10+ standard library only
 (developed and tested on 3.13). No network, no CDN, no telemetry, no AI in detection.
 
-**Status:** Phase 1 only. Phase 2 (Cisco CLI parsers + multi-device rules) and Phase 3 (optional SLM
-explainer) are NOT built. See "Not built" below.
+**Status:** Phase 1 (traffic engine, CR tracker), Phase 2 (multi-device rule checks on raw `show` captures) and a
+week-over-week mode for aggregated weekly exports are built. Phase 3 (optional SLM explainer) is NOT built.
 
 ## Run (offline)
 
@@ -31,6 +31,34 @@ Generic CSV, one row per (device, interface, poll). You map columns in a JSON ma
 Zone comes from a `zone` column, else an inventory CSV (`device,zone[,interface,speed_bps]`), else `unassigned`.
 Column names above are examples; **map yours**. Units I am sure of: SNMP `sysUpTime` is TimeTicks (1/100 s) -> `cs`;
 `ifHighSpeed` is Mbps. Everything else is whatever your export contains.
+
+## Device checks (Module 4): `python3 -m trafficlab devcheck PATH --out DIR` (or Devices tab)
+Input: a folder or `.zip` of raw `show` output, laid out `<pass>/<device>/<file>.txt` or `<device>/<file>.txt`. A file is one command (`COMMAND: show ...`
+first line, else the command comes from a `show_*.txt` file name = less certain, flagged) or a session log with `host# show ...` prompts. Per device and
+command the newest pass folder wins (`--pass-policy all` keeps every pass).
+Parsers exist only for formats seen in real IOS-XE / NX-OS captures: interface error counters + status, etherchannel/port-channel, STP summary +
+inconsistent ports, BGP summary, OSPF neighbors (table + detail), BFD, vPC brief, HSRP brief, logging, clock. Everything else is listed per device as
+"not parsed"; commands the device rejected are listed as "rejected". 13 device rules (DC01-DC13) + 2 cross-device rules (X01-X02), each documented in
+`devcheck/rules.py::RULES` and printed in the report. **Every finding carries evidence rows: device, command, line number in the original file, field, value, raw text.**
+- Counters are cumulative snapshots: one capture cannot show whether an error counter is still rising.
+- vPC/clock rules compare against healthy strings seen in captures (`peer adjacency formed ok`, `peer is alive`, `success`); other values are flagged "verify on device".
+- Cross-device rules compare only inside a device group (`config.devcheck.groups`, default one group `all`). Unrelated lab boxes need separate groups.
+- **Waivers are visible, never silent**: `config.devcheck.waivers` marks a finding `waived` with your reason; it stays in the output and is excluded from counts.
+- Log timestamps stay raw. NX-OS lines carry a year; IOS-XE buffer lines often do not (no `ts_parsed` is invented). A leading `*` on IOS-XE times is reported (meaning: verify on device).
+- Validated against the sanitized hardware-lab package: 14 devices / 2,279 captures -> 139 findings; a test checks that every evidence line number matches the source file.
+  That package is NOT in this repo (set `TRAFFICLAB_LAB_FIXTURES=<extracted dir>` to run those tests). Committed tests use hand-written fixtures in the same formats.
+- Lab devices are in a deliberately odd state (pushed config, no real neighbors): "BGP Idle" etc. are correct readings of the output, not necessarily faults. Use waivers.
+
+## Weekly mode: `python3 -m trafficlab weekly FOLDER --tz Asia/Kolkata --out DIR` (or Import tab)
+For aggregated weekly exports (`.xlsx` / `.csv`; one row per link per week: peak/average/utilisation). Stdlib xlsx reader; header columns matched by meaning
+(`Node Name`, `Interface Name`, `Peak Receive`, `Average Transmit`, ...); every cell keeps its unit token (`1.06 Gbps`, `13.78 %`), header units apply only to unit-less cells.
+- **The week is an assumption** unless an ISO-week folder name (`2026-W23/`) or an explicit override is given: the file-name stamp is taken as the generation time and the
+  covered period as the 7 days before it ("Last 7 Days"). Each file's basis is listed. Missing weeks = marked gaps; conflicting duplicates are excluded.
+- Detection: week-level robust z vs the previous 8 observed weeks (needs >= 6) and level shifts by binary segmentation (needs >= 8 weeks, shift must move the segment **medians** too,
+  so one outlier week is not reported as a shift). Same finding schema, charts, CR overlay, correlation and report as the poll-based mode.
+- Cannot see anything inside a week (spikes, outages shorter than a week), has no yearly seasonality, and a gradual ramp can show as several small steps.
+- Utilisation-% columns that duplicate an analysed average-bps series are not analysed twice. Supplied % is cross-checked against average/speed.
+- Checked on the `weekly-dashboard` repo's "field-shape" workbooks (26 weeks, 150 series). Those are generated by that repo, not real traffic.
 
 ## Presets for CSV layouts known from your own code
 `python3 -m trafficlab analyze FILE --preset nexus_collect_utilization --tz <your tz>` (also `nexus_collect_errors`; UI has a preset dropdown).
@@ -94,7 +122,7 @@ Loopback bind only (refuses others); Host-header check (DNS-rebinding); POST req
 no file-path or shell endpoints; UI never uses innerHTML for data. No auth: anyone on the same machine can reach the port.
 
 ## Not built / known limitations
-- **No Cisco CLI parsers yet.** No real captures were available; I will not invent formats. Phase 2 needs your samples (`captures/`).
+- Phase 2 parsers cover only the commands listed above. Interface counters are never turned into rates (captures carry no collection time). NX-OS OSPF/BFD tables were not seen populated.
 - No SLM (Phase 3). The Explain tab is deterministic and shows the evidence pack an SLM would be allowed to see.
 - No topology: "shared cause" ignores whether devices are actually adjacent. Clock skew between devices not measured.
 - Speed = last non-empty speed seen for the series (link upgrades mid-series not handled). `sysUpTime` 497-day TimeTicks wrap treated as reload (excluded, safe side).

@@ -11,6 +11,7 @@ from urllib.parse import urlparse, parse_qs
 import base64
 from . import synth, ingest, counters, pipeline, report
 from . import devcheck
+from . import weekly
 from .devcheck import report as dc_report
 from .config import make_config, DEFAULTS
 from .store import CRStore, STATUSES
@@ -250,6 +251,29 @@ def make_handler(st):
                 cfg = make_config(b.get("config"))
                 threading.Thread(target=self._run, args=(cfg, b.get("workers")), daemon=True).start()
                 return 202, {"started": True}
+            if p == "/api/import_weekly":
+                files = []
+                for f in b.get("files", []):
+                    files.append((f["name"], base64.b64decode(f["b64"]) if f.get("b64") else f.get("text", "")))
+                if not files:
+                    return 400, {"error": "no files"}
+                cfg = make_config(b.get("config"))
+                inv = ingest.load_inventory(b["inventory_text"]) if b.get("inventory_text") else None
+                series, rep = weekly.build_series(files, cfg, b.get("tz") or "UTC", b.get("overrides") or None, None, inv)
+                if not series:
+                    return 400, {"error": "no weekly series recognised", "issues": rep["issues"]}
+                res = weekly.analyze_weekly(series, cfg, st.store)
+                with st.lock:
+                    st.ds, st.series, st.dq = None, series, None
+                    st.smap = {x.key: x for x in series}
+                    st.validation = {"source": "weekly aggregate exports", "rows": sum(f.get("rows", 0) for f in rep["files"]), "series_count": len(series), "mode": "weekly",
+                                     "timestamps": {"formats": {"weekly period (derived)": len(rep["weeks"])}, "tz_assumed": b.get("tz") or "UTC", "unparseable_samples": [], "mixed_formats": False,
+                                                    "tz_sources": {}, "flag_counts": {}, "slash_census": {"slash_dates": 0}},
+                                     "issues": rep["issues"], "weekly": {"files": rep["files"], "weeks": rep["weeks"]},
+                                     "series": [{"key": x.key, "zone": x.zone, "samples": x.n_samples, "points": len(x.rate), "interval_s": 7 * 86400, "excluded": len(x.excluded), "speed_bps": x.speed_bps} for x in series]}
+                    st.result = res
+                    st.job = {"state": "done", "done": len(series), "total": len(series), "error": None}
+                return 200, {"validation": st.validation, "counts": {"findings": len(res["findings"]), "clusters": len(res["clusters"])}}
             if p == "/api/checks/upload":
                 pol = b.get("pass_policy") or "latest"
                 if b.get("zip_b64"):

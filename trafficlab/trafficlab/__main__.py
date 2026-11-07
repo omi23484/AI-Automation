@@ -2,6 +2,7 @@
   serve                       start local UI (127.0.0.1:8765)
   synth  --out DIR            write SYNTHETIC_* files
   analyze FILE (--mapping M.json | --preset NAME) [--tz UTC] [--formats F1,F2] [--inventory inv.csv] [--cr crs.json] [--config c.json] --out DIR
+  weekly PATH... [--tz Z] [--overrides o.json] --out DIR   week-over-week mode on weekly .xlsx/.csv exports
   devcheck PATH [--config c.json] --out DIR   rule-based checks on show captures (folder or .zip)
   test                        run unit tests"""
 import argparse
@@ -22,6 +23,9 @@ def main(argv=None):
     s.add_argument("--workers", type=int, default=None)
     s = sub.add_parser("devcheck", help="Module 4: rule-based checks on raw show captures (dir or .zip)")
     s.add_argument("path"); s.add_argument("--pass-policy", default="latest", choices=["latest", "all"]); s.add_argument("--config"); s.add_argument("--out", default="out")
+    s = sub.add_parser("weekly", help="week-over-week mode on aggregated weekly .xlsx/.csv exports (folder or files)")
+    s.add_argument("paths", nargs="+"); s.add_argument("--tz", default="UTC"); s.add_argument("--overrides", help="JSON {file name: 'YYYY-MM-DD' (Monday of covered week)}")
+    s.add_argument("--config"); s.add_argument("--cr"); s.add_argument("--out", default="out")
     sub.add_parser("test")
     a = ap.parse_args(argv)
     if a.cmd == "serve":
@@ -62,6 +66,34 @@ def main(argv=None):
         open(os.path.join(a.out, "report.html"), "w", encoding="utf-8").write(report.build_report(res, val, {s.key: s for s in series}))
         prim = [f for f in res["findings"] if not f.get("continuation_of")]
         print(f"{len(res['findings'])} findings ({len(prim)} primary), {len(res['clusters'])} clusters, {res['elapsed_s']}s -> {a.out}/")
+    elif a.cmd == "weekly":
+        from . import weekly, report
+        from .config import make_config
+        from .store import CRStore
+        files = []
+        for pth in a.paths:
+            if os.path.isdir(pth):
+                for root, _, names in os.walk(pth):
+                    for n in sorted(names):
+                        if n.lower().endswith((".xlsx", ".csv")):
+                            fp = os.path.join(root, n)
+                            files.append((os.path.relpath(fp, pth).replace(os.sep, "/"), open(fp, "rb").read()))
+            else:
+                files.append((os.path.basename(pth), open(pth, "rb").read()))
+        cfg = make_config(json.load(open(a.config)) if a.config else None)
+        series, rep = weekly.build_series(files, cfg, a.tz, json.load(open(a.overrides)) if a.overrides else None)
+        for i in rep["issues"]:
+            print(f"[{i['severity']}] {i['message'][:200]}")
+        st = CRStore()
+        if a.cr:
+            st.import_json(json.load(open(a.cr)))
+        res = weekly.analyze_weekly(series, cfg, st)
+        val = {"source": "weekly exports", "issues": rep["issues"], "timestamps": {"formats": {}, "tz_assumed": a.tz}}
+        os.makedirs(a.out, exist_ok=True)
+        json.dump({"format": "trafficlab-findings/1", "mode": "weekly", "validation": val, "weekly": rep, "result": res}, open(os.path.join(a.out, "findings.json"), "w"), indent=1)
+        open(os.path.join(a.out, "report.html"), "w", encoding="utf-8").write(report.build_report(res, val, {x.key: x for x in series}))
+        prim = [f for f in res["findings"] if not f.get("continuation_of")]
+        print(f"{len(series)} series, {len(rep['weeks'])} weeks, {len(res['findings'])} findings ({len(prim)} primary), {len(res['clusters'])} clusters -> {a.out}/")
     elif a.cmd == "devcheck":
         from . import devcheck
         from .devcheck import report as dcr

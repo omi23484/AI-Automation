@@ -63,17 +63,22 @@ def analyze(series_list, cfg=None, store=None, workers=None, progress=None):
         findings += f
         sums.append(s)
         resid.update(r)
+    return finish(findings, sums, resid, series_list, cfg, crs, t0, workers)
+
+
+def finish(findings, sums, resid, series_list, cfg, crs, t0, workers, shift_uncertainty_ms=3_600_000, followup_days=None):
+    """Shared post-processing: continuation tagging, correlation, CR candidates, rule-based interpretation."""
     smap = {s.key: s for s in series_list}
     intervals = {s.key: s.interval_ms for s in series_list}
-    mark_continuations(findings, cfg["interpret"]["shift_followup_days"])
+    mark_continuations(findings, followup_days if followup_days is not None else cfg["interpret"]["shift_followup_days"])
     clusters = correlate(findings, resid, intervals, cfg)
     by_member = {m: c for c in clusters for m in c["members"]}
     cl_by_id = {c["id"]: c for c in clusters}
     la = cfg["cr"]["lookahead_h"]
     for f in findings:
         fw = f["window"]
-        if f["kind"] == "pattern_shift":   # shift time resolution is 1 h bucket -> match with +/-1h uncertainty
-            fw = {"start_ms": fw["start_ms"] - 3_600_000, "end_ms": fw["end_ms"] + 3_600_000}
+        if f["kind"] == "pattern_shift":   # shift time resolution (1 h hourly mode, 1 week weekly mode) -> match with +/- that uncertainty
+            fw = {"start_ms": fw["start_ms"] - shift_uncertainty_ms, "end_ms": fw["end_ms"] + shift_uncertainty_ms}
         f["cr_candidates"] = match(fw, [(f["device"], f["interface"])], crs, la)
         f["interpretation"] = interpret(f, smap.get(f["series_key"]), by_member)
         f["interpretation_layer"] = "interpretation (rule-based, candidate only)"

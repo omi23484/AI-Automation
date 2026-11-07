@@ -19,7 +19,7 @@ DEFAULTS = {
         "fallback_days": 14,          # hour-of-day-only tier lookback (only if allowed)
         "min_days": 5,                # min prior days for hour_of_day tier (only if allowed)
         "scale_floor_rel": 0.05,      # scale >= 5% of baseline median
-        "scale_floor_abs": {"bps": 1000.0, "default": 1.0},
+        "scale_floor_abs": {"bps": 1000.0, "pct": 0.5, "default": 1.0},
     },
     "anomaly": {
         "z_threshold": 4.0,
@@ -48,6 +48,18 @@ DEFAULTS = {
         "min_overlap_points": 6,
         "shared_r_threshold": 0.5,
         "margin_factor": 1.0,         # resid window = finding window +/- margin_factor*duration
+    },
+    "weekly": {                       # week-over-week mode (aggregated weekly exports). Author's defaults.
+        "window_weeks": 8,            # trailing baseline window (observed weeks)
+        "min_weeks": 6,               # below this many prior weeks => insufficient history, no score
+        "z_threshold": 4.0,           # robust z of this week vs trailing window
+        "min_points": 1,              # consecutive weeks needed (a week is already a coarse unit)
+        "min_segment_weeks": 4,       # pattern shift: each side >= this many weeks (needs >= 8 weeks total)
+        "max_changepoints": 3,
+        "stat_threshold": 6.0, "min_effect_sigma": 1.0, "min_effect_rel": 0.05,
+        "followup_weeks": 6,          # anomaly this soon after a same-direction shift = continuation (R6)
+        "corr_margin_weeks": 6,
+        "util_mismatch_pts": 1.0,     # |supplied % - recomputed %| above this => data-quality note
     },
     "cr": {"lookahead_h": 24},
     "devcheck": {                     # Module 4 thresholds: author's defaults, not standards

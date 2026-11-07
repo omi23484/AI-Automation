@@ -106,6 +106,9 @@ def detect_shifts(s, cfg):
         ref = abs(mean(M[lo:sp["k"]]))
         if eff < cc["min_effect_sigma"] * sp["sigma_d"] or (ref > 0 and eff / ref < cc["min_effect_rel"]):
             continue
+        # robustness: segment MEDIANS of the residual must move too (a short burst must not look like a level shift)
+        if abs(median(r[sp["k"]:hi]) - median(r[lo:sp["k"]])) < cc["min_effect_sigma"] * sp["sigma_d"]:
+            continue
         cps.append(dict(sp, lo=lo, hi=hi))
         if len(cps) >= cc["max_changepoints"] * 3:
             break

@@ -91,10 +91,32 @@ async function tImport(m) {
       h("div", { class: "row" }, "optional inventory CSV (device,zone[,interface,speed_bps])", inv)),
     h("div", { class: "card" }, h("b", {}, "Column mapping (JSON)"), h("div", { class: "muted" }, "counter: cumulative (bits 32/64, mult 8 for octets->bits). gauge: value already a rate. uptime unit: s | cs (SNMP TimeTicks) | ms. speed unit: bps|kbps|mbps. zone: column name or null (inventory / 'unassigned')."), map),
     h("div", { class: "row" }, h("button", { class: "pri", onclick: doImport }, "Import + validate"), h("button", { onclick: synth }, "Load SYNTHETIC demo")),
+    weeklyCard(out2),
     out);
-  if (S.validation) showValidation(out);
+  if (S.validation) showValidation(out, S.validation.mode === "weekly");
 }
-function showValidation(out) {
+const out2 = h("div");
+function weeklyCard(box) {
+  const files = h("input", { type: "file", multiple: true, accept: ".xlsx,.csv" }), folder = h("input", { type: "file", webkitdirectory: true, multiple: true });
+  const tz = h("input", { value: "UTC", size: 20, title: "timezone of the file-name stamps" });
+  const ov = h("textarea", { rows: 2, placeholder: '{"2026_02_02_00_00_16_Utilization of Links_Last 7 Days WP.xlsx": "2026-01-26"}  (optional: file name -> Monday of the covered week)' });
+  const msg = h("span", { class: "muted" });
+  const b64 = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = no; r.readAsDataURL(f); });
+  const go = async () => {
+    try {
+      const fl = [...(folder.files.length ? folder.files : files.files)]; if (!fl.length) throw new Error("choose weekly .xlsx/.csv files or a folder");
+      msg.textContent = "reading " + fl.length + " files..."; const body = { tz: tz.value.trim(), overrides: ov.value.trim() ? JSON.parse(ov.value) : null };
+      body.files = await Promise.all(fl.map(async f => ({ name: f.webkitRelativePath || f.name, b64: await b64(f) })));
+      const r = await api("/api/import_weekly", body); S.validation = r.validation; S.result = null; msg.textContent = `analysed: ${r.counts.findings} findings, ${r.counts.clusters} clusters`;
+      showValidation(out2.nextSibling || box, true);
+    } catch (e) { msg.textContent = ""; box.append(h("div", { class: "banner err" }, e.message)); }
+  };
+  box.replaceChildren(h("div", { class: "card" }, h("b", {}, "Weekly aggregate exports (week-over-week mode)"),
+    h("div", { class: "muted" }, "One row per link per week (peak / average / utilisation). Detects week-level anomalies and level shifts only: intra-week events are invisible. Needs >= 6 weeks for scoring and >= 8 for shifts. Units are read from the cells ('1.06 Gbps', '13.78 %'); the week comes from the file name (assumption shown in the report)."),
+    h("div", { class: "row" }, "files", files, "or folder", folder, "timezone", tz), h("div", { class: "row" }, ov), h("div", { class: "row" }, h("button", { class: "pri", onclick: go }, "Import + analyze weekly"), msg)));
+  return box;
+}
+function showValidation(out, weeklyMode) {
   const v = S.validation; out.replaceChildren();
   const tr = v.timestamps;
   out.append(h("h3", {}, "Validation report (before analysis)"),
@@ -102,6 +124,14 @@ function showValidation(out) {
     h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "severity"), h("th", {}, "message"))), h("tbody", {}, v.issues.map(i => h("tr", {}, h("td", { class: i.severity }, i.severity), h("td", {}, i.message))))));
   if (tr.unparseable_samples.length) out.append(h("details", {}, h("summary", {}, `unparseable / ambiguous timestamps (first ${tr.unparseable_samples.length})`), h("table", {}, h("tr", {}, h("th", {}, "line"), h("th", {}, "ts_raw (exact)"), h("th", {}, "flags")), tr.unparseable_samples.map(r => h("tr", {}, h("td", {}, r.line), h("td", { class: "mono" }, JSON.stringify(r.ts_raw)), h("td", {}, r.flags.join(",")))))));
   out.append(h("details", {}, h("summary", {}, "series list"), h("div", { class: "scroll" }, h("table", {}, h("tr", {}, ["series", "zone", "samples", "points", "interval s", "excluded", "speed"].map(x => h("th", {}, x))), v.series.map(s => h("tr", {}, h("td", { class: "mono" }, s.key), h("td", {}, s.zone), h("td", {}, s.samples), h("td", {}, s.points), h("td", {}, s.interval_s), h("td", {}, s.excluded), h("td", {}, fmtBps(s.speed_bps))))))));
+  if (weeklyMode) {
+    const rowsOf = f => h("tr", {}, h("td", { class: "mono" }, f.file), h("td", {}, f.recognized ? "yes" : "NO " + (f.error || "")), h("td", {}, f.rows ?? ""),
+      h("td", { class: "mono" }, f.week ? f.week.ts_raw : ""), h("td", {}, f.week ? f.week.basis + (f.week.assumption ? " (ASSUMED)" : "") : ""));
+    const head = h("tr", {}, ["file", "recognised", "rows", "week stamp (raw)", "basis"].map(x => h("th", {}, x)));
+    out.append(h("details", {}, h("summary", {}, "files and week assignment"), h("div", { class: "scroll" }, h("table", {}, head, v.weekly.files.map(rowsOf)))));
+    out.append(h("div", { class: "row" }, h("button", { class: "pri", onclick: () => { S.tab = "Overview"; render(); } }, "Open results (Overview)")));
+    return;
+  }
   const cfg = h("textarea", { rows: 10, id: "cfg" }, JSON.stringify(S.defaults.config, null, 2));
   const prog = h("span", { class: "muted" });
   out.append(h("h3", {}, "Run analysis"), h("div", { class: "muted" }, "Config below = defaults chosen by the author (not standards). Edit freely; add per-zone overrides under \"zones\", e.g. {\"WAN\":{\"anomaly\":{\"z_threshold\":5}}}."), cfg,
@@ -155,7 +185,9 @@ async function tFindings(kind) {
   };
   [hide, sev, zone].forEach(e => e.onchange = load); txt.oninput = load;
   m.append(h("div", { class: "row" }, kind === "anomaly" ? h("label", {}, hide, "hide continuations of a pattern shift (R6)") : "", "severity", sev, "zone", zone, txt),
-    kind === "pattern_shift" ? h("div", { class: "muted" }, "Shift time resolution is 1 hour. Seasonal profile removed first; refuses when history < 5 days. Statistic is a heuristic score, not a calibrated p-value.") : "", list, detail);
+    kind === "pattern_shift" ? h("div", { class: "muted" }, (S.validation && S.validation.mode === "weekly")
+      ? "Weekly mode: shift resolution is 1 week (first week of the new level); no seasonality removed; needs >= 8 weeks. A gradual ramp can show up as several small steps. Statistic is a heuristic score, not a calibrated p-value."
+      : "Shift time resolution is 1 hour. Seasonal profile removed first; refuses when history < 5 days. Statistic is a heuristic score, not a calibrated p-value.") : "", list, detail);
   load();
 }
 async function showFinding(el, f, reload) {

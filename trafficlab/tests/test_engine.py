@@ -108,6 +108,12 @@ class Shift(unittest.TestCase):
         self.assertEqual(fs, [])
         self.assertEqual(st["status"], "insufficient_history")
 
+    def test_two_day_burst_is_not_a_level_shift(self):
+        k0, n = (15 * DAY) // 300, 2 * 288
+        s = mk_series(daily_values(35, seed=25, mod=lambda k, t, v: v * 2.0 if k0 <= k < k0 + n else v))
+        fs, _ = changepoint.detect_shifts(s, make_config())
+        self.assertEqual(fs, [])                 # segment medians do not move, so a burst cannot masquerade as a shift
+
     def test_downward_step(self):
         k0 = (20 * DAY) // 300
         s = mk_series(daily_values(35, seed=24, mod=lambda k, t, v: v * 0.5 if k >= k0 else v))
