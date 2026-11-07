@@ -19,6 +19,7 @@ from .interpret import RULES
 from .presets import PRESETS
 from . import profile as prof_mod
 from . import tier as tier_mod
+from . import paths
 
 WEB = os.path.join(os.path.dirname(__file__), "web")
 MAX_BODY = 1024 * 1024 * 1024
@@ -121,9 +122,9 @@ def make_handler(st):
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
             try:
                 if u.path in ("/", "/index.html"):
-                    return self._send(200, open(os.path.join(WEB, "index.html"), "rb").read(), "text/html")
+                    return self._send(200, paths.read_resource("web", "index.html"), "text/html")
                 if u.path in ("/app.js", "/style.css"):
-                    return self._send(200, open(os.path.join(WEB, u.path[1:]), "rb").read(), "text/javascript" if u.path.endswith("js") else "text/css")
+                    return self._send(200, paths.read_resource("web", u.path[1:]), "text/javascript" if u.path.endswith("js") else "text/css")
                 return self._send(*self.api_get(u.path, q))
             except ValueError as e:
                 self._send(400, {"error": f"{type(e).__name__}: {e}"})
@@ -353,14 +354,18 @@ def make_handler(st):
     return H
 
 
-def serve(host="127.0.0.1", port=8765, db="trafficlab.db", tier_spec=None):
+def serve(host="127.0.0.1", port=8765, db=None, tier_spec=None, open_browser=False):
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit("refusing to bind non-loopback address (tool is local-only)")
     t = tier_mod.activate(tier_mod.resolve(tier_spec))
+    db = db or paths.default_db()
     st = State(db)
     httpd = ThreadingHTTPServer((host, port), make_handler(st))
     print("tier:", f"{t.name}{' (PROPOSAL)' if t.proposal else ''} from {t.source}" if t else "none (no limits)")
     print(f"trafficlab on http://{host}:{port}/  (CR db: {os.path.abspath(db)})  Ctrl+C to stop")
+    if open_browser:
+        import webbrowser
+        threading.Timer(0.8, lambda: webbrowser.open(f"http://{host}:{port}/")).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

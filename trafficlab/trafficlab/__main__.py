@@ -15,7 +15,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="trafficlab")
     ap.add_argument("--tier", help="tier name or JSON path (else env TRAFFICLAB_TIER, else tier.json next to the package, else no limits)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("serve"); s.add_argument("--port", type=int, default=8765); s.add_argument("--db", default="trafficlab.db")
+    s = sub.add_parser("serve"); s.add_argument("--port", type=int, default=8765); s.add_argument("--db", default=None, help="CR database (default: beside the app, else ~/.trafficlab)")
+    s.add_argument("--open", action="store_true", help="open the UI in the default browser")
     s = sub.add_parser("synth"); s.add_argument("--out", default="synthetic"); s.add_argument("--days", type=int, default=35)
     s.add_argument("--seed", type=int, default=42); s.add_argument("--mixed-formats", action="store_true")
     s = sub.add_parser("analyze"); s.add_argument("file"); s.add_argument("--mapping"); s.add_argument("--preset", help="nexus_collect_utilization | nexus_collect_errors"); s.add_argument("--tz", default=None, help="default UTC, or the profile's import.tz")
@@ -27,25 +28,28 @@ def main(argv=None):
     s = sub.add_parser("weekly", help="week-over-week mode on aggregated weekly .xlsx/.csv exports (folder or files)")
     s.add_argument("paths", nargs="+"); s.add_argument("--tz", default=None, help="default UTC, or the profile's import.tz"); s.add_argument("--overrides", help="JSON {file name: 'YYYY-MM-DD' (Monday of covered week)}")
     s.add_argument("--config"); s.add_argument("--cr"); s.add_argument("--out", default="out"); s.add_argument("--profile")
-    s = sub.add_parser("tier", help="show tier definitions"); s.add_argument("action", choices=["list", "show"]); s.add_argument("name", nargs="?")
+    s = sub.add_parser("tier", help="tier definitions: list | show [NAME] | install FILE (upgrade = replace tier.json)"); s.add_argument("action", choices=["list", "show", "install"]); s.add_argument("name", nargs="?")
     sub.add_parser("verify", help="check this install against MANIFEST.sha256 (accident/tamper-evidence only)")
     sub.add_parser("test")
-    a = ap.parse_args(argv)
+    a = ap.parse_args(argv if argv is not None else (sys.argv[1:] or ["serve", "--open"]))   # double-click / no arguments => start the UI
     from . import tier as tier_mod
     if a.cmd not in ("tier", "verify", "test"):
         tier_mod.activate(tier_mod.resolve(a.tier))
     if a.cmd == "serve":
         from .server import serve
-        serve(port=a.port, db=a.db, tier_spec=a.tier)
+        serve(port=a.port, db=a.db, tier_spec=a.tier, open_browser=a.open)
     elif a.cmd == "tier":
-        import glob
-        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if a.action == "list":
-            for f in sorted(glob.glob(os.path.join(here, "tiers", "*.json"))):
-                t = tier_mod.Tier(json.load(open(f)), f)
+        if a.action == "install":
+            if not a.name:
+                sys.exit("usage: tier install FILE")
+            t, dst = tier_mod.install(a.name)
+            print(f"installed tier '{t.name}' -> {dst} (previous kept as tier.json.bak); restart to apply")
+        elif a.action == "list":
+            for n in ("small", "medium", "large"):
+                t = tier_mod.load(n)
                 print(f"{t.name:8} {'PROPOSAL ' if t.proposal else ''}limits={t.limits}")
             cur = tier_mod.resolve(a.tier)
-            print("active:", cur.name if cur else "none (no limits)")
+            print("active:", (cur.name + " from " + cur.source) if cur else "none (no limits)")
         else:
             t = tier_mod.load(a.name) if a.name else tier_mod.resolve(a.tier)
             print(json.dumps(t.describe() if t else {"active": None}, indent=1))
@@ -164,4 +168,6 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()          # required for the process pool inside a frozen (PyInstaller) executable
     main()

@@ -38,16 +38,49 @@ class Definition(Base):
             with self.assertRaises(ValueError, msg=str(bad)):
                 tier.Tier(bad)
 
-    def test_proposed_tiers_ship_and_are_ordered(self):
-        t = {n: tier.load(os.path.join(ROOT, "tiers", f"{n}.json")) for n in ("small", "medium", "large")}
+    def test_proposed_tiers_ship_defined_by_devices_only(self):
+        t = {n: tier.load(n) for n in ("small", "medium", "large")}                 # resolved from the built-in package tiers
         self.assertTrue(all(x.proposal for x in t.values()))                        # flagged as proposals until the owner dictates
-        for k in ("max_devices", "max_series", "max_rows", "max_captures"):
-            self.assertLess(t["small"].limits[k], t["medium"].limits[k])
-            self.assertLess(t["medium"].limits[k], t["large"].limits[k])
+        for x in t.values():
+            self.assertEqual(set(x.limits), {"max_devices"})                         # decision: tier = devices, capacity only
+            self.assertTrue(all(x.features.values()))                                # decision: no feature gating
+        self.assertLess(t["small"].limits["max_devices"], t["medium"].limits["max_devices"])
+        self.assertLess(t["medium"].limits["max_devices"], t["large"].limits["max_devices"])
 
-    def test_no_tier_means_no_limits(self):
+    def test_safety_caps_apply_even_without_a_tier(self):
         tier.activate(None)
-        tier.check("rows", 10 ** 12)
+        with self.assertRaises(tier.TierError) as e:
+            tier.check("rows", tier.SAFETY["rows"] + 1)
+        self.assertIn("technical safety cap", str(e.exception))
+        tier.check("rows", tier.SAFETY["rows"])
+        tier.activate(T({"max_devices": 5}))                                          # a tier does not lift the guard
+        with self.assertRaises(tier.TierError):
+            tier.check("captures", tier.SAFETY["captures"] + 1)
+
+    def test_install_replaces_tier_json_and_keeps_backup(self):
+        from trafficlab import paths
+        with tempfile.TemporaryDirectory() as td:
+            orig = paths.app_dir
+            paths.app_dir = lambda: td
+            try:
+                a, b = os.path.join(td, "a.json"), os.path.join(td, "b.json")
+                json.dump({"name": "one", "limits": {"max_devices": 5}}, open(a, "w"))
+                json.dump({"name": "two", "limits": {"max_devices": 50}}, open(b, "w"))
+                tier.install(a)
+                self.assertEqual(tier.resolve().name, "one")
+                tier.install(b)
+                self.assertEqual(tier.resolve().name, "two")                          # upgrade = new tier file
+                self.assertEqual(json.load(open(os.path.join(td, "tier.json.bak")))["name"], "one")
+                json.dump({"name": "bad", "limits": {"max_cats": 1}}, open(a, "w"))
+                with self.assertRaises(ValueError):
+                    tier.install(a)
+                self.assertEqual(tier.resolve().name, "two")                          # invalid file never installed
+            finally:
+                paths.app_dir = orig
+
+    def test_no_tier_means_no_commercial_limits(self):
+        tier.activate(None)
+        tier.check("devices", 10 ** 6)                  # no device limit without a tier
         tier.require("devcheck")
 
     def test_resolve_env_and_missing(self):

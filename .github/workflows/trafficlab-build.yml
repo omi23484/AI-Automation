@@ -1,0 +1,49 @@
+# Builds the trafficlab single-file executable on Linux AND Windows (PyInstaller cannot cross-compile).
+# Manual trigger or tag only: it does not run on pushes or pull requests.
+# STATUS: the Linux path was reproduced locally; the Windows path has NOT been run by the author. Check the first Windows run.
+name: trafficlab-build
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Tier to bake in (small|medium|large|none)"
+        default: "none"
+      final:
+        description: "Mark the baked tier as final (clears the proposal flag)"
+        type: boolean
+        default: false
+  push:
+    tags: ["trafficlab-v*"]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]   # ubuntu-22.04: older glibc than the newest runner => runs on more distros
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: trafficlab
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install build tools (build machine only)
+        run: python -m pip install pyinstaller==6.22.3 tzdata
+      - name: Unit tests
+        run: python -m unittest discover -s tests
+      - name: Build single-file executable
+        shell: bash
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.tier || 'none' }}" != "none" ]; then ARGS="--tier ${{ github.event.inputs.tier }}"; fi
+          if [ "${{ github.event.inputs.final }}" = "true" ]; then ARGS="$ARGS --final"; fi
+          python tools/build_exe.py $ARGS --out dist
+      - name: Smoke-test the executable
+        shell: bash
+        run: python tools/smoke_exe.py "$(ls dist/trafficlab-* | grep -v sha256 | head -1)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trafficlab-${{ matrix.os }}
+          path: trafficlab/dist/*

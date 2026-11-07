@@ -24,7 +24,7 @@ def main(argv=None):
     ap.add_argument("--final", action="store_true", help="mark the tier as final (clears the 'proposal' flag in the delivered tier.json)")
     a = ap.parse_args(argv)
     t = tier_mod.load(a.tier)
-    tobj = json.load(open(t.source))
+    tobj = dict(t.raw)
     if a.final:
         tobj["proposal"] = False
     elif tobj.get("proposal"):
