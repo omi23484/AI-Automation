@@ -11,6 +11,7 @@ from .changepoint import detect_shifts
 from .correlate import correlate
 from .crmatch import match
 from .interpret import interpret, mark_continuations
+from . import forecast as fc_mod
 
 
 def _summ(s):
@@ -90,7 +91,7 @@ def finish(findings, sums, resid, series_list, cfg, crs, t0, workers, shift_unce
         c["cr_candidates"] = match(c["window"], devs, crs, la)
     sev = {"high": 3, "medium": 2, "low": 1}
     findings.sort(key=lambda f: (-sev[f["severity"]], f["window"]["start_ms"]))
-    return {"config": cfg, "findings": findings, "clusters": clusters, "series": sums,
+    return {"config": cfg, "findings": findings, "clusters": clusters, "series": sums, "forecasts": fc_mod.compute(series_list, cfg),
             "elapsed_s": round(time.time() - t0, 3), "workers": workers}
 
 

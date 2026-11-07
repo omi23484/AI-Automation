@@ -74,5 +74,14 @@ def build_report(result, validation, series_map=None, dataset_info=""):
         f = lambda x: "" if x is None else f"{x:,.0f}"
         up = s.get("util_p95_pct")
         h.append(f"<tr><td class=mono>{E(s['key'])}<td>{E(s['zone'])}<td>{s['n_points']}<td>{s['excluded']}<td>{f(s.get('p50'))}<td>{f(s.get('p95'))}<td>{f(s.get('p99'))}<td>{'' if up is None else f'{up:.1f}'}")
-    h.append("</table><h2>Configuration used</h2><pre class=mono>" + E(json.dumps(result["config"], indent=1)) + "</pre></body></html>")
+    h.append("</table>")
+    fcs = [f for f in result.get("forecasts", []) if f["status"] == "upward_trend"]
+    if fcs:
+        h.append("<h2>Capacity outlook</h2><p>Theil-Sen trend with Mann-Kendall test; straight-line extrapolation, not seasonal; range is heuristic (slope band and 1 robust sigma of scatter).</p>"
+                 "<table><tr><th>series<th>basis<th>level now %<th>slope %/day (band)<th>80%: date (fast..slow)<th>90%<th>100%</tr>")
+        for f in fcs[:50]:
+            cells = "".join(f"<td>{E(str(t['eta_date']))} ({E(str(t['fast_date']))}..{E(str(t['slow_date']))})" for t in f["thresholds"])
+            h.append(f"<tr><td class=mono>{E(f['series_key'])}<td>{E(f['basis'])}<td>{f['level_now_pct']}<td>{f['slope_pct_per_day']} ({f['slope_band'][0]}..{f['slope_band'][1]}){cells}")
+        h.append("</table>")
+    h.append("<h2>Configuration used</h2><pre class=mono>" + E(json.dumps(result["config"], indent=1)) + "</pre></body></html>")
     return "".join(h)

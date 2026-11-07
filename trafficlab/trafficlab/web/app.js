@@ -194,6 +194,12 @@ async function tOverview(m) {
   m.append(h("h3", {}, "Cross-device clusters"), clusters.length ? h("table", {}, h("tr", {}, ["id", "devices", "zones", "mean r", "label (interpretation)", "CR candidates"].map(x => h("th", {}, x))),
     clusters.map(c => h("tr", { onclick: () => { S.sel = c.id; S.tab = "Explain"; render(); } }, h("td", { class: "mono" }, c.id), h("td", {}, c.devices.join(", ")), h("td", {}, c.zones.join(", ") + (c.cross_zone ? " (cross-zone)" : "")), h("td", {}, c.mean_pearson_r ?? "n/a"), h("td", {}, c.label), h("td", {}, (c.cr_candidates || []).map(x => x.cr_id).join(", "))))) : h("div", { class: "muted" }, "none"));
   m.append(h("h3", {}, "Top primary findings"), findingsTable(findings.slice(0, 15)));
+  const fcs = (await api("/api/forecasts")).forecasts, up = fcs.filter(f => f.status === "upward_trend");
+  const dr = x => x ? x : "-";
+  m.append(h("h3", {}, "Capacity outlook"), h("div", { class: "muted" }, `Robust straight-line trend (Theil-Sen) with a Mann-Kendall test. ${up.length} of ${fcs.length} eligible series show a significant upward trend; others show no date on purpose. Not seasonal, does not know about upgrades or step changes. Range = slope band +/- 1 robust sigma of daily scatter (heuristic).`),
+    up.length ? h("div", { class: "scroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["zone", "series", "basis", "now %", "slope %/day (band)", "80%: expected (fast..slow)", "90%", "100%"].map(x => h("th", {}, x)))),
+      h("tbody", {}, up.slice(0, 15).map(f => h("tr", {}, h("td", {}, f.zone), h("td", { class: "mono" }, `${f.device} ${f.interface} ${f.metric}`), h("td", {}, f.basis), h("td", {}, f.level_now_pct), h("td", {}, `${f.slope_pct_per_day} (${f.slope_band[0]}..${f.slope_band[1]})`),
+        ...f.thresholds.map(t => h("td", { class: "mono" }, `${dr(t.eta_date)} (${dr(t.fast_date)}..${dr(t.slow_date)})`))))))) : h("div", { class: "muted" }, "no series with a significant upward trend"));
 }
 
 // ------------------------------------------------------------------ Findings

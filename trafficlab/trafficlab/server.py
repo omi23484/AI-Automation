@@ -193,6 +193,8 @@ def make_handler(st):
                 return 200, {"config": r["config"], "elapsed_s": r["elapsed_s"], "workers": r["workers"], "zones": zones,
                              "counts": {"findings": len(r["findings"]), "primary": sum(1 for f in r["findings"] if not f.get("continuation_of")),
                                         "clusters": len(r["clusters"]), "series": len(r["series"])}}
+            if p == "/api/forecasts":
+                return (200, {"forecasts": st.result.get("forecasts", [])}) if st.result else (404, {"error": "no result"})
             if p == "/api/findings":
                 if not st.result:
                     return 404, {"error": "no result"}

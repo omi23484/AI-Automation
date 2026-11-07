@@ -63,6 +63,15 @@ DEFAULTS = {
         "aliases": {},                # extra header names per canonical field: {"avg_in_bps":["Mean RX"], "device":["CI Name"]}
         "week_basis": "stamp_period_ends",  # stamp_period_ends | stamp_period_starts | stamp_week_contains  (ISO-week folder names and explicit overrides always win)
     },
+    "forecast": {                     # capacity outlook (linear robust trend; NOT seasonal, NOT growth-step aware)
+        "enabled": True,
+        "min_days": 21,               # poll mode: distinct local days with enough coverage
+        "min_weeks": 12,              # weekly mode
+        "min_coverage": 0.5,          # fraction of expected polls in a day for that day to count
+        "alpha": 0.05,                # Mann-Kendall significance and Sen slope band level
+        "thresholds_pct": [80, 90, 100],
+        "horizon_days": 1825,         # farther than this => reported as beyond horizon
+    },
     "cr": {"lookahead_h": 24},
     "devcheck": {                     # Module 4 thresholds: author's defaults, not standards
         "bgp_recent_s": 300,          # established session younger than this => info
