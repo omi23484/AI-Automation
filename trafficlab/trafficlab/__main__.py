@@ -2,6 +2,7 @@
   serve                       start local UI (127.0.0.1:8765)
   synth  --out DIR            write SYNTHETIC_* files
   analyze FILE (--mapping M.json | --preset NAME) [--tz UTC] [--formats F1,F2] [--inventory inv.csv] [--cr crs.json] [--config c.json] --out DIR
+  devcheck PATH [--config c.json] --out DIR   rule-based checks on show captures (folder or .zip)
   test                        run unit tests"""
 import argparse
 import json
@@ -19,6 +20,8 @@ def main(argv=None):
     s.add_argument("--formats", default=None, help="comma separated strptime formats, or epoch_s / epoch_ms")
     s.add_argument("--delimiter", default=","); s.add_argument("--inventory"); s.add_argument("--cr"); s.add_argument("--config"); s.add_argument("--out", default="out")
     s.add_argument("--workers", type=int, default=None)
+    s = sub.add_parser("devcheck", help="Module 4: rule-based checks on raw show captures (dir or .zip)")
+    s.add_argument("path"); s.add_argument("--pass-policy", default="latest", choices=["latest", "all"]); s.add_argument("--config"); s.add_argument("--out", default="out")
     sub.add_parser("test")
     a = ap.parse_args(argv)
     if a.cmd == "serve":
@@ -59,6 +62,18 @@ def main(argv=None):
         open(os.path.join(a.out, "report.html"), "w", encoding="utf-8").write(report.build_report(res, val, {s.key: s for s in series}))
         prim = [f for f in res["findings"] if not f.get("continuation_of")]
         print(f"{len(res['findings'])} findings ({len(prim)} primary), {len(res['clusters'])} clusters, {res['elapsed_s']}s -> {a.out}/")
+    elif a.cmd == "devcheck":
+        from . import devcheck
+        from .devcheck import report as dcr
+        from .config import make_config
+        cfg = make_config(json.load(open(a.config)) if a.config else None)
+        caps = devcheck.load_path(a.path, a.pass_policy)
+        res = devcheck.analyze_captures(caps, cfg)
+        os.makedirs(a.out, exist_ok=True)
+        json.dump({"format": "trafficlab-devcheck/1", "result": res}, open(os.path.join(a.out, "devcheck.json"), "w"), indent=1)
+        open(os.path.join(a.out, "devcheck.html"), "w", encoding="utf-8").write(dcr.build(res))
+        sm = res["summary"]
+        print(f"{sm['devices']} devices, {sm['captures']} captures, {sm['findings']} findings {sm['by_severity']} waived={sm['waived']} -> {a.out}/")
     elif a.cmd == "test":
         import unittest
         here = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests")

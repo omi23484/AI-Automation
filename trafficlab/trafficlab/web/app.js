@@ -179,14 +179,66 @@ async function showFinding(el, f, reload) {
 
 // ------------------------------------------------------------------ Devices
 async function tDevices(m) {
+  const checks = h("div"); await checksSection(checks);
   const { series } = await api("/api/series_list");
-  if (!series.length) { m.append(h("div", { class: "banner" }, "No analysis yet.")); return; }
+  if (!series.length) { m.append(h("div", { class: "banner" }, "No traffic analysis yet (Import tab). Device checks below work independently."), checks); return; }
+  m.append(checks);
   const cv = h("canvas"); const note = h("div", { class: "muted" }, "Click a series to chart it. Overlays: anomaly windows (red), shifts (dashed), CR windows (purple), excluded intervals/gaps (grey hatch).");
   const crs = (await api("/api/crs")).crs, all = (await api("/api/findings?hide_continuation=1")).findings;
   m.append(note, cv, h("div", { class: "scroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["zone", "series", "pts", "excl", "interval", "p50", "p95", "p99", "max", "util p95 %", "baseline tiers", "shift status"].map(x => h("th", {}, x)))),
     h("tbody", {}, series.map(s => h("tr", { onclick: ev => { document.querySelectorAll("tbody tr.sel").forEach(x => x.classList.remove("sel")); ev.currentTarget.classList.add("sel"); chart = new Chart(cv, s.key, { findings: all.filter(f => f.series_key === s.key), crs: crs.filter(c => c.scope.some(x => x.device === s.device)) }); chart.load(); } },
       h("td", {}, s.zone), h("td", { class: "mono" }, s.key), h("td", {}, fmtN(s.n_points)), h("td", {}, s.excluded), h("td", {}, s.interval_s), h("td", {}, fmtBps(s.p50)), h("td", {}, fmtBps(s.p95)), h("td", {}, fmtBps(s.p99)), h("td", {}, fmtBps(s.max)),
       h("td", {}, s.util_p95_pct == null ? "n/a (no speed)" : s.util_p95_pct.toFixed(1)), h("td", { class: "mono" }, JSON.stringify(s.baseline.tier_counts)), h("td", {}, s.shift_status.status + (s.shift_status.reason ? ": " + s.shift_status.reason : ""))))))));
+}
+
+// ------------------------------------------------------------------ Device checks (Module 4)
+async function checksSection(box) {
+  const dev = h("input", { size: 14, placeholder: "device name (if files not in device folders)" });
+  const files = h("input", { type: "file", multiple: true, accept: ".txt,.log" });
+  const folder = h("input", { type: "file", webkitdirectory: true, multiple: true });
+  const zip = h("input", { type: "file", accept: ".zip" });
+  const pol = h("select", {}, h("option", { value: "latest" }, "latest pass per device+command"), h("option", { value: "all" }, "all passes"));
+  const opt = h("textarea", { rows: 3, placeholder: '{"groups":{"leaf1":"fabricA","leaf2":"fabricA"},"waivers":[{"rule":"DC05","device":"*","contains":"192.0.2.2","reason":"lab: no peer by design"}]}' });
+  const out = h("div"), msg = h("span", { class: "muted" });
+  const b64 = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = no; r.readAsDataURL(f); });
+  const run = async () => {
+    try {
+      msg.textContent = "uploading..."; const body = { pass_policy: pol.value, devcheck: opt.value.trim() ? JSON.parse(opt.value) : {} };
+      if (zip.files[0]) body.zip_b64 = await b64(zip.files[0]);
+      else {
+        const fl = [...(folder.files.length ? folder.files : files.files)]; if (!fl.length) throw new Error("choose files, a folder or a zip");
+        body.device = dev.value; body.files = await Promise.all(fl.map(async f => ({ name: f.webkitRelativePath || f.name, text: await f.text() })));
+      }
+      await api("/api/checks/upload", body); msg.textContent = "done"; await showChecks(out);
+    } catch (e) { msg.textContent = ""; out.replaceChildren(h("div", { class: "banner err" }, e.message)); }
+  };
+  box.append(h("h3", {}, "Device checks (rule-based, from raw show output)"),
+    h("div", { class: "muted" }, "Captures need a 'COMMAND: show ...' first line, 'host# show ...' prompts, or show_*.txt names, in <device>/ folders (a <pass>/<device>/ layout is understood). Parsed: interface error counters & status, port-channel, STP, BGP, OSPF, BFD, vPC, HSRP, logging, clock. Everything else is listed as not parsed."),
+    h("div", { class: "card" }, h("div", { class: "row" }, "files", files, "or folder", folder, "or .zip", zip), h("div", { class: "row" }, dev, pol),
+      h("div", { class: "row" }, h("label", {}, "optional config JSON (devcheck groups / waivers / thresholds)", opt)), h("div", { class: "row" }, h("button", { class: "pri", onclick: run }, "Run checks"), msg)), out);
+  try { const r0 = await api("/api/checks/result"); if (!r0.empty) await showChecks(out); } catch (e) { }
+}
+async function showChecks(out) {
+  const r = await api("/api/checks/result"), sm = r.summary, ev = h("div"), sevSel = h("select", {}, ["all", "critical", "warning", "info"].map(x => h("option", {}, x))), txt = h("input", { placeholder: "filter device / text" });
+  const list = h("div");
+  const draw = () => {
+    const fs = r.findings.filter(f => (sevSel.value === "all" || f.severity === sevSel.value) && (f.device + " " + f.title + " " + f.rule).toLowerCase().includes(txt.value.toLowerCase()));
+    list.replaceChildren(h("div", { class: "muted" }, `${fs.length} shown`), h("div", { class: "scroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["sev", "rule", "device", "finding", "detail", ""].map(x => h("th", {}, x)))),
+      h("tbody", {}, fs.map(f => h("tr", { onclick: () => showEv(ev, f) }, h("td", { class: f.severity === "critical" ? "high" : f.severity === "warning" ? "medium" : "low" }, f.severity), h("td", {}, f.rule), h("td", {}, f.device), h("td", {}, f.title), h("td", {}, f.detail.slice(0, 140)),
+        h("td", {}, (f.waived ? "waived: " + f.waived + " " : "") + (f.verify_on_device ? "verify on device" : ""))))))));
+  };
+  sevSel.onchange = draw; txt.oninput = draw;
+  out.replaceChildren(h("div", {}, h("b", {}, `${sm.devices} devices · ${sm.captures} captures · ${sm.findings} findings`), " ", JSON.stringify(sm.by_severity), ` · waived ${sm.waived}  `,
+    h("a", { href: "/api/export/devcheck-report", download: "devcheck.html" }, h("button", {}, "HTML report")), h("a", { href: "/api/export/devcheck", download: "devcheck.json" }, h("button", {}, "JSON"))),
+    h("div", { class: "scroll" }, h("table", {}, h("thead", {}, h("tr", {}, ["device", "captures", "critical", "warning", "info", "waived", "parsed", "not parsed", "rejected by device"].map(x => h("th", {}, x)))),
+      h("tbody", {}, Object.entries(r.devices).map(([d, v]) => h("tr", {}, h("td", { class: "mono" }, d), h("td", {}, v.n_captures), h("td", {}, v.counts.critical || 0), h("td", {}, v.counts.warning || 0), h("td", {}, v.counts.info || 0), h("td", {}, v.waived), h("td", {}, v.coverage.parsed.length), h("td", {}, v.coverage.not_parsed.length), h("td", {}, v.coverage.rejected.length)))))),
+    h("div", { class: "row" }, "severity", sevSel, txt), list, ev,
+    h("details", {}, h("summary", {}, "rules (no hidden logic)"), h("table", {}, h("tr", {}, ["id", "name", "condition", "source fields"].map(x => h("th", {}, x))), r.rules.map(x => h("tr", {}, h("td", {}, x.id), h("td", {}, x.name), h("td", {}, x.condition), h("td", {}, x.source))))));
+  draw();
+}
+function showEv(el, f) {
+  el.replaceChildren(h("div", { class: "card" }, h("b", {}, `${f.id} [${f.rule}] ${f.device}: ${f.title}`), h("div", {}, f.detail), f.waived ? h("div", { class: "banner" }, "Waived: " + f.waived) : "", f.verify_on_device ? h("div", { class: "banner" }, "Rests on values seen in captures only. Verify on device.") : "",
+    h("div", { class: "scroll" }, h("table", {}, h("tr", {}, ["device", "command", "line", "field", "value", "raw text"].map(x => h("th", {}, x))), f.evidence.map(e => h("tr", {}, h("td", {}, e.device), h("td", { class: "mono" }, e.command), h("td", {}, e.line), h("td", {}, e.field), h("td", { class: "mono" }, e.value), h("td", { class: "mono" }, e.text)))))));
 }
 
 // ------------------------------------------------------------------ Chart (canvas, zoom/pan, overlays)

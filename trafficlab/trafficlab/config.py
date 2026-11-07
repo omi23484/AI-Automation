@@ -50,6 +50,15 @@ DEFAULTS = {
         "margin_factor": 1.0,         # resid window = finding window +/- margin_factor*duration
     },
     "cr": {"lookahead_h": 24},
+    "devcheck": {                     # Module 4 thresholds: author's defaults, not standards
+        "bgp_recent_s": 300,          # established session younger than this => info
+        "ospf_changes_min": 5,        # cumulative adjacency state changes >= => info
+        "log_sev_max": 2,             # syslog severity <= this => critical (0 emerg,1 alert,2 crit)
+        "flap_min_events": 3,         # up/down log events on one interface in the capture => warning
+        "log_repeat_min": 20,         # same message tag seen >= times in the capture => noisy-message finding
+        "groups": {},                 # device -> group label. Cross-device rules (X01/X02) compare ONLY within a group; default group "all"
+        "waivers": [],                # [{"rule":"DC05","device":"n93*","contains":"192.0.2.2","reason":"lab: no peer by design"}]
+    },
     "interpret": {"shift_followup_days": 21},  # anomaly after same-direction shift => continuation (R6)
     # per-zone overrides, same nested shape, e.g. {"WAN": {"anomaly": {"z_threshold": 5}}}
     "zones": {},

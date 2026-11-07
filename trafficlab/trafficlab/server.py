@@ -8,7 +8,10 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import base64
 from . import synth, ingest, counters, pipeline, report
+from . import devcheck
+from .devcheck import report as dc_report
 from .config import make_config, DEFAULTS
 from .store import CRStore, STATUSES
 from .interpret import RULES
@@ -29,6 +32,7 @@ class State:
         self.validation = None
         self.result = None
         self.job = {"state": "idle", "done": 0, "total": 0, "error": None}
+        self.checks = None
 
 
 def evidence_pack(st, fid_):
@@ -207,10 +211,16 @@ def make_handler(st):
                 if pack is None:
                     return 404, {"error": "unknown id"}
                 return 200, {"evidence_pack": pack, "explanation": explain(pack), "slm": "disabled (Phase 3 not built)"}
+            if p == "/api/checks/result":
+                return (200, st.checks) if st.checks else (200, {"empty": True})
+            if p == "/api/export/devcheck":
+                return (200, json.dumps({"format": "trafficlab-devcheck/1", "result": st.checks}, indent=1), "application/json") if st.checks else (404, {"error": "none"})
+            if p == "/api/export/devcheck-report":
+                return (200, dc_report.build(st.checks), "text/html") if st.checks else (404, {"error": "none"})
             if p == "/api/export/findings":
                 if not st.result:
                     return 404, {"error": "no result"}
-                body = json.dumps({"format": "trafficlab-findings/1", "validation": st.validation, "result": st.result}, indent=1)
+                body = json.dumps({"format": "trafficlab-findings/1", "validation": st.validation, "result": st.result, "devcheck": st.checks}, indent=1)
                 return 200, body, "application/json"
             if p == "/api/export/report":
                 if not st.result:
@@ -240,6 +250,19 @@ def make_handler(st):
                 cfg = make_config(b.get("config"))
                 threading.Thread(target=self._run, args=(cfg, b.get("workers")), daemon=True).start()
                 return 202, {"started": True}
+            if p == "/api/checks/upload":
+                pol = b.get("pass_policy") or "latest"
+                if b.get("zip_b64"):
+                    caps = devcheck.load_zip_bytes(base64.b64decode(b["zip_b64"]), pol)
+                else:
+                    dflt = (b.get("device") or "").strip()
+                    items = [((f["name"] if "/" in f["name"] or not dflt else f"{dflt}/{f['name']}"), f["text"]) for f in b.get("files", [])]
+                    caps = devcheck.load_items(items, pol)
+                if not caps:
+                    return 400, {"error": "no usable captures: files need a 'COMMAND: show ...' first line, 'host# show ...' prompts, or show_*.txt names, inside <device>/ folders"}
+                cfg = make_config({"devcheck": {k: v for k, v in (b.get("devcheck") or {}).items()}})
+                st.checks = devcheck.analyze_captures(caps, cfg)
+                return 200, {"summary": st.checks["summary"]}
             if p == "/api/crs":
                 return 200, {"cr": st.store.upsert(b)}
             if p == "/api/crs/link":
