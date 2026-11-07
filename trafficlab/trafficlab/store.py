@@ -5,6 +5,7 @@ import sqlite3
 import time
 
 from .timeparse import parse_ts
+from . import tier
 
 STATUSES = ["Draft", "Approved", "Scheduled", "In Progress", "Implemented", "Rolled Back", "Closed", "Cancelled"]
 SCALARS = ["title", "description", "status", "owner", "risk", "rollback_plan", "notes"]
@@ -63,6 +64,7 @@ class CRStore:
         row.update(win)
         row["tz"] = tz
         if old is None:
+            tier.check("cr", self.db.execute("SELECT COUNT(*) FROM crs").fetchone()[0] + 1)
             cols = ["cr_id"] + list(row) + ["created_utc", "updated_utc"]
             vals = [cr_id] + list(row.values()) + [_now(), _now()]
             self.db.execute(f"INSERT INTO crs({','.join(cols)}) VALUES({','.join('?' * len(cols))})", vals)

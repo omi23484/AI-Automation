@@ -5,6 +5,7 @@ from collections import defaultdict
 
 from .stats import median
 from .config import make_config
+from . import tier
 
 
 @dataclass
@@ -83,6 +84,9 @@ def build_all(ds, cfg=None):
             if s is not None:
                 out.append(s)
     dq["series"] = len(out)
+    tier.check("devices", len({x.device for x in out}))
+    tier.check("series", len(out))
+    tier.check("zones", len({x.zone for x in out}))
     return out, dq
 
 

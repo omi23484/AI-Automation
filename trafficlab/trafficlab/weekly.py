@@ -25,6 +25,7 @@ from .timeparse import get_tz, _to_ms
 from .anomaly import fid
 from . import changepoint as cpm
 from .pipeline import _summ, finish
+from . import tier
 
 WEEK_MS = 7 * 86_400_000
 _NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
@@ -203,6 +204,7 @@ def _pct(c):
 
 def build_series(files, cfg=None, tz="UTC", overrides=None, mapping_override=None, inventory=None):
     """files: [(name, bytes|str)] .xlsx or .csv. -> (series_list, report). Raw cell text is never modified."""
+    tier.require("weekly_mode", "weekly aggregate mode")
     cfg = cfg or make_config()
     wcfg = cfg["weekly"]
     rev = alias_table(wcfg.get("aliases"))
@@ -353,6 +355,9 @@ def build_series(files, cfg=None, tz="UTC", overrides=None, mapping_override=Non
     if asm:
         issue("warn", f"{len(asm)} file(s): week ASSUMED from the file-name stamp ({asm[0]['week']['basis']}), e.g. {asm[0]['file']!r} -> stamp {asm[0]['week']['ts_raw']}. "
                       "Change weekly.week_basis or pass per-file overrides if wrong")
+    tier.check("devices", len({x.device for x in out}))
+    tier.check("series", len(out))
+    tier.check("zones", len({x.zone for x in out}))
     weeks = sorted({s_end for s in out for s_end in s.ts_ms})
     rep["weeks"] = weeks
     issue("info", f"{len(out)} weekly series from {sum(1 for f in rep['files'] if f['recognized'])} recognised files, {len(weeks)} distinct weeks")

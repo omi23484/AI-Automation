@@ -18,6 +18,7 @@ from .store import CRStore, STATUSES
 from .interpret import RULES
 from .presets import PRESETS
 from . import profile as prof_mod
+from . import tier as tier_mod
 
 WEB = os.path.join(os.path.dirname(__file__), "web")
 MAX_BODY = 1024 * 1024 * 1024
@@ -124,6 +125,8 @@ def make_handler(st):
                 if u.path in ("/app.js", "/style.css"):
                     return self._send(200, open(os.path.join(WEB, u.path[1:]), "rb").read(), "text/javascript" if u.path.endswith("js") else "text/css")
                 return self._send(*self.api_get(u.path, q))
+            except ValueError as e:
+                self._send(400, {"error": f"{type(e).__name__}: {e}"})
             except Exception as e:
                 traceback.print_exc()
                 self._send(500, {"error": f"{type(e).__name__}: {e}"})
@@ -153,6 +156,20 @@ def make_handler(st):
         def api_get(self, p, q):
             if p == "/api/defaults":
                 return 200, {"config": DEFAULTS, "statuses": STATUSES, "rules": RULES, "presets": prof_mod.all_presets(st.profile), "profile": st.profile, "profile_import": prof_mod.import_defaults(st.profile), "effective_config": st.cfg(), "synth_mapping32": synth.SYN_MAPPING32, "synth_mapping64": synth.SYN_MAPPING}
+            if p == "/api/tier":
+                t = tier_mod.ACTIVE
+                usage = {}
+                if st.series:
+                    usage = {"series": len(st.series), "devices": len({x.device for x in st.series}), "zones": len({x.zone for x in st.series})}
+                    if st.ds is not None:
+                        usage["rows"] = len(st.ds.rows)
+                if st.checks:
+                    usage["captures"] = st.checks["summary"]["captures"]
+                    usage["check_devices"] = st.checks["summary"]["devices"]
+                usage["cr"] = len(st.store.list())
+                return 200, ({"active": t.describe(), "usage": usage} if t else {"active": None, "usage": usage})
+            if p == "/api/export/findings" and False:
+                pass
             if p == "/api/profile":
                 return 200, (st.profile or {"empty": True})
             if p == "/api/status":
@@ -221,6 +238,8 @@ def make_handler(st):
                 return 200, {"evidence_pack": pack, "explanation": explain(pack), "slm": "disabled (Phase 3 not built)"}
             if p == "/api/checks/result":
                 return (200, st.checks) if st.checks else (200, {"empty": True})
+            if p.startswith("/api/export/") or p == "/api/crs/export":
+                tier_mod.require("report_export", "report/JSON export")
             if p == "/api/export/devcheck":
                 return (200, json.dumps({"format": "trafficlab-devcheck/1", "result": st.checks}, indent=1), "application/json") if st.checks else (404, {"error": "none"})
             if p == "/api/export/devcheck-report":
@@ -334,11 +353,13 @@ def make_handler(st):
     return H
 
 
-def serve(host="127.0.0.1", port=8765, db="trafficlab.db"):
+def serve(host="127.0.0.1", port=8765, db="trafficlab.db", tier_spec=None):
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit("refusing to bind non-loopback address (tool is local-only)")
+    t = tier_mod.activate(tier_mod.resolve(tier_spec))
     st = State(db)
     httpd = ThreadingHTTPServer((host, port), make_handler(st))
+    print("tier:", f"{t.name}{' (PROPOSAL)' if t.proposal else ''} from {t.source}" if t else "none (no limits)")
     print(f"trafficlab on http://{host}:{port}/  (CR db: {os.path.abspath(db)})  Ctrl+C to stop")
     try:
         httpd.serve_forever()

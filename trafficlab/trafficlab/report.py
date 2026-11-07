@@ -2,6 +2,7 @@
 import html
 import json
 import time
+from . import tier
 
 E = html.escape
 CSS = """body{font:14px/1.45 system-ui,Segoe UI,Arial,sans-serif;margin:24px;color:#1b1f23;background:#fff}
@@ -31,6 +32,7 @@ def _spark(series, w0, w1, width=420, height=70):
 
 
 def build_report(result, validation, series_map=None, dataset_info=""):
+    tier.require("report_export", "report/JSON export")
     h = [f"<!doctype html><html lang=en><meta charset=utf-8><title>trafficlab report</title><style>{CSS}</style><body>"]
     h.append("<h1>Traffic analysis report</h1>")
     h.append(f"<p>Generated {E(time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime()))} (UTC) &middot; source: <span class=mono>{E(str(validation['source']))}</span> {E(dataset_info)}</p>")

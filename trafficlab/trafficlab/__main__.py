@@ -13,6 +13,7 @@ import sys
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="trafficlab")
+    ap.add_argument("--tier", help="tier name or JSON path (else env TRAFFICLAB_TIER, else tier.json next to the package, else no limits)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("serve"); s.add_argument("--port", type=int, default=8765); s.add_argument("--db", default="trafficlab.db")
     s = sub.add_parser("synth"); s.add_argument("--out", default="synthetic"); s.add_argument("--days", type=int, default=35)
@@ -26,11 +27,51 @@ def main(argv=None):
     s = sub.add_parser("weekly", help="week-over-week mode on aggregated weekly .xlsx/.csv exports (folder or files)")
     s.add_argument("paths", nargs="+"); s.add_argument("--tz", default=None, help="default UTC, or the profile's import.tz"); s.add_argument("--overrides", help="JSON {file name: 'YYYY-MM-DD' (Monday of covered week)}")
     s.add_argument("--config"); s.add_argument("--cr"); s.add_argument("--out", default="out"); s.add_argument("--profile")
+    s = sub.add_parser("tier", help="show tier definitions"); s.add_argument("action", choices=["list", "show"]); s.add_argument("name", nargs="?")
+    sub.add_parser("verify", help="check this install against MANIFEST.sha256 (accident/tamper-evidence only)")
     sub.add_parser("test")
     a = ap.parse_args(argv)
+    from . import tier as tier_mod
+    if a.cmd not in ("tier", "verify", "test"):
+        tier_mod.activate(tier_mod.resolve(a.tier))
     if a.cmd == "serve":
         from .server import serve
-        serve(port=a.port, db=a.db)
+        serve(port=a.port, db=a.db, tier_spec=a.tier)
+    elif a.cmd == "tier":
+        import glob
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if a.action == "list":
+            for f in sorted(glob.glob(os.path.join(here, "tiers", "*.json"))):
+                t = tier_mod.Tier(json.load(open(f)), f)
+                print(f"{t.name:8} {'PROPOSAL ' if t.proposal else ''}limits={t.limits}")
+            cur = tier_mod.resolve(a.tier)
+            print("active:", cur.name if cur else "none (no limits)")
+        else:
+            t = tier_mod.load(a.name) if a.name else tier_mod.resolve(a.tier)
+            print(json.dumps(t.describe() if t else {"active": None}, indent=1))
+    elif a.cmd == "verify":
+        import hashlib
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        mf = os.path.join(here, "MANIFEST.sha256")
+        if not os.path.isfile(mf):
+            sys.exit("no MANIFEST.sha256 here (only delivered bundles have one)")
+        want = dict(reversed(l.rstrip("\n").split("  ", 1)) for l in open(mf) if l.strip())
+        bad, seen = [], set()
+        for rel, h in want.items():
+            fp = os.path.join(here, rel)
+            seen.add(rel)
+            if not os.path.isfile(fp):
+                bad.append(f"MISSING  {rel}")
+            elif hashlib.sha256(open(fp, "rb").read()).hexdigest() != h:
+                bad.append(f"MODIFIED {rel}")
+        for root, d, names in os.walk(here):
+            d[:] = [x for x in d if x not in ("__pycache__",)]
+            for n in names:
+                rel = os.path.relpath(os.path.join(root, n), here).replace(os.sep, "/")
+                if rel not in seen and rel != "MANIFEST.sha256" and not n.endswith((".db", ".pyc")):
+                    bad.append(f"EXTRA    {rel}")
+        print("\n".join(bad) if bad else f"OK: {len(want)} files match the manifest")
+        sys.exit(1 if bad else 0)
     elif a.cmd == "synth":
         from . import synth
         p = synth.write(a.out, days=a.days, seed=a.seed, mixed_formats=a.mixed_formats)

@@ -13,6 +13,11 @@ zone), per-rule enable/disable and severity, waivers, weekly-export header alias
 and rules** (regex + comparisons, no code). One JSON **profile** bundles them (`--profile FILE`, or the Import tab). Unknown keys, bad regexes and bad rule ids are rejected.
 Start from `profiles/example-neutral.json`; full guide: **[docs/ADAPTING.md](docs/ADAPTING.md)**.
 
+## Delivering to a customer: tiers
+Small / medium / large tiers (capacity limits + feature switches) are JSON files in `tiers/`; the numbers shipped are **proposals** for the owner to dictate. A tier banner shows limits and live usage;
+over-limit input is refused with a clear message, never truncated. `tools/make_bundle.py` builds a customer zip with a manifest. Enforcement is soft (not tamper-proof). See **[docs/TIERS.md](docs/TIERS.md)**.
+What the tool's "intelligence" is, and is not: **[docs/INTELLIGENCE.md](docs/INTELLIGENCE.md)**.
+
 ## Run (offline)
 
 ```bash

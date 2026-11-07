@@ -27,6 +27,8 @@ const MAP_TEMPLATE = {
   gauges: [], uptime: { column: "uptime_cs", unit: "cs" }, speed: { column: "speed_mbps", unit: "mbps" }
 };
 
+// safety net: an API error must never fail silently (e.g. a tier limit refusal)
+window.addEventListener("unhandledrejection", ev => { const m = $("#main"); if (m) m.prepend(h("div", { class: "banner err" }, "Error: " + ((ev.reason && ev.reason.message) || ev.reason))); });
 function theme() {
   let t = null; try { t = localStorage.getItem("tl-theme"); } catch (e) { }
   if (!t) t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -42,8 +44,21 @@ theme();
 function nav() {
   const n = $("#tabs"); n.replaceChildren(...TABS.map(t => h("button", { class: t === S.tab ? "on" : "", onclick: () => { S.tab = t; render(); } }, t)));
 }
+async function tierBar() {
+  const bar = $("#tierbar"); bar.replaceChildren();
+  try {
+    const r = await api("/api/tier");
+    if (!r.active) { bar.append("Tier: none (no limits active)"); return; }
+    const t = r.active, u = r.usage, L = t.limits, bits = [h("b", {}, "Tier: " + t.name), t.proposal ? " (PROPOSED limits, not final)" : "", "  |  "];
+    const map = [["devices", "devices"], ["series", "series"], ["rows", "rows"], ["zones", "zones"], ["captures", "captures"], ["cr", "CRs"]];
+    for (const [k, lab] of map) { const lim = L["max_" + k]; if (lim == null && u[k] == null) continue; const used = u[k] ?? 0; bits.push(h("span", { class: lim != null && used > lim ? "over" : "" }, `${lab} ${used.toLocaleString()}${lim != null ? "/" + lim.toLocaleString() : ""}  `)); }
+    const off = Object.entries(t.features).filter(([, v]) => !v).map(([k]) => k);
+    if (off.length) bits.push("| not included: " + off.join(", "));
+    bar.append(...bits);
+  } catch (e) { }
+}
 async function render() {
-  nav(); chart = null;
+  nav(); chart = null; tierBar();
   const m = $("#main"); m.replaceChildren();
   try { await ({ Import: tImport, Overview: tOverview, Anomalies: () => tFindings("anomaly"), "Pattern Shifts": () => tFindings("pattern_shift"), Devices: tDevices, "CR Tracker": tCR, Explain: tExplain, Export: tExport })[S.tab](m); }
   catch (e) { m.append(h("div", { class: "banner err" }, "Error: " + e.message)); }
@@ -83,9 +98,11 @@ async function tImport(m) {
   };
   const synth = async () => {
     out.replaceChildren(h("div", { class: "muted" }, "generating SYNTHETIC data..."));
-    const r = await api("/api/synth", { mixed_formats: true });
-    S.validation = r.validation; S.result = null; showValidation(out);
-    out.prepend(h("div", { class: "banner" }, "SYNTHETIC DATA (fake). Ground truth: ", h("pre", { class: "mono" }, JSON.stringify(r.manifest.ground_truth, null, 1))));
+    try {
+      const r = await api("/api/synth", { mixed_formats: true });
+      S.validation = r.validation; S.result = null; showValidation(out); tierBar();
+      out.prepend(h("div", { class: "banner" }, "SYNTHETIC DATA (fake). Ground truth: ", h("pre", { class: "mono" }, JSON.stringify(r.manifest.ground_truth, null, 1))));
+    } catch (e) { out.replaceChildren(h("div", { class: "banner err" }, e.message)); }
   };
   const prof = profileCard(() => render(), () => ({ tz: tz.value.trim(), ts_formats: fmts.value.trim() ? fmts.value.split(",").map(x => x.trim()) : undefined, mapping: (() => { try { return JSON.parse(map.value); } catch (e) { return undefined; } })() }));
   m.append(prof,

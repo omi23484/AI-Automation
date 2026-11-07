@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 from .timeparse import parse_ts, get_tz, slash_census
 from .units import parse_rate
+from . import tier
 
 
 class IngestError(Exception):
@@ -101,6 +102,8 @@ def validate_mapping(mapping, header):
 def load_csv(text, mapping, ts_formats=None, tz="UTC", delimiter=",", inventory=None, source="<memory>", keep_cells=False, zone_map=None):
     """keep_cells=False: full cell tuples are retained only for FLAGGED rows (memory); ts_raw/device/interface are always kept
     exactly. The source file remains the complete raw record."""
+    tier.require("poll_mode", "poll-based traffic import")
+    max_rows = tier.limit("rows")
     get_tz(tz)  # fail early on bad tz
     inventory = inventory or {}
     if text.startswith("﻿"):
@@ -132,6 +135,8 @@ def load_csv(text, mapping, ts_formats=None, tz="UTC", delimiter=",", inventory=
         if not cells or all(c == "" for c in cells):
             continue
         idx = len(rows)
+        if max_rows is not None and idx >= max_rows:
+            tier.check("rows", idx + 1, at_least=True)       # stop early: do not parse (and hold in memory) what the tier does not allow
         fl = []
         if len(cells) != len(header):
             fl.append("column_count_mismatch")

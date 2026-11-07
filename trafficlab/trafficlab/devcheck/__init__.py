@@ -3,6 +3,7 @@ import fnmatch
 from collections import Counter, defaultdict
 
 from ..config import make_config
+from .. import tier
 from .capture import Capture, load_path, load_items, load_zip_bytes, from_file, cmd_key
 from .parsers import find_parser
 from . import rules as R
@@ -13,7 +14,12 @@ SEV = {"critical": 3, "warning": 2, "info": 1}
 
 def analyze_captures(caps, cfg=None):
     cfg = cfg or make_config()
+    tier.require("devcheck", "device checks")
+    tier.check("captures", len(caps))
+    tier.check("devices", len({c.device for c in caps}))
     dcfg = cfg["devcheck"]
+    if dcfg.get("custom_parsers") or dcfg.get("custom_rules"):
+        tier.require("custom_rules", "custom parsers/rules")
     c_parsers = C.compile_parsers(dcfg.get("custom_parsers"))
     c_rules = C.compile_rules(dcfg.get("custom_rules"), set(R.RULE_BY_ID))
     bad = [r for r in dcfg.get("rules", {}) if r not in R.RULE_BY_ID and r not in {x["id"] for x in c_rules}]

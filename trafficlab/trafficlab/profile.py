@@ -10,6 +10,7 @@ Strictly validated at load (unknown keys, bad regexes, bad rule ids are errors, 
 import copy
 
 from .config import DEFAULTS, check_keys, make_config, _merge
+from . import tier
 from .devcheck import custom as C
 from .devcheck.rules import RULE_BY_ID
 
@@ -18,6 +19,7 @@ IMPORT = {"tz", "ts_formats", "delimiter", "mapping", "preset"}
 
 
 def load(obj):
+    tier.require("profiles", "environment profiles")
     if not isinstance(obj, dict):
         raise ValueError("profile must be a JSON object")
     extra = set(obj) - TOP

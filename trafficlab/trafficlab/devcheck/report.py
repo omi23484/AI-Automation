@@ -2,11 +2,13 @@
 import html
 import json
 import time
+from .. import tier
 
 E = html.escape
 
 
 def build(res, title="Device checks"):
+    tier.require("report_export", "report/JSON export")
     s = res["summary"]
     h = ["<!doctype html><html lang=en><meta charset=utf-8><title>%s</title><style>%s</style><body>" % (E(title), _CSS),
          f"<h1>{E(title)}</h1><p>Generated {E(time.strftime('%Y-%m-%d %H:%M:%SZ', time.gmtime()))} &middot; {s['devices']} devices &middot; {s['captures']} captures &middot; "
