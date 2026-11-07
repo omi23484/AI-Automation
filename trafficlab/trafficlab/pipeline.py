@@ -1,5 +1,6 @@
 """Orchestrates analysis. Engine modules have no DOM / no I/O. Parallel per series."""
 import os
+import re
 import time
 from concurrent.futures import ProcessPoolExecutor
 
@@ -105,6 +106,21 @@ def validation_report(ds, series, dq):
     bad = {k: v for k, v in flags.items() if k.startswith("bad_value") or k in ("column_count_mismatch", "missing_device_or_interface")}
     for k, v in bad.items():
         add("warn", f"{v} rows flagged '{k}'")
+    sc = tr["slash_census"]
+    if sc["slash_dates"]:
+        declared = [f for f in (ds.ts_formats or []) if re.search(r"%[dm][/.\-]%[dm]", f)]
+        order = "day_first" if any(re.search(r"%d[/.\-]%m", f) for f in declared) else "month_first" if any(re.search(r"%m[/.\-]%d", f) for f in declared) else None
+        info = f"{sc['slash_dates']} slash-style dates; census: {sc['day_first_proofs']} prove day-first, {sc['month_first_proofs']} prove month-first, {sc['undecidable_values']} undecidable"
+        if sc["verdict"] == "conflict":
+            add("error", info + " -> file mixes day-first and month-first. Not guessed; split the file")
+        elif order and sc["verdict"] in ("day_first", "month_first") and order != sc["verdict"]:
+            add("error", info + f" -> declared format is {order} but the data PROVES {sc['verdict']}: values <=12 would be silently mis-read")
+        elif not order:
+            add("error", info + " -> no slash format declared, so these rows were not parsed. Declare %m/%d/%Y or %d/%m/%Y (census verdict: " + sc["verdict"] + ")")
+        elif sc["verdict"] == "ambiguous":
+            add("warn", info + f" -> nothing in the file proves the order; you declared {order}. Confirm it")
+        else:
+            add("info", info + f" -> declared {order} is consistent with the data")
     if tr["mixed_formats"]:
         add("warn", f"mixed timestamp formats: {tr['formats']}")
     n_assumed = tr["tz_sources"].get("assumed", 0)

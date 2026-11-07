@@ -6,7 +6,8 @@ import sys
 from collections import Counter
 from dataclasses import dataclass, field
 
-from .timeparse import parse_ts, get_tz
+from .timeparse import parse_ts, get_tz, slash_census
+from .units import parse_rate
 
 
 class IngestError(Exception):
@@ -115,12 +116,14 @@ def load_csv(text, mapping, ts_formats=None, tz="UTC", delimiter=",", inventory=
     i_zone = ix[mapping["zone"]] if mapping.get("zone") else None
     ctrs = [(c["name"], ix[c["column"]], True) for c in mapping.get("counters", [])]
     gaus = [(g["name"], ix[g["column"]], False) for g in mapping.get("gauges", [])]
+    rate_parse = {g["name"]: g.get("default_unit") for g in mapping.get("gauges", []) if g.get("parse") == "rate"}
     upt = mapping.get("uptime")
     i_up = ix[upt["column"]] if upt else None
     up_mult = UPTIME_TO_S[upt.get("unit", "s")] if upt else None
     spd = mapping.get("speed")
     i_sp = ix[spd["column"]] if spd else None
-    sp_mult = SPEED_TO_BPS[spd.get("unit", "bps")] if spd else None
+    sp_rate = bool(spd and spd.get("parse") == "rate")
+    sp_mult = SPEED_TO_BPS[spd.get("unit", "bps")] if (spd and not sp_rate) else None
 
     rows, tsl, parsed, flags = [], [], [], {}
     short = 0
@@ -139,7 +142,13 @@ def load_csv(text, mapping, ts_formats=None, tz="UTC", delimiter=",", inventory=
         fl.extend(tp.flags)
         vals = {}
         for name, ci, as_int in ctrs + gaus:
-            v = _num(cells[ci], as_int)
+            if name in rate_parse:     # '12.34 Mbps' style cell -> bits/s
+                raw_c = cells[ci]
+                v = parse_rate(raw_c, rate_parse[name])
+                if v is None and raw_c.strip() != "":
+                    v = "BAD"
+            else:
+                v = _num(cells[ci], as_int)
             if v == "BAD":
                 fl.append(f"bad_value:{name}")
                 v = None
@@ -153,11 +162,18 @@ def load_csv(text, mapping, ts_formats=None, tz="UTC", delimiter=",", inventory=
                 up = u * up_mult
         sp = None
         if i_sp is not None:
-            u = _num(cells[i_sp], False)
-            if u == "BAD":
-                fl.append("bad_value:speed")
-            elif u is not None and u > 0:
-                sp = u * sp_mult
+            if sp_rate:
+                u = parse_rate(cells[i_sp], spd.get("default_unit"))
+                if u is None and cells[i_sp].strip() != "":
+                    fl.append("bad_value:speed")
+                elif u is not None and u > 0:
+                    sp = u
+            else:
+                u = _num(cells[i_sp], False)
+                if u == "BAD":
+                    fl.append("bad_value:speed")
+                elif u is not None and u > 0:
+                    sp = u * sp_mult
         dev, ifc = sys.intern(cells[i_dev].strip()), sys.intern(cells[i_if].strip())
         if not dev or not ifc:
             fl.append("missing_device_or_interface")
@@ -201,6 +217,7 @@ def ts_report(ds):
     fmts = Counter(t["format"] or "UNPARSED" for t in ds.ts_parsed)
     flags = Counter(f for fl in ds.row_flags.values() for f in fl)
     return {
+        "slash_census": slash_census(r.ts_raw for r in ds.rows),
         "formats": dict(fmts),
         "mixed_formats": len([f for f in fmts if f != "UNPARSED"]) > 1,
         "tz_assumed": ds.tz,

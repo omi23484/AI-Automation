@@ -12,7 +12,7 @@ explainer) are NOT built. See "Not built" below.
 ```bash
 cd trafficlab
 python3 -m trafficlab serve            # UI at http://127.0.0.1:8765/  (binds loopback only)
-python3 -m trafficlab test             # 81 unit/integration tests
+python3 -m trafficlab test             # 96 unit/integration tests
 python3 -m trafficlab synth --out synthetic --mixed-formats     # FAKE data + ground-truth manifest
 python3 -m trafficlab analyze FILE.csv --mapping map.json --tz UTC \
     --formats "%Y-%m-%d %H:%M:%S" [--inventory inv.csv] [--cr crs.json] [--config cfg.json] --out out
@@ -31,6 +31,22 @@ Generic CSV, one row per (device, interface, poll). You map columns in a JSON ma
 Zone comes from a `zone` column, else an inventory CSV (`device,zone[,interface,speed_bps]`), else `unassigned`.
 Column names above are examples; **map yours**. Units I am sure of: SNMP `sysUpTime` is TimeTicks (1/100 s) -> `cs`;
 `ifHighSpeed` is Mbps. Everything else is whatever your export contains.
+
+## Presets for CSV layouts known from your own code
+`python3 -m trafficlab analyze FILE --preset nexus_collect_utilization --tz <your tz>` (also `nexus_collect_errors`; UI has a preset dropdown).
+Layout comes from `nexus_collect.py` (branch `claude/nexus-buffer-traffic-analyzer-plc75i` of AI-Automation): cells like `12.34 Mbps`,
+timestamps `%-m/%-d/%Y %H:%M:%S` (month-first, non-padded, collector's local clock). **Layout only - not validated against a real device.**
+- Rate cells with unit tokens are parsed to bits/s (`units.py`): `bps/Kbps/Mbps/Gbps/Tbps`; lower-case `b` = bit, upper-case `B` = byte (x8). No unit token => mapping's `default_unit`, else the cell is flagged. Never inferred from magnitude.
+- Slash dates (`01/08/2026`): **census proof** over the whole file (first part >12 proves day-first, second >12 proves month-first). Contradicting your declared format = error; undecidable = warning; mixed = error. Undeclared slash dates are not parsed, and the report says why.
+- Collector rates are the device's own load-interval average (a smoothed sample, not a counter delta). Peaks inside the interval are lost and samples closer than the averaging window overlap.
+- Error/discard presets declare 32-bit counters because the real width is unknown: a decrease with no uptime is excluded, never guessed.
+
+## Data provenance: what real data was (not) available
+Searched the account's repos/sessions that this session can reach. **No real traffic time series exists there**: all sample datasets
+(`HTML/samples/sla/*`, NetPulse goldens, ACI synth) are labelled synthetic. Real device `show` output exists only as `HTML/samples/real/*.log`
+(IOS-XE router + NX-OS leaf; per that repo's README they derive from public ntc-templates fixtures). Those are single snapshots with no collection
+timestamp, and at least one is internally impossible (338,297,234 packets vs 728,401,053 bytes = ~2 B/packet), so they were edited/anonymised:
+usable as parser fixtures for Phase 2, not as telemetry. Lab-device sessions ran on the user's own machine ("bridge") and are not reachable from here.
 
 ## Data integrity (enforced + tested)
 - `ts_raw` stored exactly; `ts_parsed` is separate: `{epoch_ms, format, tz_assumed, tz_source, flags}`. Raw rows are frozen dataclasses.

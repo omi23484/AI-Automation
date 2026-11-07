@@ -86,3 +86,30 @@ def parse_ts(raw, formats=None, tz_name="UTC"):
         return res
     res["flags"].append("unparseable")
     return res
+
+
+_RE_SLASH = re.compile(r"^\s*(\d{1,2})([/.\-])(\d{1,2})\2(\d{2,4})(?!\d)")
+
+
+def slash_census(strings):
+    """Proof-based order detection for NN/NN/YYYY style dates (same idea as the SLA tool).
+    A first component > 12 proves day-first; a second component > 12 proves month-first.
+    Returns counts + verdict: day_first | month_first | ambiguous | conflict | none. Never guesses."""
+    d = m = amb = bad = n = 0
+    for st in strings:
+        x = _RE_SLASH.match(st)
+        if not x:
+            continue
+        n += 1
+        a, b = int(x.group(1)), int(x.group(3))
+        if a > 12 and b > 12:
+            bad += 1
+        elif a > 12:
+            d += 1
+        elif b > 12:
+            m += 1
+        else:
+            amb += 1
+    verdict = "none" if n == 0 else "conflict" if d and m else "day_first" if d else "month_first" if m else "ambiguous"
+    return {"slash_dates": n, "day_first_proofs": d, "month_first_proofs": m, "undecidable_values": amb,
+            "invalid_values": bad, "verdict": verdict}

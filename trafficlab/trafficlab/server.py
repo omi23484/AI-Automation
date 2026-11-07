@@ -12,6 +12,7 @@ from . import synth, ingest, counters, pipeline, report
 from .config import make_config, DEFAULTS
 from .store import CRStore, STATUSES
 from .interpret import RULES
+from .presets import PRESETS
 
 WEB = os.path.join(os.path.dirname(__file__), "web")
 MAX_BODY = 1024 * 1024 * 1024
@@ -141,7 +142,7 @@ def make_handler(st):
         # ---------------- GET ----------------
         def api_get(self, p, q):
             if p == "/api/defaults":
-                return 200, {"config": DEFAULTS, "statuses": STATUSES, "rules": RULES, "synth_mapping32": synth.SYN_MAPPING32, "synth_mapping64": synth.SYN_MAPPING}
+                return 200, {"config": DEFAULTS, "statuses": STATUSES, "rules": RULES, "presets": PRESETS, "synth_mapping32": synth.SYN_MAPPING32, "synth_mapping64": synth.SYN_MAPPING}
             if p == "/api/status":
                 return 200, dict(st.job, has_data=st.ds is not None, has_result=st.result is not None)
             if p == "/api/validation":

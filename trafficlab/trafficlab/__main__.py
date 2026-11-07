@@ -1,7 +1,7 @@
 """CLI:  python3 -m trafficlab <command>
   serve                       start local UI (127.0.0.1:8765)
   synth  --out DIR            write SYNTHETIC_* files
-  analyze FILE --mapping M.json [--tz UTC] [--formats F1,F2] [--inventory inv.csv] [--cr crs.json] [--config c.json] --out DIR
+  analyze FILE (--mapping M.json | --preset NAME) [--tz UTC] [--formats F1,F2] [--inventory inv.csv] [--cr crs.json] [--config c.json] --out DIR
   test                        run unit tests"""
 import argparse
 import json
@@ -15,7 +15,7 @@ def main(argv=None):
     s = sub.add_parser("serve"); s.add_argument("--port", type=int, default=8765); s.add_argument("--db", default="trafficlab.db")
     s = sub.add_parser("synth"); s.add_argument("--out", default="synthetic"); s.add_argument("--days", type=int, default=35)
     s.add_argument("--seed", type=int, default=42); s.add_argument("--mixed-formats", action="store_true")
-    s = sub.add_parser("analyze"); s.add_argument("file"); s.add_argument("--mapping", required=True); s.add_argument("--tz", default="UTC")
+    s = sub.add_parser("analyze"); s.add_argument("file"); s.add_argument("--mapping"); s.add_argument("--preset", help="nexus_collect_utilization | nexus_collect_errors"); s.add_argument("--tz", default="UTC")
     s.add_argument("--formats", default=None, help="comma separated strptime formats, or epoch_s / epoch_ms")
     s.add_argument("--delimiter", default=","); s.add_argument("--inventory"); s.add_argument("--cr"); s.add_argument("--config"); s.add_argument("--out", default="out")
     s.add_argument("--workers", type=int, default=None)
@@ -33,7 +33,16 @@ def main(argv=None):
         from .config import make_config
         from .store import CRStore
         text = open(a.file, newline="", encoding="utf-8-sig").read()
-        mapping = json.load(open(a.mapping))
+        from .presets import PRESETS
+        if a.preset:
+            pr = PRESETS[a.preset]
+            mapping = pr["mapping"]
+            if not a.formats:
+                a.formats = ",".join(pr["ts_formats"])
+        elif a.mapping:
+            mapping = json.load(open(a.mapping))
+        else:
+            ap.error("analyze needs --mapping or --preset")
         inv = ingest.load_inventory(open(a.inventory).read()) if a.inventory else None
         cfg = make_config(json.load(open(a.config)) if a.config else None)
         ds = ingest.load_csv(text, mapping, a.formats.split(",") if a.formats else None, a.tz, a.delimiter, inv, a.file)

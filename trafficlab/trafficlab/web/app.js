@@ -67,6 +67,8 @@ async function tImport(m) {
     hdr.textContent = "Columns: " + first + "   (" + fmtN(f.size / 1e6, 1) + " MB)";
   };
   const out = h("div");
+  const presetSel = h("select", {}, h("option", { value: "" }, "preset: none (use mapping below)"), ...Object.entries(S.defaults.presets || {}).map(([k, v]) => h("option", { value: k, title: v.description }, k)));
+  presetSel.onchange = () => { const p = (S.defaults.presets || {})[presetSel.value]; if (!p) return; map.value = JSON.stringify(p.mapping, null, 2); fmts.value = p.ts_formats.join(","); hdr.textContent = p.description; };
   const doImport = async () => {
     out.replaceChildren(h("div", { class: "muted" }, "importing..."));
     try {
@@ -85,7 +87,7 @@ async function tImport(m) {
   };
   m.append(
     h("div", { class: "banner" }, "Data stays on this machine (server bound to 127.0.0.1). Raw rows are never modified; timestamps keep ts_raw and get a separate ts_parsed. No captures are bundled: provide your own CSV."),
-    h("div", { class: "card" }, h("div", { class: "row" }, file, "delimiter", delim, "timezone for offset-less timestamps", tz), h("div", { class: "row" }, "timestamp formats", fmts), hdr,
+    h("div", { class: "card" }, h("div", { class: "row" }, presetSel), h("div", { class: "row" }, file, "delimiter", delim, "timezone for offset-less timestamps", tz), h("div", { class: "row" }, "timestamp formats", fmts), hdr,
       h("div", { class: "row" }, "optional inventory CSV (device,zone[,interface,speed_bps])", inv)),
     h("div", { class: "card" }, h("b", {}, "Column mapping (JSON)"), h("div", { class: "muted" }, "counter: cumulative (bits 32/64, mult 8 for octets->bits). gauge: value already a rate. uptime unit: s | cs (SNMP TimeTicks) | ms. speed unit: bps|kbps|mbps. zone: column name or null (inventory / 'unassigned')."), map),
     h("div", { class: "row" }, h("button", { class: "pri", onclick: doImport }, "Import + validate"), h("button", { onclick: synth }, "Load SYNTHETIC demo")),

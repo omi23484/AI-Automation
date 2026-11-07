@@ -130,3 +130,25 @@ def write(outdir, **kw):
     with open(os.path.join(outdir, "SYNTHETIC_crs.json"), "w") as f:
         json.dump(synthetic_crs(), f, indent=1)
     return p
+
+
+def generate_collector(days=35, interval_s=300, seed=7):
+    """SYNTHETIC. Emits the exact CSV LAYOUT of nexus_collect.py report1_utilization.csv
+    (header + 'x.xx Mbps' cells + '%-m/%-d/%Y %H:%M:%S' timestamps). Values are fake; IPs are RFC 5737 documentation range."""
+    rnd = random.Random(seed)
+    devs = [("SYN-DC-LEAF1", "192.0.2.11"), ("SYN-DC-LEAF2", "192.0.2.12")]
+    n = days * 86400 // interval_s
+    spike = (days * 86400 * 4 // 5 // interval_s, days * 86400 * 4 // 5 // interval_s + 6)
+    lines = ["Hostname,IP_Address,Interface Name,Received Bandwidth,Receive Mbps,Transmit Bandwidth,Transmit Mbps,Timestamp"]
+    for k in range(n):
+        d = T0 + timedelta(seconds=k * interval_s)
+        ts = f"{d.month}/{d.day}/{d.year} {d:%H:%M:%S}"
+        f = _daily(d.hour + d.minute / 60, d.weekday() >= 5)
+        if spike[0] <= k < spike[1]:
+            f *= 3
+        for name, ip in devs:
+            rx = max(0.0, 3000 * f * (1 + rnd.gauss(0, 0.04)))
+            tx = max(0.0, 1800 * f * (1 + rnd.gauss(0, 0.04)))
+            lines.append(f"{name},{ip},Ethernet1/1,10000.00 Mbps,{rx:.2f} Mbps,10000.00 Mbps,{tx:.2f} Mbps,{ts}")
+    return "\n".join(lines) + "\n", {"SYNTHETIC": True, "spike_start": _fmt(T0 + timedelta(seconds=spike[0] * interval_s)),
+                                      "spike_end": _fmt(T0 + timedelta(seconds=(spike[1] - 1) * interval_s)), "devices": [x[0] for x in devs]}
